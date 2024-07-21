@@ -50,23 +50,56 @@ This project uses CMake as its build system. To build the project:
     ```
 
 ## Project Structure
+this is at a high level the design that I have in mind for the engine
+```mermaid
+graph TD;
+    A[engine.exe] --> B[core.dll];
+    B --> |load once| C[thirdparty.dll];
+    B --> |hot reload| D[engine.lib];
+    C --> |allocates memory| A;
 
+    C --> E[ImGui];
+    C --> F[GLFW];
+    
+    D --> H[Hot-Reloadable Components];
+    
+    E --> |Uses| I[ImGui Rendering Functions];
+    F --> |Uses| J[GLFW Functions];
+    
+    H --> |Updates| I;
+    H --> |Updates| J;
 ```
+
+```batch
 anitra-engine/
 ├── src/
 │   ├── core/
-│   ├── rendering/
-│   ├── physics/
-│   └── ...
+│   │   ├── core.c
+│   │   └── ...
+│   ├── engine/
+│   │   ├── engine.c
+│   │   └── ...
+│   └── main.c  // main entry point
 ├── include/
+│   ├── core/
+│   │   ├── core.h
+│   │   └── ...
+│   ├── engine/
+│   │   ├── engine.h
+│   │   └── ...
 ├── lib/
 │   ├── glfw/
-│   ├── imgui/    (planned)
-│   ├── stb/      (planned)
+│   ├── imgui/
+│   ├── stb/
+│   └── ...
+├── thirdparty/
+│   └── ...
+├── build/
 │   └── ...
 ├── CMakeLists.txt
 ├── generate.bat
 ├── build.bat
+├── build.sh
 └── README.md
 ```
 
