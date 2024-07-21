@@ -1,68 +1,97 @@
-# Anitra
+# Anitra Engine
 
-Anitra is a lightweight, user-friendly engine skeleton builder designed to bootstrap small game engines, automate the configuration of libraries such as SDL, GLFW, and more, and create a data-oriented structure. Anitra provides real-time DLL reloading functionality, watching for source file changes and recompiling and reloading at runtime. The main purpose of this project is to learn and explore data-oriented design and the C programming language.
+A data-oriented game engine built with C99 and GLFW.
+
+## Overview
+
+Anitra Engine is designed with performance and flexibility in mind, utilizing data-oriented design principles to create an efficient and scalable architecture. Built using C99 for broad compatibility and GLFW for cross-platform window management and input handling.
 
 ## Features
 
-* Engine skeleton builder similar to JavaScript builders
-* Automated library configuration for SDL, GLFW, and other game development libraries
-* Real-time DLL reloading for immediate feedback during development
-* Library watcher and builder for seamless integration and updates
-* Customizable settings for different game engine requirements
-* Built with data-oriented design principles and C language for optimized performance
+Current features:
+- Data-oriented architecture for optimal performance
+- Cross-platform support via GLFW
+- Modern OpenGL rendering
+- Entity-component system
+- DLL hot reloading
 
-## Getting Started
+Planned features:
+- ImGui integration for debug UI and tools
+- glTF support for 3D model loading
+- STB libraries integration for image loading and data structure containers
+- Expanded hot reloading capabilities
 
-To use Anitra, follow the steps below:
+## Prerequisites
 
-### Prerequisites
+- CMake (version 3.12 or higher)
+- Visual Studio 2022
 
-Ensure you have the following installed on your system:
+## Building
 
-* C compiler (e.g., GCC or Clang)
-* Build system (e.g., Make or CMake)
+This project uses CMake as its build system. To build the project:
 
-### Installation
+1. Clone the repository:
 
-1. Clone the Anitra repository:
+    ```batch
+    git clone https://github.com/yourusername/anitra-engine.git
+    ```
 
-```bash
-git clone https://github.com/andresfelipemendez/anitra
+2. Generate the project files:
+
+    ```batch
+    cd anitra-engine
+    ./generate.bat
+    ```
+
+3. Build the project:
+
+    ```batch
+    ./build.bat
+    ```
+
+## Project Structure
+
+```
+anitra-engine/
+├── src/
+│   ├── core/
+│   ├── rendering/
+│   ├── physics/
+│   └── ...
+├── include/
+├── lib/
+│   ├── glfw/
+│   ├── imgui/    (planned)
+│   ├── stb/      (planned)
+│   └── ...
+├── CMakeLists.txt
+├── generate.bat
+├── build.bat
+└── README.md
 ```
 
-2. Navigate to the Anitra directory and build with CMake:
+## Roadmap
 
-```bash
-mkdir build
-cd build
-cmake ..
-```
-
-3. Follow the on-screen prompts to configure libraries and settings for your game engine.
-
-## Usage
-
-Once Anitra is installed and configured, you can start using it to bootstrap your game engine and work with the configured libraries.
-
-To enable real-time DLL reloading, ensure your project is set up to generate DLL files for the components you'd like to reload at runtime. Anitra will monitor the specified source files for changes and automatically recompile and reload the associated DLLs.
-
-For more information on customizing Anitra's settings and features, please refer to the [documentation](docs/) (pending).
+- Implement basic rendering pipeline
+- Add entity-component system
+- Integrate ImGui for debug UI
+- Implement glTF support
+- Add STB libraries for image loading and data structures
+- Expand hot reloading capabilities
+- Develop asset pipeline
+- Create documentation and examples
 
 ## Contributing
 
-If you'd like to contribute to Anitra, please follow these steps:
-
-1. Fork the repository.
-2. Create a new branch for your feature or bugfix.
-3. Make your changes, ensuring you adhere to the project's coding standards.
-4. Commit your changes and create a pull request.
-
-For more detailed instructions, please refer to the [contributing guide](CONTRIBUTING.md).
+Anitra Engine is in its early stages of development. While we're not yet ready for major contributions, we welcome feedback and suggestions. Please feel free to open issues for feature requests or bug reports.
 
 ## License
 
-Anitra is released under the [MIT License](LICENSE).
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
 
-## Contact
+## Acknowledgments
 
-For questions or support, please [open an issue](https://github.com/andresfelipemendez/anitra/issues) on GitHub.
+- GLFW contributors
+- ImGui developers (future integration)
+- STB libraries by Sean Barrett (future integration)
+- glTF specification and related tools (future support)
