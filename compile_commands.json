@@ -25,7 +25,7 @@
 },
 {
   "directory": "C:/Users/andres/Development/anitra/ninja",
-  "command": "C:\\PROGRA~1\\MICROS~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1440~1.338\\bin\\Hostx64\\x64\\cl.exe  /nologo -Dexternals_EXPORTS /DWIN32 /D_WINDOWS /W3 /MDd /Zi /Ob0 /Od /RTC1 /FoCMakeFiles\\externals.dir\\src\\externals\\externals.c.obj /FdCMakeFiles\\externals.dir\\ /FS -c C:\\Users\\andres\\Development\\anitra\\src\\externals\\externals.c",
+  "command": "C:\\PROGRA~1\\MICROS~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1440~1.338\\bin\\Hostx64\\x64\\cl.exe  /nologo -Dexternals_EXPORTS -IC:\\Users\\andres\\Development\\anitra\\lib\\glfw\\include /DWIN32 /D_WINDOWS /W3 /MDd /Zi /Ob0 /Od /RTC1 /FoCMakeFiles\\externals.dir\\src\\externals\\externals.c.obj /FdCMakeFiles\\externals.dir\\ /FS -c C:\\Users\\andres\\Development\\anitra\\src\\externals\\externals.c",
   "file": "C:\\Users\\andres\\Development\\anitra\\src\\externals\\externals.c",
   "output": "CMakeFiles\\externals.dir\\src\\externals\\externals.c.obj"
 },

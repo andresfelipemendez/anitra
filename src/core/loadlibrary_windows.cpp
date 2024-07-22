@@ -1,6 +1,6 @@
 #include <windows.h>
 #include <stdio.h>
-#include "core/loadlibrary.h"
+#include "loadlibrary.h"
 
 void* loadlibrary(const char* libname) {
     char libpath[256];
