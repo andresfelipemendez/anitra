@@ -1,23 +1,21 @@
 cmake_minimum_required(VERSION 3.12)
 
-set(CMAKE_GENERATOR_PLATFORM x64)
-
-project(GameEngine C)
+project(GameEngine)
 
 # Set C99 standard
-set(CMAKE_C_STANDARD 99)
-set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(include)
 
 # Source files for the main executable
-set(SRC_FILES src/main.c)
+set(SRC_FILES src/main.cpp)
 
 # Add platform-specific source files
 if(WIN32)
-    list(APPEND SRC_FILES src/core/loadlibrary_windows.c)
+    list(APPEND SRC_FILES src/core/loadlibrary_windows.cpp)
 elseif(UNIX)
-    list(APPEND SRC_FILES src/core/loadlibrary_linux.c)
+    list(APPEND SRC_FILES src/core/loadlibrary_linux.cpp)
 endif()
 
 add_executable(GameEngine ${SRC_FILES})
@@ -28,6 +26,8 @@ find_package(OpenGL REQUIRED)
 # Set the paths for GLFW
 set(GLFW_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/lib/glfw/include")
 set(GLFW_LIB_PATH "${CMAKE_SOURCE_DIR}/lib/glfw/lib/glfw3.lib")
+
+set(IMGUI_DIR "${CMAKE_SOURCE_DIR}/lib/imgui-1.90.9")
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE 
@@ -57,16 +57,34 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 )
 
 # Source files for the core library
-set(CORE_SRC_FILES src/core/core.c)
+set(CORE_SRC_FILES src/core/core.cpp)
 if(WIN32)
-    list(APPEND CORE_SRC_FILES src/core/loadlibrary_windows.c)
+    list(APPEND CORE_SRC_FILES src/core/loadlibrary_windows.cpp)
 elseif(UNIX)
-    list(APPED CORE_SRC_FILES src/core/loadlibrary_linux.c)
+    list(APPED CORE_SRC_FILES src/core/loadlibrary_linux.cpp)
 endif()
 
 # Create a shared library for the core
 add_library(core SHARED ${CORE_SRC_FILES})
 
-set(EXTERNALS_SRC_FILES src/externals/externals.c)
+set(EXTERNALS_SRC_FILES src/externals/externals.cpp)
+add_library(externals SHARED ${EXTERNALS_SRC_FILES}) 
+target_include_directories(externals PRIVATE 
+    "${CMAKE_SOURCE_DIR}/include"
+    "${IMGUI_DIR}"    
+    "${OPENGL_INCLUDE_DIR}"
+    "${GLFW_INCLUDE_DIR}"
+)
+target_link_libraries(externals PRIVATE 
+    ${OPENGL_LIBRARIES}
+    ${GLFW_LIB_PATH}
+)
 
-add_library(externals SHARED ${EXTERNALS_SRC_FILES})  
+set(ENGINE_SRC_FILES src/engine/engine.cpp)
+add_library(engine SHARED ${ENGINE_SRC_FILES})
+target_include_directories(engine PRIVATE 
+    "${CMAKE_SOURCE_DIR}/include"
+    "${IMGUI_DIR}"    
+    "${OPENGL_INCLUDE_DIR}"
+    "${GLFW_INCLUDE_DIR}"
+)

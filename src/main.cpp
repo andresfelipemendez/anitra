@@ -10,7 +10,7 @@ int main() {
         return 1;
     }
     printf("Library loaded successfully\n");
-    
+
     init_func init = (init_func)getfunction(lib, "init");
     if (init == NULL) {
         fprintf(stderr, "Failed to get init function address\n");
