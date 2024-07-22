@@ -1,17 +1,24 @@
-#include "externals/externals.h"
+#include "externals.h"
+#include "../game.h"
 #include <stdio.h>
 #include <GLFW/glfw3.h>
 
-EXPORT int init_externals() {
-    if(!glfwInit()){
+EXPORT int init_externals(game* g) {
+
+    /* Initialize the library */
+    if (!glfwInit())
+        return -1;
+
+    /* Create a windowed mode window and its OpenGL context */
+    g->window = glfwCreateWindow(640, 480, "Hello World", NULL, NULL);
+    if (!g->window)
+    {
+        glfwTerminate();
         return -1;
     }
 
-    // Decide GL+GLSL versions
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    /* Make the window's context current */
+    glfwMakeContextCurrent(g->window);
 
     return 1;
 }

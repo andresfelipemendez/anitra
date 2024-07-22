@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(GameEngine)
+project(AnitraEngine)
 
 # Set C99 standard
 set(CMAKE_CXX_STANDARD 20)
@@ -18,7 +18,7 @@ elseif(UNIX)
     list(APPEND SRC_FILES src/core/loadlibrary_linux.cpp)
 endif()
 
-add_executable(GameEngine ${SRC_FILES})
+add_executable(${PROJECT_NAME} ${SRC_FILES})
 
 # Find OpenGL package
 find_package(OpenGL REQUIRED)
@@ -71,10 +71,12 @@ set(EXTERNALS_SRC_FILES src/externals/externals.cpp)
 add_library(externals SHARED ${EXTERNALS_SRC_FILES}) 
 target_include_directories(externals PRIVATE 
     "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/src"
     "${IMGUI_DIR}"    
     "${OPENGL_INCLUDE_DIR}"
     "${GLFW_INCLUDE_DIR}"
 )
+
 target_link_libraries(externals PRIVATE 
     ${OPENGL_LIBRARIES}
     ${GLFW_LIB_PATH}

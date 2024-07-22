@@ -3,7 +3,7 @@
 
 #include "../export.h"
 
-DECLARE_FUNC_INT(init_externals);
+DECLARE_FUNC_INT_pGAME(init_externals);
 
 #endif
 

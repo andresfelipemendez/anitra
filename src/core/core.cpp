@@ -1,7 +1,8 @@
 #include <stdio.h>
-#include "core/core.h"
-#include "externals/externals.h"
-#include "core/loadlibrary.h"
+#include "core.h"
+#include "../game.h"
+#include "../externals/externals.h"
+#include "loadlibrary.h"
 
 EXPORT void init() {
     printf("Core initialized\n");
@@ -11,6 +12,6 @@ EXPORT void init() {
     }
     printf("Library externals loaded successfully\n");
     init_externals_func init = (init_externals_func)getfunction(lib, "init_externals");
-
-    init();
+    game g;
+    init(&g);
 }
