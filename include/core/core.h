@@ -3,6 +3,6 @@
 
 #include "../export.h"
 
-DECLARE_FUNC(init);
+DECLARE_FUNC_VOID(init);
 
 #endif // CORE_H
