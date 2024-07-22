@@ -1,38 +1,25 @@
 #include <stdio.h>
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
+#include "core/core.h"
+#include "core/loadlibrary.h"
 
 int main() {
-    // Initialize GLFW
-    if (!glfwInit()) {
-        fprintf(stderr, "Failed to initialize GLFW\n");
-        return -1;
+    const char* libname = "core";
+    void* lib = loadlibrary(libname);
+    if (lib == NULL) {
+        fprintf(stderr, "Library loading failed\n");
+        return 1;
+    }
+    printf("Library loaded successfully\n");
+    
+    init_func init = (init_func)getfunction(lib, "init");
+    if (init == NULL) {
+        fprintf(stderr, "Failed to get init function address\n");
+        return 1;
     }
 
-    // Create a windowed mode window and its OpenGL context
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Hello World", NULL, NULL);
-    if (!window) {
-        fprintf(stderr, "Failed to create GLFW window\n");
-        glfwTerminate();
-        return -1;
-    }
+    // Call the init function from core.c
+    init();
 
-    // Make the window's context current
-    glfwMakeContextCurrent(window);
-
-    // Loop until the user closes the window
-    while (!glfwWindowShouldClose(window)) {
-        // Render here
-
-        // Swap front and back buffers
-        glfwSwapBuffers(window);
-
-        // Poll for and process events
-        glfwPollEvents();
-    }
-
-    // Clean up GLFW
-    glfwTerminate();
 
     return 0;
 }

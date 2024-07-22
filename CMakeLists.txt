@@ -8,11 +8,19 @@ project(GameEngine C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Add your source files
-file(GLOB_RECURSE SOURCES "src/*.c")
+include_directories(include)
 
-# Create the executable
-add_executable(${PROJECT_NAME} ${SOURCES})
+# Source files for the main executable
+set(SRC_FILES src/main.c)
+
+# Add platform-specific source files
+if(WIN32)
+    list(APPEND SRC_FILES src/core/loadlibrary_windows.c)
+elseif(UNIX)
+    list(APPEND SRC_FILES src/core/loadlibrary_linux.c)
+endif()
+
+add_executable(GameEngine ${SRC_FILES})
 
 # Find OpenGL package
 find_package(OpenGL REQUIRED)
@@ -48,9 +56,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     GLFW_STATIC
 )
 
-# Set additional compiler flags if needed
-if(MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /W4)
-else()
-    target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -pedantic)
-endif()
+# Source files for the core library
+set(CORE_SRC_FILES src/core/core.c)
+
+# Create a shared library for the core
+add_library(core SHARED ${CORE_SRC_FILES})
