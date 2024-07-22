@@ -58,6 +58,15 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 
 # Source files for the core library
 set(CORE_SRC_FILES src/core/core.c)
+if(WIN32)
+    list(APPEND CORE_SRC_FILES src/core/loadlibrary_windows.c)
+elseif(UNIX)
+    list(APPED CORE_SRC_FILES src/core/loadlibrary_linux.c)
+endif()
 
 # Create a shared library for the core
 add_library(core SHARED ${CORE_SRC_FILES})
+
+set(EXTERNALS_SRC_FILES src/externals/externals.c)
+
+add_library(externals SHARED ${EXTERNALS_SRC_FILES})  
