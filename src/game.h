@@ -1,5 +1,4 @@
-//#include <GLFW/glfw3.h>
-
 struct game {
+    bool play = false;
     struct GLFWwindow* window;
 };

@@ -3,7 +3,8 @@
 
 #include "../export.h"
 
-DECLARE_FUNC_VOID(GetImguiFunctions);
+DECLARE_FUNC_VOID(GetImguiFunctions)
+
 #endif
 
 
