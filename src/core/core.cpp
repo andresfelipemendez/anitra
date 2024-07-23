@@ -12,6 +12,12 @@ EXPORT void init() {
     }
     printf("Library externals loaded successfully\n");
     init_externals_func init = (init_externals_func)getfunction(lib, "init_externals");
+    update_externals_func update = (update_externals_func)getfunction(lib, "update_externals");
+    
     game g;
     init(&g);
+
+    while(g.play) {
+        update(&g);
+    }
 }
