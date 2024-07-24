@@ -76,17 +76,31 @@ target_include_directories(externals PRIVATE
     "${OPENGL_INCLUDE_DIR}"
     "${GLFW_INCLUDE_DIR}"
 )
-
 target_link_libraries(externals PRIVATE 
     ${OPENGL_LIBRARIES}
     ${GLFW_LIB_PATH}
 )
 
-set(ENGINE_SRC_FILES src/engine/engine.cpp)
+set(ENGINE_SRC_FILES src/engine/engine.cpp
+    lib/imgui-1.90.9/imgui.cpp
+    lib/imgui-1.90.9/imgui_demo.cpp
+    lib/imgui-1.90.9/imgui_draw.cpp
+    lib/imgui-1.90.9/imgui_tables.cpp
+    lib/imgui-1.90.9/imgui_widgets.cpp
+    lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp
+)
 add_library(engine SHARED ${ENGINE_SRC_FILES})
 target_include_directories(engine PRIVATE 
     "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/src"
     "${IMGUI_DIR}"    
     "${OPENGL_INCLUDE_DIR}"
     "${GLFW_INCLUDE_DIR}"
+)
+target_link_libraries(engine PRIVATE 
+    ${OPENGL_LIBRARIES}
+    ${GLFW_LIB_PATH}
+)
+target_compile_definitions(engine PRIVATE
+    GLFW_STATIC
 )

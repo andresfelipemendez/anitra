@@ -17,6 +17,12 @@ EXPORT void init() {
     game g;
     init(&g);
 
+    // get signal to reload
+    bool hotReload = false;
+    if(hotReload) {
+        
+    }
+
     while(g.play) {
         update(&g);
     }

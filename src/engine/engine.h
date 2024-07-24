@@ -3,8 +3,8 @@
 
 #include "../export.h"
 
-DECLARE_FUNC_VOID(GetImguiFunctions)
-
+DECLARE_FUNC_VOID(HotReloadImGuiUpdate)
+DECLARE_FUNC_VOID(HotReloadGuiRender)
 #endif
 
 
