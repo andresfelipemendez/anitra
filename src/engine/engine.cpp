@@ -1,21 +1,13 @@
 #include "engine.h"
 #include <imgui.h>
 
-typedef void (*ImguiUpdateFunc)();
-typedef void (*ImGuirenderFunc)();
-
-void HotReloadImGuiUpdate()
+EXPORT void HotReloadImGuiUpdate()
 {
-
+    ImGui::Begin("Debug Window");
+    ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+    ImGui::End();
 }
 
-void HotReloadGuiRender()
+EXPORT void HotReloadGuiRender()
 {
 }
-
-void GetImguiFunctions(ImguiUpdateFunc* outUpdate, ImGuirenderFunc* outRender)
-{
-    *outUpdate = HotReloadImGuiUpdate;
-    *outRender = HotReloadGuiRender;
-}
-
