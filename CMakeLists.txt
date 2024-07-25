@@ -65,9 +65,39 @@ elseif(UNIX)
 endif()
 
 # Create a shared library for the core
-add_library(core SHARED ${CORE_SRC_FILES})
+add_library(core SHARED ${CORE_SRC_FILES}
+lib/imgui-1.90.9/imgui.cpp
+lib/imgui-1.90.9/imgui_demo.cpp
+lib/imgui-1.90.9/imgui_draw.cpp
+lib/imgui-1.90.9/imgui_tables.cpp
+lib/imgui-1.90.9/imgui_widgets.cpp
+lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp
+lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(core PRIVATE 
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/src"
+    "${IMGUI_DIR}"    
+    "${OPENGL_INCLUDE_DIR}"
+    "${GLFW_INCLUDE_DIR}"
+)
 
-set(EXTERNALS_SRC_FILES src/externals/externals.cpp)
+target_link_libraries(core PRIVATE 
+${OPENGL_LIBRARIES}
+${GLFW_LIB_PATH}
+)
+
+
+set(EXTERNALS_SRC_FILES src/externals/externals.cpp
+    lib/imgui-1.90.9/imgui.cpp
+    lib/imgui-1.90.9/imgui_demo.cpp
+    lib/imgui-1.90.9/imgui_draw.cpp
+    lib/imgui-1.90.9/imgui_tables.cpp
+    lib/imgui-1.90.9/imgui_widgets.cpp
+    lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp
+    lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp)
+
+
 add_library(externals SHARED ${EXTERNALS_SRC_FILES}) 
 target_include_directories(externals PRIVATE 
     "${CMAKE_SOURCE_DIR}/include"
@@ -88,6 +118,7 @@ set(ENGINE_SRC_FILES src/engine/engine.cpp
     lib/imgui-1.90.9/imgui_tables.cpp
     lib/imgui-1.90.9/imgui_widgets.cpp
     lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp
+    lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp
 )
 add_library(engine SHARED ${ENGINE_SRC_FILES})
 target_include_directories(engine PRIVATE 

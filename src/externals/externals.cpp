@@ -1,43 +1,39 @@
 #include "externals.h"
 #include "../game.h"
 #include <stdio.h>
-#include <GLFW/glfw3.h>
+
+
 
 ImGuiUpdateFunc g_imguiUpdate = NULL;
 ImGuiRenderFunc g_imguiRender = NULL;
 
+static void glfw_error_callback(int error, const char* description)
+{
+    fprintf(stderr, "GLFW Error %d: %s\n", error, description);
+}
+
 EXPORT int init_externals(game* g) {
-    if (!glfwInit())
-        return -1;
-
-    g->window = glfwCreateWindow(640, 480, "Hello World", NULL, NULL);
-    if (!g->window)
-    {
-        glfwTerminate();
-        return -1;
-    }
-
-    glfwMakeContextCurrent(g->window);
-
-    g->play = true;
-
+    
     return 1;
 }
 
 EXPORT void update_externals(game* g){
-
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glfwSwapBuffers(g->window);
-    glfwPollEvents();
-    g->play = !glfwWindowShouldClose(g->window);
+    
+   
 
 }
 
-void UpdateImGuiFunctions(ImGuiUpdateFunc updateFunc, ImGuiRenderFunc renderFunc)
+EXPORT void update_imgui_functions(ImGuiUpdateFunc updateFunc, ImGuiRenderFunc renderFunc)
 {
+    printf("update_imgui_functions\n");
+
     g_imguiUpdate = updateFunc;
     g_imguiRender = renderFunc;
+
+    
+    printf("calling hot reload engine imgui frunctions from update_imgui_functions\n");
+    // g_imguiUpdate();
+    // g_imguiRender();
 }
 
 EXPORT void end_externals(game* g){
