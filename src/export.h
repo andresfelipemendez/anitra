@@ -19,4 +19,8 @@ typedef void (*ImGuiRenderFunc)(void);
     EXPORT int func(struct game* g); \
     typedef int (*func##_func)(struct game* g);
 
+#define DECLARE_FUNC_VOID_IMGUIUPDATEFUNC_IMGUIRENDERFUNC(func) \
+    EXPORT void func(ImGuiUpdateFunc updateFunc,ImGuiRenderFunc renderFunc); \
+    typedef void (*func##_func)(ImGuiUpdateFunc updateFunc,ImGuiRenderFunc renderFunc);
+
 
