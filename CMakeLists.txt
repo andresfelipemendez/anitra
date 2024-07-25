@@ -56,47 +56,24 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     GLFW_STATIC
 )
 
-# Source files for the core library
-set(CORE_SRC_FILES src/core/core.cpp)
-if(WIN32)
-    list(APPEND CORE_SRC_FILES src/core/loadlibrary_windows.cpp)
-elseif(UNIX)
-    list(APPED CORE_SRC_FILES src/core/loadlibrary_linux.cpp)
-endif()
-
-# Create a shared library for the core
-add_library(core SHARED ${CORE_SRC_FILES}
-lib/imgui-1.90.9/imgui.cpp
+add_library(imgui SHARED lib/imgui-1.90.9/imgui.cpp
 lib/imgui-1.90.9/imgui_demo.cpp
 lib/imgui-1.90.9/imgui_draw.cpp
 lib/imgui-1.90.9/imgui_tables.cpp
 lib/imgui-1.90.9/imgui_widgets.cpp
 lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp
-lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp
-)
-target_include_directories(core PRIVATE 
-    "${CMAKE_SOURCE_DIR}/include"
-    "${CMAKE_SOURCE_DIR}/src"
+lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp)
+
+target_include_directories(imgui PUBLIC 
     "${IMGUI_DIR}"    
     "${OPENGL_INCLUDE_DIR}"
     "${GLFW_INCLUDE_DIR}"
 )
-
-target_link_libraries(core PRIVATE 
+target_link_libraries(imgui PRIVATE 
 ${OPENGL_LIBRARIES}
-${GLFW_LIB_PATH}
-)
+${GLFW_LIB_PATH})
 
-
-set(EXTERNALS_SRC_FILES src/externals/externals.cpp
-    lib/imgui-1.90.9/imgui.cpp
-    lib/imgui-1.90.9/imgui_demo.cpp
-    lib/imgui-1.90.9/imgui_draw.cpp
-    lib/imgui-1.90.9/imgui_tables.cpp
-    lib/imgui-1.90.9/imgui_widgets.cpp
-    lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp
-    lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp)
-
+set(EXTERNALS_SRC_FILES src/externals/externals.cpp)
 
 add_library(externals SHARED ${EXTERNALS_SRC_FILES}) 
 target_include_directories(externals PRIVATE 
@@ -109,17 +86,36 @@ target_include_directories(externals PRIVATE
 target_link_libraries(externals PRIVATE 
     ${OPENGL_LIBRARIES}
     ${GLFW_LIB_PATH}
+    imgui
 )
 
-set(ENGINE_SRC_FILES src/engine/engine.cpp
-    lib/imgui-1.90.9/imgui.cpp
-    lib/imgui-1.90.9/imgui_demo.cpp
-    lib/imgui-1.90.9/imgui_draw.cpp
-    lib/imgui-1.90.9/imgui_tables.cpp
-    lib/imgui-1.90.9/imgui_widgets.cpp
-    lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp
-    lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp
+set(CORE_SRC_FILES src/core/core.cpp)
+if(WIN32)
+    list(APPEND CORE_SRC_FILES src/core/loadlibrary_windows.cpp)
+elseif(UNIX)
+    list(APPED CORE_SRC_FILES src/core/loadlibrary_linux.cpp)
+endif()
+
+# Create a shared library for the core
+add_library(core SHARED ${CORE_SRC_FILES})
+
+target_include_directories(core PRIVATE 
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/src"
+    "${IMGUI_DIR}"    
+    "${OPENGL_INCLUDE_DIR}"
+    "${GLFW_INCLUDE_DIR}"
 )
+
+target_link_libraries(core PRIVATE 
+${OPENGL_LIBRARIES}
+${GLFW_LIB_PATH}
+externals
+imgui
+)
+
+set(ENGINE_SRC_FILES src/engine/engine.cpp)
+
 add_library(engine SHARED ${ENGINE_SRC_FILES})
 target_include_directories(engine PRIVATE 
     "${CMAKE_SOURCE_DIR}/include"
@@ -131,6 +127,8 @@ target_include_directories(engine PRIVATE
 target_link_libraries(engine PRIVATE 
     ${OPENGL_LIBRARIES}
     ${GLFW_LIB_PATH}
+    externals
+    imgui
 )
 target_compile_definitions(engine PRIVATE
     GLFW_STATIC

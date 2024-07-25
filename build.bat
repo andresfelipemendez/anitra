@@ -13,7 +13,7 @@ if not exist "%BUILD_DIR%" (
 
 :: Build the project
 echo Building the project...
-cmake --build "%BUILD_DIR%" --config Release
+cmake --build "%BUILD_DIR%" --config Debug
 
 :: Check if the build was successful
 if %ERRORLEVEL% neq 0 (
@@ -22,6 +22,6 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo Build completed successfully.
-echo Executable can be found in %BUILD_DIR%\Release\
+echo Executable can be found in %BUILD_DIR%\Debug\
 
 endlocal

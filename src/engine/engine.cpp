@@ -1,10 +1,11 @@
 #include "engine.h"
-#include <imgui.h>
+#include "../externals/externals.h"
 #include <stdio.h>
 
-EXPORT void HotReloadImGuiUpdate()
+
+EXPORT void HotReloadImGuiUpdate(ImGuiContext* ctx)
 {
-    printf("HotReloadImGuiUpdate\n");
+    ImGui::SetCurrentContext(ctx);
     ImGui::Begin("Debug Window");
     ImGui::Text("Hello from another window!");
     ImGui::End();
