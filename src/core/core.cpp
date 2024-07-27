@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include "core.h"
-#include "../game.h"
-#include "../externals/externals.h"
-#include "../engine/engine.h"
+#include <game.h>
+#include <externals.h>
+#include <engine.h>
 #include "loadlibrary.h"
 
 void* load_lib(const char* libname){
@@ -18,9 +18,6 @@ EXPORT void init() {
     printf("Core initialized\n");
 
     void* engine_lib = load_lib("engine");
-    HotReloadImGuiUpdate_func HotReloadImGuiUpdate = (HotReloadImGuiUpdate_func)getfunction(engine_lib, "HotReloadImGuiUpdate");
-
-   
 
     game g;
     init_externals(&g);

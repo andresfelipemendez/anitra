@@ -1,5 +1,5 @@
 struct game {
-    bool play = false;
+    int play;
     struct GLFWwindow* window;
     struct ImGuiContext* ctx;
 };
