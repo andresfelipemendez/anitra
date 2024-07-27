@@ -1,11 +1,14 @@
-#include "externals.h"
-#include "../game.h"
+#include <game.h>
+#include <externals.h>
 #include <stdio.h>
+
+
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 
 #include <GLFW/glfw3.h>
 
-ImGuiUpdateFunc g_imguiUpdate = NULL;
-ImGuiRenderFunc g_imguiRender = NULL;
 
 
 ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
@@ -54,14 +57,14 @@ EXPORT int init_externals(game* g) {
     ImGui::StyleColorsDark();
     ImGui::SetCurrentContext(ctx);
 
-    ImGuiViewport* main_viewport = ImGui::GetMainViewport();
-    if (main_viewport == nullptr || main_viewport->PlatformHandleRaw == nullptr) {
-        fprintf(stderr, "Main viewport or platform handle is null\n");
-        ImGui::DestroyContext(ctx);
-        glfwDestroyWindow(g->window);
-        glfwTerminate();
-        return -1;
-    }
+    //ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+    //if (main_viewport == nullptr || main_viewport->PlatformHandleRaw == nullptr) {
+    //    fprintf(stderr, "Main viewport or platform handle is null\n");
+    //    ImGui::DestroyContext(ctx);
+    //    glfwDestroyWindow(g->window);
+    //    glfwTerminate();
+    //    return -1;
+    //}
 
     if (!ImGui_ImplGlfw_InitForOpenGL(g->window, true)) {
         fprintf(stderr, "Failed to initialize ImGui_ImplGlfw\n");
@@ -111,16 +114,6 @@ EXPORT void update_externals(game* g){
     g->play = !glfwWindowShouldClose(g->window);
 }
 
-EXPORT void update_imgui_functions(ImGuiUpdateFunc updateFunc)
-{
-    printf("update_imgui_functions\n");
-
-    g_imguiUpdate = updateFunc;
-
-    printf("calling hot reload engine imgui frunctions from update_imgui_functions\n");
-    // g_imguiUpdate();
-    // g_imguiRender();
-}
 
 EXPORT void end_externals(game* g){
     
