@@ -6,6 +6,9 @@
 
 typedef void (*hotreloadable_imgui_draw_func)(struct game* g);
 
+
+#define HOTRELOAD_EVENT_NAME "Global\\ReloadEvent"
+
 #define DECLARE_FUNC_VOID(func) \
     EXPORT void func(); \
     typedef void (*func##_func)();
