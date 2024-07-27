@@ -18,10 +18,10 @@ EXPORT void init() {
     printf("Core initialized\n");
 
     void* engine_lib = load_lib("engine");
-
+    hotreloadable_imgui_draw_func hotreloadable_imgui_draw = (hotreloadable_imgui_draw_func)getfunction(engine_lib, "hotreloadable_imgui_draw");
     game g;
     init_externals(&g);
-
+    assign_hotreloadable(hotreloadable_imgui_draw);
     bool hotReload = false;
     if(hotReload) {
         
