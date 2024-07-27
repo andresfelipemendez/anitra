@@ -2,14 +2,13 @@
 #include <externals.h>
 #include <stdio.h>
 
-
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 
 #include <GLFW/glfw3.h>
 
-
+hotreloadable_imgui_draw_func g_imguiUpdate = NULL;
 
 ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -50,21 +49,13 @@ EXPORT int init_externals(game* g) {
         return -1;
     }
 
+
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 
     ImGui::StyleColorsDark();
     ImGui::SetCurrentContext(ctx);
-
-    //ImGuiViewport* main_viewport = ImGui::GetMainViewport();
-    //if (main_viewport == nullptr || main_viewport->PlatformHandleRaw == nullptr) {
-    //    fprintf(stderr, "Main viewport or platform handle is null\n");
-    //    ImGui::DestroyContext(ctx);
-    //    glfwDestroyWindow(g->window);
-    //    glfwTerminate();
-    //    return -1;
-    //}
 
     if (!ImGui_ImplGlfw_InitForOpenGL(g->window, true)) {
         fprintf(stderr, "Failed to initialize ImGui_ImplGlfw\n");
@@ -84,9 +75,12 @@ EXPORT int init_externals(game* g) {
     }
 
     g->play = true;
+
+    g->ctx = ctx;
+    ImGui::GetAllocatorFunctions(&g->alloc_func, &g->free_func, &g->user_data);
+    
     return 1;
 }
-
 
 EXPORT void update_externals(game* g){
     
@@ -96,11 +90,11 @@ EXPORT void update_externals(game* g){
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    //g_imguiUpdate(g->ctx);
-    ImGui::Begin("Debug Window");
-    ImGui::Text("Hello from another window!");
-    ImGui::End();
-   //ImGui::SetCurrentContext(g->ctx);
+    g_imguiUpdate(g);
+    
+    ImGui::SetCurrentContext(g->ctx);
+    ImGui::SetAllocatorFunctions(g->alloc_func, g->free_func, g->user_data);
+
     ImGui::Render();
     int display_w, display_h;
     glfwGetFramebufferSize(g->window, &display_w, &display_h);
@@ -114,16 +108,12 @@ EXPORT void update_externals(game* g){
     g->play = !glfwWindowShouldClose(g->window);
 }
 
-
 EXPORT void end_externals(game* g){
     
 }
 
-EXPORT void CallFromOutsideBegin(const char* text)
-{
-    ImGui::Begin(text);
-    ImGui::Text("Hello from another window!");
-    ImGui::End();
+EXPORT void assign_hotreloadable(hotreloadable_imgui_draw_func func) {
+    g_imguiUpdate = func;
 }
 
 EXPORT ImGuiContext* GetImguiContext()
