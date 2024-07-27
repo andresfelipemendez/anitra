@@ -24,8 +24,7 @@ EXPORT void init() {
 
     game g;
     init_externals(&g);
- update_imgui_functions(HotReloadImGuiUpdate);
-    // get signal to reload
+
     bool hotReload = false;
     if(hotReload) {
         

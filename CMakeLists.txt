@@ -28,6 +28,7 @@ set(GLFW_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/lib/glfw/include")
 set(GLFW_LIB_PATH "${CMAKE_SOURCE_DIR}/lib/glfw/lib/glfw3.lib")
 
 set(IMGUI_DIR "${CMAKE_SOURCE_DIR}/lib/imgui-1.90.9")
+set(IMGUI_DIR_INCLUDE "${CMAKE_SOURCE_DIR}/lib/imgui")
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE 
@@ -56,14 +57,15 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     GLFW_STATIC
 )
 
-add_library(imgui SHARED lib/imgui-1.90.9/imgui.cpp
+add_library(imgui SHARED 
+lib/imgui-1.90.9/imgui.cpp
 lib/imgui-1.90.9/imgui_demo.cpp
 lib/imgui-1.90.9/imgui_draw.cpp
 lib/imgui-1.90.9/imgui_tables.cpp
 lib/imgui-1.90.9/imgui_widgets.cpp
 lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp
 lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp)
-
+target_compile_definitions(imgui PRIVATE GLFW_STATIC)
 target_include_directories(imgui PUBLIC 
     "${IMGUI_DIR}"    
     "${OPENGL_INCLUDE_DIR}"
@@ -71,15 +73,18 @@ target_include_directories(imgui PUBLIC
 )
 target_link_libraries(imgui PRIVATE 
 ${OPENGL_LIBRARIES}
-${GLFW_LIB_PATH})
+${GLFW_LIB_PATH}
+)
+
 
 set(EXTERNALS_SRC_FILES src/externals/externals.cpp)
 
 add_library(externals SHARED ${EXTERNALS_SRC_FILES}) 
 target_include_directories(externals PRIVATE 
+"${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/src"
-    "${IMGUI_DIR}"    
+    "${IMGUI_DIR_INCLUDE}"    
     "${OPENGL_INCLUDE_DIR}"
     "${GLFW_INCLUDE_DIR}"
 )
@@ -102,7 +107,7 @@ add_library(core SHARED ${CORE_SRC_FILES})
 target_include_directories(core PRIVATE 
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/src"
-    "${IMGUI_DIR}"    
+    "${IMGUI_DIR_INCLUDE}"    
     "${OPENGL_INCLUDE_DIR}"
     "${GLFW_INCLUDE_DIR}"
 )
@@ -120,7 +125,7 @@ add_library(engine SHARED ${ENGINE_SRC_FILES})
 target_include_directories(engine PRIVATE 
     "${CMAKE_SOURCE_DIR}/include"
     "${CMAKE_SOURCE_DIR}/src"
-    "${IMGUI_DIR}"    
+    "${IMGUI_DIR_INCLUDE}"    
     "${OPENGL_INCLUDE_DIR}"
     "${GLFW_INCLUDE_DIR}"
 )

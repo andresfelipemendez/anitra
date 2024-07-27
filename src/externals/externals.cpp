@@ -2,34 +2,35 @@
 #include "../game.h"
 #include <stdio.h>
 
-
 #include <GLFW/glfw3.h>
 
 ImGuiUpdateFunc g_imguiUpdate = NULL;
 ImGuiRenderFunc g_imguiRender = NULL;
 
 
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
 static void glfw_error_callback(int error, const char* description)
 {
     fprintf(stderr, "GLFW Error %d: %s\n", error, description);
 }
-
 EXPORT int init_externals(game* g) {
     glfwSetErrorCallback(glfw_error_callback);
-    if (!glfwInit())
+
+    if (!glfwInit()) {
+        fprintf(stderr, "Failed to initialize GLFW\n");
         return -1;
-    
-    const char* glsl_version = "#version 130";
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+    }
+
+    const char* glsl_version = "#version 150";
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);            // 3.0+ only
 
     g->window = glfwCreateWindow(640, 480, "Hello World", NULL, NULL);
-    if (!g->window)
-    {
+    if (!g->window) {
+        fprintf(stderr, "Failed to create GLFW window\n");
         glfwTerminate();
         return -1;
     }
@@ -38,20 +39,51 @@ EXPORT int init_externals(game* g) {
     glfwSwapInterval(1);
 
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    ImGuiContext* ctx = ImGui::CreateContext();
+    if (!ctx) {
+        fprintf(stderr, "Failed to create ImGui context\n");
+        glfwDestroyWindow(g->window);
+        glfwTerminate();
+        return -1;
+    }
+
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 
     ImGui::StyleColorsDark();
-    
-    ImGui_ImplGlfw_InitForOpenGL(g->window, true);
-    ImGui_ImplOpenGL3_Init(glsl_version);
+    ImGui::SetCurrentContext(ctx);
+
+    ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+    if (main_viewport == nullptr || main_viewport->PlatformHandleRaw == nullptr) {
+        fprintf(stderr, "Main viewport or platform handle is null\n");
+        ImGui::DestroyContext(ctx);
+        glfwDestroyWindow(g->window);
+        glfwTerminate();
+        return -1;
+    }
+
+    if (!ImGui_ImplGlfw_InitForOpenGL(g->window, true)) {
+        fprintf(stderr, "Failed to initialize ImGui_ImplGlfw\n");
+        ImGui::DestroyContext(ctx);
+        glfwDestroyWindow(g->window);
+        glfwTerminate();
+        return -1;
+    }
+
+    if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
+        fprintf(stderr, "Failed to initialize ImGui_ImplOpenGL3\n");
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext(ctx);
+        glfwDestroyWindow(g->window);
+        glfwTerminate();
+        return -1;
+    }
 
     g->play = true;
-    g->ctx = ImGui::GetCurrentContext();
     return 1;
 }
+
 
 EXPORT void update_externals(game* g){
     
