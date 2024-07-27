@@ -3,6 +3,7 @@
 
 #include "../export.h"
 
+#define IMGUI_API __declspec( dllexport )
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
