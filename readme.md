@@ -1,10 +1,10 @@
 # Anitra Engine
 
-A data-oriented game engine built with C99 and GLFW.
+A data-oriented game engine built with C++ 20, Imgui and GLFW.
 
 ## Overview
 
-Anitra Engine is designed with performance and flexibility in mind, utilizing data-oriented design principles to create an efficient and scalable architecture. Built using C99 for broad compatibility and GLFW for cross-platform window management and input handling.
+Anitra Engine is designed with performance and flexibility in mind, utilizing data-oriented design principles to create an efficient and scalable architecture. Built using C++ 20 and GLFW for cross-platform window management and input handling.
 
 ## Features
 
@@ -54,46 +54,29 @@ this is at a high level the design that I have in mind for the engine
 ```mermaid
 graph TD;
     A[engine.exe] --> B[core.dll];
-    B --> |load once| C[thirdparty.dll];
-    B --> |hot reload| D[engine.lib];
-    C --> |allocates memory| A;
-
-    C --> E[ImGui];
-    C --> F[GLFW];
-    
-    D --> H[Hot-Reloadable Components];
-    
-    E --> |Uses| I[ImGui Rendering Functions];
-    F --> |Uses| J[GLFW Functions];
-    
-    H --> |Updates| I;
-    H --> |Updates| J;
+    B --> |load once| C[externals.dll];
+    B --> |hot reload| D[engine.dll];
+    D --> |allocates memory| B;
+    C --> |call hotrealoadable draw| D;
+    C --> |initilize| E[ImGui];
+    C --> |initilize| F[GLFW];
+    B --> |set hotreloadalbe draw frunction| C
 ```
 
 ```batch
 anitra-engine/
 ├── src/
 │   ├── core/
-│   │   ├── core.c
+│   │   ├── core.c++
 │   │   └── ...
 │   ├── engine/
-│   │   ├── engine.c
+│   │   ├── engine.c++
 │   │   └── ...
 │   └── main.c  // main entry point
-├── include/
-│   ├── core/
-│   │   ├── core.h
-│   │   └── ...
-│   ├── engine/
-│   │   ├── engine.h
-│   │   └── ...
 ├── lib/
 │   ├── glfw/
 │   ├── imgui/
 │   ├── stb/
-│   └── ...
-├── thirdparty/
-│   └── ...
 ├── build/
 │   └── ...
 ├── CMakeLists.txt
