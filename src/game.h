@@ -8,4 +8,5 @@ struct game {
     ImGuiMemAllocFunc alloc_func;
     ImGuiMemFreeFunc free_func;
     void* user_data;
+    void* engine_lib;
 };
