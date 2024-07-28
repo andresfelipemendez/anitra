@@ -13,6 +13,13 @@ void* loadlibrary(const char* libname) {
     return hLib;
 }
 
+void unloadlibrary(void* hLib) {
+    if (hLib) {
+        FreeLibrary((HMODULE)hLib);
+    }
+}
+
+
 void* getfunction(void* lib, const char* funcname) {
     void* func = GetProcAddress((HMODULE)lib, funcname);
     if (func == NULL) {
