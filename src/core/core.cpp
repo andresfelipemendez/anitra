@@ -59,6 +59,13 @@ EXPORT void init() {
     begin_game_loop(g);
 }
 
+void compile_dll() {
+    std::string cwd = getCurrentWorkingDirectory();
+    std::string command = "cd /d " + cwd + " && build_engine.bat";  // Use /d to change the drive as well
+    std::cout << "Compiling DLL with command: " << command << std::endl;
+    system(command.c_str());
+}
+
 void watch_src_directory() {
 
     std::cout << "inside watch_src_directory" << std::endl;
@@ -110,7 +117,7 @@ void watch_src_directory() {
                 offset += pNotify->NextEntryOffset;
             } while (pNotify->NextEntryOffset);
 
-           // compile_dll();
+            compile_dll();
 
             ResetEvent(overlapped.hEvent);
         }
