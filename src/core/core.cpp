@@ -10,6 +10,8 @@
 #include <iostream>
 #include <thread>
 
+#include <filesystem>
+
 std::atomic<bool> reloadFlag(false);
 
 void waitforreloadsignal(HANDLE hEvent) {
@@ -47,7 +49,12 @@ EXPORT void init() {
 	signalThread.detach();
 
     game g;
-    g.engine_lib = loadlibrary("engine");
+
+    std::string src = cwd + "\\build\\debug\\engine.dll";
+    std::string dest = cwd + "\\build\\debug\\engine_copy.dll";
+    std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
+
+    g.engine_lib = loadlibrary("engine_copy");
     
     assign_hotreloadable(
         (hotreloadable_imgui_draw_func)getfunction(g.engine_lib, "hotreloadable_imgui_draw")
@@ -64,6 +71,10 @@ void compile_dll() {
     std::string command = "cd /d " + cwd + " && build_engine.bat";  // Use /d to change the drive as well
     std::cout << "Compiling DLL with command: " << command << std::endl;
     system(command.c_str());
+}
+
+void copy_dll(const std::string& src, const std::string& dest) {
+    std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
 }
 
 void watch_src_directory() {
@@ -120,6 +131,7 @@ void watch_src_directory() {
             compile_dll();
 
             ResetEvent(overlapped.hEvent);
+            reloadFlag.store(true);
         }
     }
 
@@ -138,7 +150,14 @@ void begin_game_loop(game& g) {
 			reloadFlag.store(false);
 			printf("Reloading...\n");
             unloadlibrary(g.engine_lib);
-            g.engine_lib = loadlibrary("engine");
+
+
+            std::string cwd = getCurrentWorkingDirectory();
+            std::string src = cwd + "\\build\\Debug\\engine.dll";
+            std::string dest = cwd + "\\build\\Debug\\engine_copy.dll";
+            std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
+
+            g.engine_lib = loadlibrary("engine_copy");
 			assign_hotreloadable(
 				(hotreloadable_imgui_draw_func)getfunction(g.engine_lib, "hotreloadable_imgui_draw")
 			);
