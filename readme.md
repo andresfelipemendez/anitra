@@ -2,6 +2,9 @@
 
 A data-oriented game engine built with C++ 20, Imgui and GLFW.
 
+
+![Hot reloading demo](hotreloadingdemo.gif)
+
 ## Overview
 
 Anitra Engine is designed with performance and flexibility in mind, utilizing data-oriented design principles to create an efficient and scalable architecture. Built using C++ 20 and GLFW for cross-platform window management and input handling.
