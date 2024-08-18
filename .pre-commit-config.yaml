@@ -1,0 +1,20 @@
+repos:
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v15.0.6  # Specify the version of clang-format
+    hooks:
+      - id: clang-format
+        files: \.(c|cpp|h|hpp)$  # Apply to C/C++ header and source files
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0  # Specify the version of pre-commit hooks
+    hooks:
+      - id: trailing-whitespace  # Remove trailing whitespace
+      - id: end-of-file-fixer  # Ensure files end with a newline
+      - id: check-yaml  # Check the syntax of YAML files
+      # - id: check-added-large-files  # Prevent adding large files to the repository
+
+  - repo: https://github.com/psf/black
+    rev: 23.1.0  # You can specify the version of black
+    hooks:
+      - id: black
+        language_version: python3  # Format Python code with Black (if you're using Python)

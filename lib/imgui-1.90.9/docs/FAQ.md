@@ -232,7 +232,7 @@ for (int n = 0; n < 3; n++)
 ImGui::End();
 </pre>
 </td>
-</tr>    
+</tr>
 </table>
 
 A primer on labels and the ID Stack...
@@ -704,4 +704,3 @@ You may post screenshots or links in the [gallery threads](https://github.com/oc
 - If you have issues or if you need to hack into the library, even if you don't expect any support it is useful that you share your issues or sometimes incomplete PR.
 
 ##### [Return to Index](#index)
-

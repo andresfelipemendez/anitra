@@ -242,4 +242,3 @@ when an interactive drag is in progress.
 Note that some setup or GPU drivers are likely to be causing extra display lag depending on their settings.
 If you feel that dragging windows feels laggy and you are not sure what the cause is: try to build a simple
 drawing a flat 2D shape directly under the mouse cursor!
-

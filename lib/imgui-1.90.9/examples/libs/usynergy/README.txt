@@ -5,4 +5,3 @@ Copyright (c) 2012 Alex Evans
 
 This is a copy of the files once found at:
   https://github.com/symless/synergy-core/tree/790d108a56ada9caad8e56ff777d444485a69da9/src/micro
-

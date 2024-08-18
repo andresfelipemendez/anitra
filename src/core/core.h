@@ -5,7 +5,7 @@
 
 DECLARE_FUNC_VOID(init)
 
-void begin_game_loop(game& g);
-void begin_watch_src_directory(game& g);
+void begin_game_loop(game &g);
+void begin_watch_src_directory(game &g);
 
 #endif // CORE_H

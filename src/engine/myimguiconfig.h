@@ -1,3 +1,3 @@
 
 #pragma once
-#define IMGUI_API __declspec( dllimport )
+#define IMGUI_API __declspec(dllimport)
