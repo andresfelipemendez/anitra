@@ -13,4 +13,3 @@ imgui.natvis
     Visual Studio Debugger: describe Dear ImGui types for better display.
     With this, types like ImVector<> will be displayed nicely in the debugger.
     (read comments inside file for details)
-
