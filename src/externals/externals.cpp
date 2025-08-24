@@ -124,8 +124,6 @@ void check_gl_error(const char* operation) {
     }
 }
 
-
-
 int load_shader(game* g) {
     const char* vertex_source = 
         "#version 330 core\n"
@@ -134,10 +132,12 @@ int load_shader(game* g) {
         "out vec2 TexCoord;\n"
         "uniform vec2 translation;\n"                 // entity position
         "uniform mat4 projection;\n"                  // orthographic projection
+        "uniform vec2 sprite_offset;\n"
+        "uniform vec2 sprite_size;\n"
         "void main() {\n"
         "    vec2 worldPos = aPos + translation;\n"   // translate to entity position
         "    gl_Position = projection * vec4(worldPos, 0.0, 1.0);\n"
-        "    TexCoord = aTexCoord;\n"
+        "    TexCoord = sprite_offset + (aTexCoord * sprite_size);\n"
         "}\n";
     
     // Fragment shader with alpha support
@@ -146,11 +146,9 @@ int load_shader(game* g) {
         "in vec2 TexCoord;\n"
         "out vec4 FragColor;\n"
         "uniform sampler2D ourTexture;\n"
-        "uniform vec4 tintColor;\n"                   // optional color tinting
+        "uniform vec4 tintColor;\n"                   
         "void main() {\n"
         "    vec4 texColor = texture(ourTexture, TexCoord);\n"
-        "    if(texColor.a < 0.1)\n"                  // discard transparent pixels
-        "        discard;\n"
         "    FragColor = texColor * tintColor;\n"     // apply tint and keep alpha
         "}\n";
     
@@ -168,6 +166,9 @@ int load_shader(game* g) {
     g->projection_loc = glGetUniformLocation(shader_program, "projection");
     g->texture_loc = glGetUniformLocation(shader_program, "ourTexture");
     g->tint_loc = glGetUniformLocation(shader_program, "tintColor");  // FIXED: Was not being stored
+
+    g->sprite_offset_loc = glGetUniformLocation(g->sprite_shader, "sprite_offset");
+    g->sprite_size_loc = glGetUniformLocation(g->sprite_shader, "sprite_size");
 
     printf("Uniform locations:\n");
     printf("  translation: %d\n", g->translation_loc);
@@ -312,17 +313,7 @@ EXPORT int init_externals(game *g) {
 
   load_shader(g);
 
-  g->entities_size = 1;
-  g->entities = new entity[g->entities_size];
-
-  // Try both path formats
-  g->entities[0].texture = load_texture("assets/knights.png");
-  if (g->entities[0].texture == 0) {
-      g->entities[0].texture = load_texture("assets\\knights.png");
-  }
-  
-  g->entities[0].pos.x = 0.0f;  // Start at center
-  g->entities[0].pos.y = 0.0f;
+  g->textures.char_spritesheet = load_texture("assets\\char_spritesheet.png");
 
   g->play = true;
   g->ctx = ctx;

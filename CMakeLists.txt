@@ -142,3 +142,16 @@ target_link_libraries(engine PRIVATE
 )
 
 target_compile_definitions(engine PRIVATE GLFW_STATIC GLAD_GLAPI_IMPORT TRACY_ENABLE)
+
+# Fix hotreloading PDB file locking issue by using random PDB names (inspired by Handmade Hero)
+if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+  string(RANDOM LENGTH 8 ALPHABET "0123456789ABCDEF" RANDOM_PDB_SUFFIX_ENGINE)
+  set_target_properties(engine PROPERTIES 
+    LINK_FLAGS "/PDB:${CMAKE_CURRENT_BINARY_DIR}/Debug/engine_${RANDOM_PDB_SUFFIX_ENGINE}.pdb"
+  )
+  
+  string(RANDOM LENGTH 8 ALPHABET "0123456789ABCDEF" RANDOM_PDB_SUFFIX_EXTERNALS)
+  set_target_properties(externals PROPERTIES 
+    LINK_FLAGS "/PDB:${CMAKE_CURRENT_BINARY_DIR}/Debug/externals_${RANDOM_PDB_SUFFIX_EXTERNALS}.pdb"
+  )
+endif()
