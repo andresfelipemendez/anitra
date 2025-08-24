@@ -14,6 +14,14 @@
 #include <glad.h>
 namespace fs = std::filesystem;
 
+rect pixel_to_uv(pixel_rect p) {
+    rect uv;
+    uv.x = (float)p.x / (float)spritesheet_info.width;
+    uv.y = (float)p.y / (float)spritesheet_info.height;  
+    uv.w = (float)p.w / (float)spritesheet_info.width;
+    uv.h = (float)p.h / (float)spritesheet_info.height;
+    return uv;
+}
 
 void render_sprite(game* g, GLuint texture, float x, float y) {
     if (!g || g->sprite_shader == 0 || texture == 0) {
@@ -52,12 +60,10 @@ void render_sprite_region(game* g, GLuint texture, float x, float y, rect region
     
     glUseProgram(g->sprite_shader);
     
-    // Set position
     if (g->translation_loc != -1) {
         glUniform2f(g->translation_loc, x, y);
     }
     
-    // Bind texture
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture);
     
@@ -65,12 +71,10 @@ void render_sprite_region(game* g, GLuint texture, float x, float y, rect region
         glUniform1i(g->texture_loc, 0);
     }
     
-    // Set tint
     if (g->tint_loc != -1) {
         glUniform4f(g->tint_loc, 1.0f, 1.0f, 1.0f, 1.0f);
     }
     
-    // Pass sprite region to shader
     if (g->sprite_offset_loc != -1) {
         glUniform2f(g->sprite_offset_loc, region.x, region.y);
     }
@@ -79,20 +83,37 @@ void render_sprite_region(game* g, GLuint texture, float x, float y, rect region
         glUniform2f(g->sprite_size_loc, region.w, region.h);
     }
     
-    // Render the quad
     if (g->quad_VAO != 0) {
         glBindVertexArray(g->quad_VAO);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     }
 }
 
-rect pixel_to_uv(pixel_rect p) {
-    rect uv;
-    uv.x = (float)p.x / (float)spritesheet_info.width;
-    uv.y = (float)p.y / (float)spritesheet_info.height;  
-    uv.w = (float)p.w / (float)spritesheet_info.width;
-    uv.h = (float)p.h / (float)spritesheet_info.height;
-    return uv;
+void update_animation(game* g) {
+    if (!g) {
+        return;
+    }
+
+    for (int i = 0; i < scene.entity_count; i++) {
+        entity* e = &scene.entities[i];
+        animator* a = &e->current_animation;
+
+    //     if (!a->playing || a->animation.frame_count <= 1) {
+    //         continue;
+    //     }
+
+        e->current_animation.timer += g->dt;
+
+        while (a->timer >= a->animation.frame_time) {
+            a->timer -= a->animation.frame_time;
+            a->frame_index = (a->frame_index + 1) % a->animation.frame_count;
+
+            int current_frame_id = a->animation.frames[a->frame_index];
+            // if (current_frame_id >= 0 && current_frame_id < sizeof(char_sprites) / sizeof(char_sprites[0])) {
+            //     e->spr.coords = pixel_to_uv(char_sprites[current_frame_id]);
+            // }
+        }
+    }
 }
 
 void render_entities(game* g) {
@@ -106,18 +127,17 @@ void render_entities(game* g) {
         }
         
         // Render each entity using sprite regions
-        for (int i = 0; i < scene_config.entity_count; i++) {
-            float x = scene_config.entity_data[i].x;
-            float y = scene_config.entity_data[i].y;
-            int sprite_id = scene_config.entity_data[i].sprite_id;
+        for (int i = 0; i < scene.entity_count; i++) {
+            const entity* e = &scene.entities[i];
+            float x = e->pos.x;
+            float y = e->pos.y;
+            int sprite_id = e->current_animation.frame_index;
             
             if (g->textures.char_spritesheet != 0) {
-                // Get the sprite region from scene data
-                if (sprite_id >= 0 && sprite_id < 4) {  // Bounds check
+                if (sprite_id >= 0 && sprite_id < 5) {
                     pixel_rect pixel_region = char_sprites[sprite_id];
                     rect uv_region = pixel_to_uv(pixel_region);
                    
-                    // Use the new sprite region rendering function
                     render_sprite_region(g, g->textures.char_spritesheet, x, y, uv_region);
                 } else {
                     printf("Invalid sprite_id: %d for entity %d\n", sprite_id, i);
@@ -135,7 +155,9 @@ void render_entities(game* g) {
 EXPORT void hotreloadable_imgui_draw(game *g) {
     if (!g || !g->ctx) return;
     
+    update_animation(g);
     render_entities(g);
+
     
     // ImGui setup
     ImGui::SetCurrentContext(g->ctx);

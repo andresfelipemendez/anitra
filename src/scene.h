@@ -12,25 +12,34 @@ static const struct {
 
 static const pixel_rect char_sprites[] = {
     {16,  16,  16, 16},
-    {16, 0,  16, 16},
-    {32, 0,  16, 16},
-    {0,  16, 16, 16},
-    {16, 16, 16, 16},
+    {32,  16,  16, 16},
+    {48,  16,  16, 16},
+    {64,  16,  16, 16},
+    {80,  16,  16, 16},
 };
 
-static const struct {
+static const animation_clip player_walk_down = {
+    .frames = {0,1,2,3,4},
+    .frame_count = 5,
+    .frame_time = 0.16f,
+};
+
+static struct {
     int entity_count;
-    struct {
-        float x, y;      
-        int sprite_id;   
-    } entity_data[8];
-} scene_config = {
-    .entity_count = 3,
-    .entity_data = {
-        {.x = 0.0f,   .y = 0.0f,   .sprite_id = 0},
-        
+    entity entities[8];
+} scene = {
+    .entity_count = 1,
+    .entities = {
+        {
+            .pos = {0.0f, 0.0f},
+            .current_animation = {
+                .animation = player_walk_down,
+
+            }
+        },
     }
 };
+
 
 static const int level[][6] = {
     {0,0,0,0,0,0},
