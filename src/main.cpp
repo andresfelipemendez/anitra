@@ -17,7 +17,6 @@ int main() {
     return 1;
   }
 
-  // Call the init function from core.c
   init();
 
   return 0;

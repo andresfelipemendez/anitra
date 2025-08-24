@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.12)
 
 project(AnitraEngine)
 
-# Set C99 standard
+# Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -19,12 +19,16 @@ elseif(UNIX)
 endif()
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})
+set_target_properties(${PROJECT_NAME} PROPERTIES
+  # RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+  VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
 
 find_package(OpenGL REQUIRED)
 
 set(GLFW_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/lib/glfw/include")
 set(GLFW_LIB_PATH "${CMAKE_SOURCE_DIR}/lib/glfw/lib/glfw3.lib")
-
+set(GLAD_DIR "${CMAKE_SOURCE_DIR}/lib/glad") 
 set(IMGUI_DIR "${CMAKE_SOURCE_DIR}/lib/imgui-1.90.9")
 
 target_include_directories(
@@ -48,7 +52,8 @@ set(EXTERNALS_SRC_FILES
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    ${GLAD_DIR}/glad.c) # Keep glad.c here
 
 add_library(externals SHARED ${EXTERNALS_SRC_FILES})
 
@@ -61,6 +66,7 @@ target_include_directories(
           "${CMAKE_SOURCE_DIR}/include"
           "${IMGUI_DIR}"
           "${IMGUI_DIR}/backends"
+          "${GLAD_DIR}" # Keep GLAD include directory here
           "${OPENGL_INCLUDE_DIR}"
           "${GLFW_INCLUDE_DIR}")
 
@@ -70,7 +76,7 @@ set(CORE_SRC_FILES src/core/core.cpp)
 if(WIN32)
   list(APPEND CORE_SRC_FILES src/core/loadlibrary_windows.cpp)
 elseif(UNIX)
-  list(APPED CORE_SRC_FILES src/core/loadlibrary_linux.cpp)
+  list(APPEND CORE_SRC_FILES src/core/loadlibrary_linux.cpp)
 endif()
 
 add_library(core SHARED ${CORE_SRC_FILES})
@@ -84,13 +90,14 @@ target_include_directories(
           "${CMAKE_SOURCE_DIR}/include"
           "${IMGUI_DIR}"
           "${IMGUI_DIR}/backends"
+          "${GLAD_DIR}" # Add GLAD include directory here
           "${OPENGL_INCLUDE_DIR}"
           "${GLFW_INCLUDE_DIR}")
 
 target_link_libraries(core PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIB_PATH}
                                    externals)
 
-set(ENGINE_SRC_FILES src/engine/engine.cpp)
+set(ENGINE_SRC_FILES src/engine/engine.cpp ${GLAD_DIR}/glad.c) # Remove glad.c from here
 
 add_library(engine SHARED ${ENGINE_SRC_FILES})
 
@@ -103,8 +110,10 @@ target_include_directories(
           "${CMAKE_SOURCE_DIR}/include"
           "${IMGUI_DIR}"
           "${IMGUI_DIR}/backends"
+          "${GLAD_DIR}" # Keep GLAD include directory here
           "${OPENGL_INCLUDE_DIR}"
-          "${GLFW_INCLUDE_DIR}")
+          "${GLFW_INCLUDE_DIR}"
+          )
 
 target_link_libraries(engine PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIB_PATH}
                                      externals)

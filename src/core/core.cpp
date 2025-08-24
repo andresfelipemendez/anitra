@@ -15,7 +15,6 @@
 std::atomic<bool> reloadFlag(false);
 
 void waitforreloadsignal(HANDLE hEvent) {
-
   std::cout << "Current wating for reload signal" << std::endl;
   while (true) {
     DWORD dwWaitResult = WaitForSingleObject(hEvent, INFINITE);
@@ -47,11 +46,9 @@ EXPORT void init() {
   signalThread.detach();
 
   game g;
-
   std::string src = cwd + "\\build\\debug\\engine.dll";
   std::string dest = cwd + "\\build\\debug\\engine_copy.dll";
-  std::filesystem::copy_file(src, dest,
-                             std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
 
   g.engine_lib = loadlibrary("engine_copy");
 
@@ -59,7 +56,6 @@ EXPORT void init() {
       g.engine_lib, "hotreloadable_imgui_draw"));
 
   init_externals(&g);
-
   begin_watch_src_directory(g);
   begin_game_loop(g);
 }
@@ -74,12 +70,10 @@ void compile_dll() {
 }
 
 void copy_dll(const std::string &src, const std::string &dest) {
-  std::filesystem::copy_file(src, dest,
-                             std::filesystem::copy_options::overwrite_existing);
+  std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
 }
 
 void watch_src_directory() {
-
   std::cout << "inside watch_src_directory" << std::endl;
   HANDLE hDir = CreateFile(
       "src", FILE_LIST_DIRECTORY,
@@ -146,12 +140,12 @@ void begin_game_loop(game &g) {
       std::string cwd = getCurrentWorkingDirectory();
       std::string src = cwd + "\\build\\Debug\\engine.dll";
       std::string dest = cwd + "\\build\\Debug\\engine_copy.dll";
-      std::filesystem::copy_file(
-          src, dest, std::filesystem::copy_options::overwrite_existing);
+      std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
 
       g.engine_lib = loadlibrary("engine_copy");
-      assign_hotreloadable((hotreloadable_imgui_draw_func)getfunction(
-          g.engine_lib, "hotreloadable_imgui_draw"));
+      assign_hotreloadable(
+          (hotreloadable_imgui_draw_func)getfunction(g.engine_lib, "hotreloadable_imgui_draw")
+      );
     }
     update_externals(&g);
   }
