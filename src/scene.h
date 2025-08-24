@@ -11,7 +11,7 @@ static const struct {
 };
 
 static const pixel_rect char_sprites[] = {
-    {0,  0,  16, 16},
+    {16,  16,  16, 16},
     {16, 0,  16, 16},
     {32, 0,  16, 16},
     {0,  16, 16, 16},
