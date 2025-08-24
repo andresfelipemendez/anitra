@@ -86,6 +86,15 @@ void render_sprite_region(game* g, GLuint texture, float x, float y, rect region
     }
 }
 
+rect pixel_to_uv(pixel_rect p) {
+    rect uv;
+    uv.x = (float)p.x / (float)spritesheet_info.width;
+    uv.y = (float)p.y / (float)spritesheet_info.height;  
+    uv.w = (float)p.w / (float)spritesheet_info.width;
+    uv.h = (float)p.h / (float)spritesheet_info.height;
+    return uv;
+}
+
 void render_entities(game* g) {
     if (!g) return;
         
@@ -105,15 +114,11 @@ void render_entities(game* g) {
             if (g->textures.char_spritesheet != 0) {
                 // Get the sprite region from scene data
                 if (sprite_id >= 0 && sprite_id < 4) {  // Bounds check
-                    pixel_rect s = char_sprites[sprite_id];
-                    rect sprite_region = {
-                        .x = (float)s.x,
-                        .y = (float)s.y,
-                        .w = (float)s.w,
-                        .h = (float)s.h,
-                    };
+                    pixel_rect pixel_region = char_sprites[sprite_id];
+                    rect uv_region = pixel_to_uv(pixel_region);
+                   
                     // Use the new sprite region rendering function
-                    render_sprite_region(g, g->textures.char_spritesheet, x, y, sprite_region);
+                    render_sprite_region(g, g->textures.char_spritesheet, x, y, uv_region);
                 } else {
                     printf("Invalid sprite_id: %d for entity %d\n", sprite_id, i);
                     // Fallback to full texture rendering
