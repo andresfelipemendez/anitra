@@ -119,6 +119,6 @@ target_include_directories(
           )
 
 target_link_libraries(engine PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIB_PATH}
-                                     externals)
+                                     externals glad_loader)
 
 target_compile_definitions(engine PRIVATE GLFW_STATIC GLAD_GLAPI_IMPORT)
