@@ -15,11 +15,9 @@ if not exist "%BUILD_DIR%" (
 echo Building glad_loader dependency...
 cmake --build "%BUILD_DIR%" --target glad_loader --config Debug
 
-:: Build the engine target (delete any locked PDB files first)
-echo Building the engine target...
-echo Cleaning any potentially locked PDB files...
-del "%BUILD_DIR%\Debug\engine*.pdb" >NUL 2>&1
-cmake --build "%BUILD_DIR%" --target engine --config Debug
+:: Build the externals target
+echo Building the externals target...
+cmake --build "%BUILD_DIR%" --target externals --config Debug
 
 :: Check if the build was successful
 if %ERRORLEVEL% neq 0 (
@@ -28,6 +26,6 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo Build completed successfully.
-echo Engine DLL can be found in %BUILD_DIR%\Debug\
+echo Externals DLL can be found in %BUILD_DIR%\Debug\
 
 endlocal

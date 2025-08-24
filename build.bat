@@ -11,8 +11,10 @@ if not exist "%BUILD_DIR%" (
     exit /b 1
 )
 
-:: Build the project
+:: Build the project (clean any PDB files that might be locked)
 echo Building the project...
+echo Cleaning any potentially locked PDB files...
+del "%BUILD_DIR%\Debug\engine*.pdb" >NUL 2>&1
 cmake --build "%BUILD_DIR%" --config Debug
 
 :: Check if the build was successful

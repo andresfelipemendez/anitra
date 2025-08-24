@@ -10,9 +10,27 @@ typedef struct {
     float x, y;
 } vec2;
 
+typedef struct {
+    int x, y, w, h;
+} pixel_rect;
+
+typedef struct {
+    float x, y, w, h;  
+} rect;
+
+typedef struct {
+    GLuint texture;    
+    rect coords;
+} sprite;
+
+typedef struct {
+    GLuint char_spritesheet;
+} textures;
+
 typedef struct entity {
     vec2 pos;
     GLuint texture;
+    sprite spr;  
 } entity;
 
 struct game;
@@ -38,19 +56,15 @@ struct game {
   GLuint projection_loc;
   GLuint texture_loc;
   GLuint tint_loc;
+  GLuint sprite_offset_loc;
+  GLuint sprite_size_loc;
   float ortho_projection[16];
-  entity* entities;
+  entity entities[8];
   size_t entities_size;
-
+  textures textures;
   render_entities_func render_entities;
   render_sprite_func render_sprite;
   load_texture_func load_texture;
-};
-
-int level[][6] = {
-	{0,0,0,0,0,0},
-	{0,1,1,1,0,0},
-	{0,1,0,1,0,0},
 };
 
 #endif // !GAME_H
