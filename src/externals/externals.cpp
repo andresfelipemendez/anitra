@@ -124,74 +124,7 @@ void check_gl_error(const char* operation) {
     }
 }
 
-void externals_render_sprite(game* g, GLuint texture, float x, float y) {
-    if (!g || g->sprite_shader == 0 || texture == 0) {
-        printf("Render sprite failed: g=%p, shader=%u, texture=%u\n", g, g ? g->sprite_shader : 0, texture);
-        return;
-    }
-    
-    glUseProgram(g->sprite_shader);
-    check_gl_error("glUseProgram");
-    
-    // Set translation uniform
-    if (g->translation_loc != -1) {
-        glUniform2f(g->translation_loc, x, y);
-        check_gl_error("glUniform2f translation");
-    }
-    
-    // Bind texture
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    check_gl_error("glBindTexture");
-    
-    if (g->texture_loc != -1) {
-        glUniform1i(g->texture_loc, 0);
-        check_gl_error("glUniform1i texture");
-    }
-    
-    // Set tint color
-    if (g->tint_loc != -1) {
-        glUniform4f(g->tint_loc, 1.0f, 1.0f, 1.0f, 1.0f);
-        check_gl_error("glUniform4f tint");
-    }
-    
-    // Draw quad
-    if (g->quad_VAO != 0) {
-        glBindVertexArray(g->quad_VAO);
-        check_gl_error("glBindVertexArray");
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-        check_gl_error("glDrawElements");
-    }
-}
 
-void externals_render_entities(game* g) {
-    if (!g) return;
-        
-    // Set up shader and projection for rendering
-    if (g->sprite_shader != 0) {
-        glUseProgram(g->sprite_shader);
-        check_gl_error("glUseProgram entities");
-        
-        if (g->projection_loc != -1) {
-            glUniformMatrix4fv(g->projection_loc, 1, GL_FALSE, g->ortho_projection);
-            check_gl_error("glUniformMatrix4fv projection");
-            
-        }
-        
-        // Render all entities
-        if (g->entities && g->entities_size > 0) {
-            for (size_t i = 0; i < g->entities_size; i++) {
-                if (g->entities[i].texture != 0) {
-                    
-                    externals_render_sprite(g, g->entities[i].texture, 
-                                          g->entities[i].pos.x, g->entities[i].pos.y);
-                }
-            }
-        }
-    } else {
-        printf("No sprite shader available\n");
-    }
-}
 
 int load_shader(game* g) {
     const char* vertex_source = 
@@ -391,11 +324,6 @@ EXPORT int init_externals(game *g) {
   g->entities[0].pos.x = 0.0f;  // Start at center
   g->entities[0].pos.y = 0.0f;
 
-  // Set up function pointers
-  g->render_entities = externals_render_entities;
-  g->render_sprite = externals_render_sprite;
-  g->load_texture = externals_load_texture;
-
   g->play = true;
   g->ctx = ctx;
   ImGui::GetAllocatorFunctions(&g->alloc_func, &g->free_func, &g->user_data);
@@ -416,9 +344,7 @@ EXPORT void update_externals(game *g) {
   glClear(GL_COLOR_BUFFER_BIT);
 
   // Render sprites before ImGui
-  if (g->render_entities) {
-      g->render_entities(g);
-  }
+  
         
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplGlfw_NewFrame();
@@ -440,7 +366,6 @@ EXPORT void update_externals(game *g) {
 
 EXPORT void end_externals(game *g) {
     if (g->entities) {
-        // Clean up textures
         for (size_t i = 0; i < g->entities_size; i++) {
             if (g->entities[i].texture != 0) {
                 glDeleteTextures(1, &g->entities[i].texture);

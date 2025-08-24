@@ -10,11 +10,66 @@
 #include <filesystem>
 #include <iostream>
 
+#include <glad.h>
 namespace fs = std::filesystem;
+
+
+void render_sprite(game* g, GLuint texture, float x, float y) {
+    if (!g || g->sprite_shader == 0 || texture == 0) {
+        printf("Render sprite failed: g=%p, shader=%u, texture=%u\n", g, g ? g->sprite_shader : 0, texture);
+        return;
+    }
+    
+    glUseProgram(g->sprite_shader);
+    
+    if (g->translation_loc != -1) {
+        glUniform2f(g->translation_loc, x, y);
+    }
+    
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    
+    if (g->texture_loc != -1) {
+        glUniform1i(g->texture_loc, 0);
+    }
+    
+    if (g->tint_loc != -1) {
+        glUniform4f(g->tint_loc, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+    
+    if (g->quad_VAO != 0) {
+        glBindVertexArray(g->quad_VAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    }
+}
+
+void render_entities(game* g) {
+    if (!g) return;
+        
+    if (g->sprite_shader != 0) {
+        glUseProgram(g->sprite_shader);
+        
+        if (g->projection_loc != -1) {
+            glUniformMatrix4fv(g->projection_loc, 1, GL_FALSE, g->ortho_projection);
+        }
+        
+        if (g->entities && g->entities_size > 0) {
+            for (size_t i = 0; i < g->entities_size; i++) {
+                if (g->entities[i].texture != 0) {
+                    render_sprite(g, g->entities[i].texture, g->entities[i].pos.x, g->entities[i].pos.y);
+                }
+            }
+        }
+    } else {
+        printf("No sprite shader available\n");
+    }
+}
 
 EXPORT void hotreloadable_imgui_draw(game *g) {
     if (!g || !g->ctx) return;
-
+    
+    render_entities(g);
+    
     // ImGui setup
     ImGui::SetCurrentContext(g->ctx);
     ImGui::SetAllocatorFunctions(g->alloc_func, g->free_func, g->user_data);
