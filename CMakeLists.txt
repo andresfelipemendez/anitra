@@ -2,16 +2,13 @@ cmake_minimum_required(VERSION 3.12)
 
 project(AnitraEngine)
 
-# Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(include)
 
-# Source files for the main executable
 set(SRC_FILES src/main.cpp)
 
-# Add platform-specific source files
 if(WIN32)
   list(APPEND SRC_FILES src/core/loadlibrary_windows.cpp)
 elseif(UNIX)
@@ -20,7 +17,6 @@ endif()
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 set_target_properties(${PROJECT_NAME} PROPERTIES
-  # RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
@@ -44,6 +40,12 @@ endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE GLFW_STATIC)
 
+# GLAD library
+add_library(glad_loader SHARED ${GLAD_DIR}/glad.c)
+target_compile_definitions(glad_loader PUBLIC GLAD_GLAPI_EXPORT)
+target_include_directories(glad_loader PUBLIC ${GLAD_DIR})
+target_link_libraries(glad_loader PUBLIC ${OPENGL_LIBRARIES} ${GLFW_LIB_PATH})
+
 set(EXTERNALS_SRC_FILES
     src/externals/externals.cpp
     ${IMGUI_DIR}/imgui.cpp
@@ -52,25 +54,25 @@ set(EXTERNALS_SRC_FILES
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
-    ${GLAD_DIR}/glad.c) # Keep glad.c here
+    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
 
 add_library(externals SHARED ${EXTERNALS_SRC_FILES})
+set_target_properties(externals PROPERTIES CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 target_include_directories(
   externals
-  PRIVATE "${CMAKE_SOURCE_DIR}/src/engine"
+  PUBLIC "${CMAKE_SOURCE_DIR}/src/engine"
           "${CMAKE_SOURCE_DIR}/src/core"
           "${CMAKE_SOURCE_DIR}/src/externals"
           "${CMAKE_SOURCE_DIR}/src"
           "${CMAKE_SOURCE_DIR}/include"
           "${IMGUI_DIR}"
           "${IMGUI_DIR}/backends"
-          "${GLAD_DIR}" # Keep GLAD include directory here
+          "${GLAD_DIR}"
           "${OPENGL_INCLUDE_DIR}"
           "${GLFW_INCLUDE_DIR}")
-
-target_link_libraries(externals PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIB_PATH})
+target_compile_definitions(externals PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLAD GLAD_GLAPI_IMPORT)
+target_link_libraries(externals PRIVATE glad_loader ${OPENGL_LIBRARIES} ${GLFW_LIB_PATH})
 
 set(CORE_SRC_FILES src/core/core.cpp)
 if(WIN32)
@@ -80,6 +82,7 @@ elseif(UNIX)
 endif()
 
 add_library(core SHARED ${CORE_SRC_FILES})
+set_target_properties(core PROPERTIES CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 target_include_directories(
   core
@@ -97,7 +100,7 @@ target_include_directories(
 target_link_libraries(core PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIB_PATH}
                                    externals)
 
-set(ENGINE_SRC_FILES src/engine/engine.cpp ${GLAD_DIR}/glad.c) # Remove glad.c from here
+set(ENGINE_SRC_FILES src/engine/engine.cpp)
 
 add_library(engine SHARED ${ENGINE_SRC_FILES})
 
@@ -118,4 +121,4 @@ target_include_directories(
 target_link_libraries(engine PRIVATE ${OPENGL_LIBRARIES} ${GLFW_LIB_PATH}
                                      externals)
 
-target_compile_definitions(engine PRIVATE GLFW_STATIC)
+target_compile_definitions(engine PRIVATE GLFW_STATIC GLAD_GLAPI_IMPORT)
