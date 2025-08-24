@@ -135,7 +135,7 @@ int load_shader(game* g) {
         "uniform vec2 sprite_offset;\n"
         "uniform vec2 sprite_size;\n"
         "void main() {\n"
-        "    vec2 worldPos = aPos + translation;\n"   // translate to entity position
+        "    vec2 worldPos = aPos + translation;\n" 
         "    gl_Position = projection * vec4(worldPos, 0.0, 1.0);\n"
         "    TexCoord = sprite_offset + (aTexCoord * sprite_size);\n"
         "}\n";
@@ -149,7 +149,7 @@ int load_shader(game* g) {
         "uniform vec4 tintColor;\n"                   
         "void main() {\n"
         "    vec4 texColor = texture(ourTexture, TexCoord);\n"
-        "    FragColor = texColor * tintColor;\n"     // apply tint and keep alpha
+        "    FragColor = texColor * tintColor;\n"    
         "}\n";
     
     GLuint shader_program = create_shader_program(vertex_source, fragment_source);
@@ -161,11 +161,10 @@ int load_shader(game* g) {
     printf("Shader program created successfully: ID = %u\n", shader_program);
     g->sprite_shader = shader_program;
 
-    // FIXED: Store tint_loc properly in game struct
     g->translation_loc = glGetUniformLocation(shader_program, "translation");
     g->projection_loc = glGetUniformLocation(shader_program, "projection");
     g->texture_loc = glGetUniformLocation(shader_program, "ourTexture");
-    g->tint_loc = glGetUniformLocation(shader_program, "tintColor");  // FIXED: Was not being stored
+    g->tint_loc = glGetUniformLocation(shader_program, "tintColor");  
 
     g->sprite_offset_loc = glGetUniformLocation(g->sprite_shader, "sprite_offset");
     g->sprite_size_loc = glGetUniformLocation(g->sprite_shader, "sprite_size");
@@ -201,11 +200,9 @@ int load_shader(game* g) {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    // Position attribute
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-    // Texture coordinate attribute
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
@@ -217,7 +214,6 @@ int load_shader(game* g) {
     
     printf("Screen dimensions: %dx%d\n", display_w, display_h);
     
-    // FIXED: Correct orthographic projection matrix
     float temp_ortho[16] = {
         2.0f / screen_width,  0.0f,                  0.0f,   0.0f,
         0.0f,                 2.0f / screen_height,  0.0f,   0.0f,
@@ -225,7 +221,6 @@ int load_shader(game* g) {
         0.0f,                 0.0f,                  0.0f,   1.0f
     };
     
-    // Copy to the game struct's array
     for (int i = 0; i < 16; i++) {
         g->ortho_projection[i] = temp_ortho[i];
     }
@@ -233,12 +228,11 @@ int load_shader(game* g) {
     g->quad_VAO = VAO;
     printf("Quad VAO created: %u\n", VAO);
     
-    // Enable alpha blending
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     printf("Shader setup completed successfully\n");
-    return 1;  // FIXED: Return 1 not true
+    return 1; 
 }
 
 GLuint load_texture(const char* filepath) {
@@ -259,7 +253,6 @@ EXPORT int init_externals(game *g) {
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
-  // FIXED: Make window bigger for better visibility
   g->window = glfwCreateWindow(800, 600, "Sprite Rendering Test", NULL, NULL);
   if (!g->window) {
     fprintf(stderr, "Failed to create GLFW window\n");
@@ -314,16 +307,23 @@ EXPORT int init_externals(game *g) {
   load_shader(g);
 
   g->textures.char_spritesheet = load_texture("assets\\char_spritesheet.png");
-
+  g->_t_prev = glfwGetTime();
+  g->dt = 0.0f;
   g->play = true;
   g->ctx = ctx;
   ImGui::GetAllocatorFunctions(&g->alloc_func, &g->free_func, &g->user_data);
-
-  printf("Initialization complete - texture ID: %u\n", g->entities[0].texture);
   return 1;
 }
 
 EXPORT void update_externals(game *g) {
+  double now = glfwGetTime();
+  double dtd = now - g->_t_prev;
+  g->_t_prev = now;
+  // clamp to avoid huge steps after pauses
+  if (dtd < 0.0) dtd = 0.0;
+  if (dtd > 0.1) dtd = 0.1; // max 100 ms
+  g->dt = (float)dtd;
+
   int display_w, display_h;
   glfwGetFramebufferSize(g->window, &display_w, &display_h);
   glViewport(0, 0, display_w, display_h);
@@ -334,9 +334,6 @@ EXPORT void update_externals(game *g) {
                clear_color.z * clear_color.w, clear_color.w);
   glClear(GL_COLOR_BUFFER_BIT);
 
-  // Render sprites before ImGui
-  
-        
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
@@ -356,14 +353,7 @@ EXPORT void update_externals(game *g) {
 }
 
 EXPORT void end_externals(game *g) {
-    if (g->entities) {
-        for (size_t i = 0; i < g->entities_size; i++) {
-            if (g->entities[i].texture != 0) {
-                glDeleteTextures(1, &g->entities[i].texture);
-            }
-        }
-        delete[] g->entities;
-    }
+
 }
 
 EXPORT void assign_hotreloadable(hotreloadable_imgui_draw_func func) {

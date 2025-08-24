@@ -27,10 +27,24 @@ typedef struct {
     GLuint char_spritesheet;
 } textures;
 
+typedef struct {
+    int frames[10];
+    int frame_count;
+    float frame_time;
+} animation_clip;
+
+struct animator {
+    volatile animation_clip animation; 
+    volatile float timer = 0.0f;
+    volatile int   frame_index = 0;
+    volatile bool playing = true;
+};
+
 typedef struct entity {
     vec2 pos;
     GLuint texture;
-    sprite spr;  
+    sprite spr;
+    animator current_animation;
 } entity;
 
 struct game;
@@ -59,6 +73,9 @@ struct game {
   GLuint sprite_offset_loc;
   GLuint sprite_size_loc;
   float ortho_projection[16];
+  float dt;  
+  double _t_prev;
+
   entity entities[8];
   size_t entities_size;
   textures textures;
