@@ -211,7 +211,6 @@ void update_input(game* g) {
     entity* player = &scene.entities[0];
     const float move_speed = 200.0f;
     
-    // Use the normalized input from the game struct
     player->pos.x += g->input.horizontal * move_speed * g->dt;
     player->pos.y += g->input.vertical * move_speed * g->dt;
 }
