@@ -18,6 +18,26 @@ static const pixel_rect char_sprites[] = {
     {80,  16,  16, 16},
 };
 
+struct sprite_sheet {
+    int width;     
+    int height;
+    pixel_rect sprites[];
+};
+
+sprite_sheet tiles {
+    .width = 192,
+    .height = 208,
+    .sprites = {
+        {112,  144,    16, 16},
+        {112,    176,  16, 16},
+    }
+};
+
+static const pixel_rect tiles_sprites[] = {
+    {16,  0,  16, 16},
+    {0,    176,  16, 16},
+};
+
 static const animation_clip player_walk_down = {
     .frames = {0,1,2,3,4},
     .frame_count = 5,

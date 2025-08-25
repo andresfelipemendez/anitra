@@ -25,6 +25,7 @@ typedef struct {
 
 typedef struct {
     GLuint char_spritesheet;
+    GLuint tiles_spritesheet;
 } textures;
 
 typedef struct {

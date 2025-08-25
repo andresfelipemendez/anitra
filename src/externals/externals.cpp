@@ -175,7 +175,6 @@ int load_shader(game* g) {
     printf("  ourTexture: %d\n", g->texture_loc);
     printf("  tintColor: %d\n", g->tint_loc);
 
-    // FIXED: Make sprite bigger so it's visible (was 10x10, now 32x32)
     float vertices[] = {
         -32.0f,  32.0f,  0.0f, 0.0f,  // top left
          32.0f,  32.0f,  1.0f, 0.0f,  // top right
@@ -307,6 +306,8 @@ EXPORT int init_externals(game *g) {
   load_shader(g);
 
   g->textures.char_spritesheet = load_texture("assets\\char_spritesheet.png");
+  g->textures.tiles_spritesheet = load_texture("assets\\Dungeon_Tileset.png");
+  
   g->_t_prev = glfwGetTime();
   g->dt = 0.0f;
   g->play = true;
