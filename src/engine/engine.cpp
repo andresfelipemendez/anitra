@@ -205,10 +205,20 @@ void render_entities(game* g) {
         printf("No sprite shader available\n");
     }
 }
+void update_input(game* g) {
+    if (!g || scene.entity_count == 0) return;
+    
+    entity* player = &scene.entities[0];
+    const float move_speed = 200.0f;
+    
+    // Use the normalized input from the game struct
+    player->pos.x += g->input.horizontal * move_speed * g->dt;
+    player->pos.y += g->input.vertical * move_speed * g->dt;
+}
 
 EXPORT void hotreloadable_imgui_draw(game *g) {
     if (!g || !g->ctx) return;
-    
+    update_input(g);
     update_animation(g);
     render_tiles(g);
     render_entities(g);
