@@ -14,7 +14,17 @@
 #include <glad.h>
 namespace fs = std::filesystem;
 
-rect pixel_to_uv(pixel_rect p) {
+
+rect pixel_to_uv(pixel_rect p, sprite_sheet& s) {
+    rect uv;
+    uv.x = (float)p.x / (float)s.width;
+    uv.y = (float)p.y / (float)s.height;  
+    uv.w = (float)p.w / (float)s.width;
+    uv.h = (float)p.h / (float)s.height;
+    return uv;
+}
+
+rect pixel_to_uv(pixel_rect p ) {
     rect uv;
     uv.x = (float)p.x / (float)spritesheet_info.width;
     uv.y = (float)p.y / (float)spritesheet_info.height;  
@@ -97,11 +107,6 @@ void update_animation(game* g) {
     for (int i = 0; i < scene.entity_count; i++) {
         entity* e = &scene.entities[i];
         animator* a = &e->current_animation;
-
-    //     if (!a->playing || a->animation.frame_count <= 1) {
-    //         continue;
-    //     }
-
         e->current_animation.timer += g->dt;
 
         while (a->timer >= a->animation.frame_time) {
@@ -109,9 +114,58 @@ void update_animation(game* g) {
             a->frame_index = (a->frame_index + 1) % a->animation.frame_count;
 
             int current_frame_id = a->animation.frames[a->frame_index];
-            // if (current_frame_id >= 0 && current_frame_id < sizeof(char_sprites) / sizeof(char_sprites[0])) {
-            //     e->spr.coords = pixel_to_uv(char_sprites[current_frame_id]);
-            // }
+        }
+    }
+}
+
+void render_tile(game* g, int tile, float x, float y) {
+     glUseProgram(g->sprite_shader);
+    
+    if (g->translation_loc != -1) {
+        glUniform2f(g->translation_loc, x, y);
+    }
+    
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g->textures.tiles_spritesheet);
+    
+    if (g->texture_loc != -1) {
+        glUniform1i(g->texture_loc, 0);
+    }
+    
+    if (g->quad_VAO != 0) {
+        glBindVertexArray(g->quad_VAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    }
+
+    if (g->translation_loc != -1) {
+        glUniform2f(g->translation_loc, x, y);
+    }
+        
+    pixel_rect pixel_region = tiles.sprites[tile];
+    rect region = pixel_to_uv(pixel_region, tiles);
+    if (g->sprite_offset_loc != -1) {
+        glUniform2f(g->sprite_offset_loc, region.x, region.y);
+    }
+    
+    if (g->sprite_size_loc != -1) {
+        glUniform2f(g->sprite_size_loc, region.w, region.h);
+    }
+    
+    if (g->quad_VAO != 0) {
+        glBindVertexArray(g->quad_VAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    }
+}
+
+void render_tiles(game* g) {
+    int rows = sizeof(level) / sizeof(level[0]);     // Number of rows (y)
+    int cols = sizeof(level[0]) / sizeof(level[0][0]); // Number of columns (x)
+
+    for (int y = 0; y < rows; y++) {
+        for (int x = 0; x < cols; x++) {
+            // Read from the opposite end of the array
+            int tile = level[rows - 1 - y][cols - 1 - x];
+            render_tile(g, tile, x * 64, y * 64);
         }
     }
 }
@@ -134,7 +188,7 @@ void render_entities(game* g) {
             int sprite_id = e->current_animation.frame_index;
             
             if (g->textures.char_spritesheet != 0) {
-                if (sprite_id >= 0 && sprite_id < 5) {
+                if (sprite_id >= 0 && sprite_id < 5 ) {
                     pixel_rect pixel_region = char_sprites[sprite_id];
                     rect uv_region = pixel_to_uv(pixel_region);
                    
@@ -156,6 +210,7 @@ EXPORT void hotreloadable_imgui_draw(game *g) {
     if (!g || !g->ctx) return;
     
     update_animation(g);
+    render_tiles(g);
     render_entities(g);
 
     
