@@ -55,6 +55,19 @@ typedef void (*render_entities_func)(struct game *g);
 typedef void (*render_sprite_func)(struct game *g, GLuint texture, float x, float y);
 typedef GLuint (*load_texture_func)(const char* filepath);
 
+enum InputButton {
+    INPUT_A = 1 << 0,  // Primary action
+    INPUT_B = 1 << 1,  // Secondary action
+    INPUT_X = 1 << 2,  // Use item
+    INPUT_Y = 1 << 3,  // Menu/inventory
+};
+
+struct input_state {
+    float horizontal;
+    float vertical;
+    int input_mask;
+};
+
 struct game {
   int play;
   int width;
@@ -76,7 +89,7 @@ struct game {
   float ortho_projection[16];
   float dt;  
   double _t_prev;
-
+  input_state input;
   entity entities[8];
   size_t entities_size;
   textures textures;

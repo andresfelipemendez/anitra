@@ -316,6 +316,110 @@ EXPORT int init_externals(game *g) {
   return 1;
 }
 
+void update_input(game *g) {
+  g->input.horizontal = 0.0f;
+  g->input.vertical = 0.0f;
+  g->input.input_mask = 0;
+  
+  // Keyboard input
+  float kb_horizontal = 0.0f;
+  float kb_vertical = 0.0f;
+  
+  if (glfwGetKey(g->window, GLFW_KEY_A) == GLFW_PRESS || 
+      glfwGetKey(g->window, GLFW_KEY_LEFT) == GLFW_PRESS) {
+    kb_horizontal -= 1.0f;
+  }
+  if (glfwGetKey(g->window, GLFW_KEY_D) == GLFW_PRESS || 
+      glfwGetKey(g->window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+    kb_horizontal += 1.0f;
+  }
+  if (glfwGetKey(g->window, GLFW_KEY_W) == GLFW_PRESS || 
+      glfwGetKey(g->window, GLFW_KEY_UP) == GLFW_PRESS) {
+    kb_vertical += 1.0f;
+  }
+  if (glfwGetKey(g->window, GLFW_KEY_S) == GLFW_PRESS || 
+      glfwGetKey(g->window, GLFW_KEY_DOWN) == GLFW_PRESS) {
+    kb_vertical -= 1.0f;
+  }
+  
+  float kb_magnitude = sqrt(kb_horizontal * kb_horizontal + kb_vertical * kb_vertical);
+  if (kb_magnitude > 1.0f) {
+    kb_horizontal /= kb_magnitude;
+    kb_vertical /= kb_magnitude;
+  }
+  
+  float gp_horizontal = 0.0f;
+  float gp_vertical = 0.0f;
+  
+  if (glfwJoystickPresent(GLFW_JOYSTICK_1) && glfwJoystickIsGamepad(GLFW_JOYSTICK_1)) {
+    GLFWgamepadstate state;
+    if (glfwGetGamepadState(GLFW_JOYSTICK_1, &state)) {
+      gp_horizontal = state.axes[GLFW_GAMEPAD_AXIS_LEFT_X];
+      gp_vertical = -state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+      
+      const float deadzone = 0.2f;
+      float magnitude = sqrt(gp_horizontal * gp_horizontal + gp_vertical * gp_vertical);
+      
+      if (magnitude < deadzone) {
+        gp_horizontal = 0.0f;
+        gp_vertical = 0.0f;
+      } else {
+        float normalized_magnitude = (magnitude - deadzone) / (1.0f - deadzone);
+        if (normalized_magnitude > 1.0f) normalized_magnitude = 1.0f;
+        
+        gp_horizontal = (gp_horizontal / magnitude) * normalized_magnitude;
+        gp_vertical = (gp_vertical / magnitude) * normalized_magnitude;
+      }
+      
+      if (state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS) {
+        g->input.input_mask |= INPUT_A;
+      }
+      if (state.buttons[GLFW_GAMEPAD_BUTTON_B] == GLFW_PRESS) {
+        g->input.input_mask |= INPUT_B;
+      }
+      if (state.buttons[GLFW_GAMEPAD_BUTTON_X] == GLFW_PRESS) {
+        g->input.input_mask |= INPUT_X;
+      }
+      if (state.buttons[GLFW_GAMEPAD_BUTTON_Y] == GLFW_PRESS) {
+        g->input.input_mask |= INPUT_Y;
+      }
+    }
+  }
+  
+  // Keyboard buttons (action-adventure mapping)
+  if (glfwGetKey(g->window, GLFW_KEY_SPACE) == GLFW_PRESS || 
+      glfwGetKey(g->window, GLFW_KEY_J) == GLFW_PRESS) {
+    g->input.input_mask |= INPUT_A;  // Primary action
+  }
+  if (glfwGetKey(g->window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || 
+      glfwGetKey(g->window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS ||
+      glfwGetKey(g->window, GLFW_KEY_K) == GLFW_PRESS) {
+    g->input.input_mask |= INPUT_B;  // Secondary action
+  }
+  if (glfwGetKey(g->window, GLFW_KEY_E) == GLFW_PRESS || 
+      glfwGetKey(g->window, GLFW_KEY_L) == GLFW_PRESS) {
+    g->input.input_mask |= INPUT_X;  // Use item
+  }
+  if (glfwGetKey(g->window, GLFW_KEY_Q) == GLFW_PRESS || 
+      glfwGetKey(g->window, GLFW_KEY_I) == GLFW_PRESS ||
+      glfwGetKey(g->window, GLFW_KEY_TAB) == GLFW_PRESS) {
+    g->input.input_mask |= INPUT_Y;  // Menu/inventory
+  }
+  
+  // Combine keyboard and gamepad input (take the stronger input)
+  if (fabs(kb_horizontal) > fabs(gp_horizontal)) {
+    g->input.horizontal = kb_horizontal;
+  } else {
+    g->input.horizontal = gp_horizontal;
+  }
+  
+  if (fabs(kb_vertical) > fabs(gp_vertical)) {
+    g->input.vertical = kb_vertical;
+  } else {
+    g->input.vertical = gp_vertical;
+  }
+}
+
 EXPORT void update_externals(game *g) {
   double now = glfwGetTime();
   double dtd = now - g->_t_prev;
@@ -325,6 +429,7 @@ EXPORT void update_externals(game *g) {
   if (dtd > 0.1) dtd = 0.1; // max 100 ms
   g->dt = (float)dtd;
 
+  update_input(g);
   int display_w, display_h;
   glfwGetFramebufferSize(g->window, &display_w, &display_h);
   glViewport(0, 0, display_w, display_h);
