@@ -33,10 +33,10 @@ typedef struct {
 } animation_clip;
 
 struct animator {
-    volatile animation_clip animation; 
-    volatile float timer = 0.0f;
-    volatile int   frame_index = 0;
-    volatile bool playing = true;
+     animation_clip animation; 
+     float timer = 0.0f;
+     int   frame_index = 0;
+     bool playing = true;
 };
 
 typedef struct entity {
@@ -66,6 +66,11 @@ struct input_state {
     int input_mask;
 };
 
+struct camera {
+    vec2 position = {0,0};
+    float zoom = 1;
+};
+
 struct game {
   int play;
   int width;
@@ -77,14 +82,17 @@ struct game {
   debug_renderer debug_renderer;
   void *user_data;
   void *engine_lib;
+  camera camera;
   GLuint quad_VAO;
   GLuint sprite_shader;
   GLuint translation_loc;
+  GLuint view_loc;
   GLuint projection_loc;
   GLuint texture_loc;
   GLuint tint_loc;
   GLuint sprite_offset_loc;
   GLuint sprite_size_loc;
+  float view_matrix[16];
   float ortho_projection[16];
   float dt;  
   double _t_prev;

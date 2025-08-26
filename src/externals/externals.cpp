@@ -173,12 +173,13 @@ int load_shader(game* g) {
         "layout (location = 1) in vec2 aTexCoord;\n" // texture coordinates
         "out vec2 TexCoord;\n"
         "uniform vec2 translation;\n"                 // entity position
+        "uniform mat4 view; \n"
         "uniform mat4 projection;\n"                  // orthographic projection
         "uniform vec2 sprite_offset;\n"
         "uniform vec2 sprite_size;\n"
         "void main() {\n"
         "    vec2 worldPos = aPos + translation;\n" 
-        "    gl_Position = projection * vec4(worldPos, 0.0, 1.0);\n"
+        "    gl_Position = projection * view* vec4(worldPos, 0.0, 1.0);\n"
         "    TexCoord = sprite_offset + (aTexCoord * sprite_size);\n"
         "}\n";
     
@@ -202,7 +203,7 @@ int load_shader(game* g) {
     printf("Shader program created successfully: ID = %u\n", shader_program);
     g->sprite_shader = shader_program;
     
-
+    g->view_loc = glGetUniformLocation(shader_program, "view");
     g->translation_loc = glGetUniformLocation(shader_program, "translation");
     g->projection_loc = glGetUniformLocation(shader_program, "projection");
     g->texture_loc = glGetUniformLocation(shader_program, "ourTexture");
@@ -213,6 +214,7 @@ int load_shader(game* g) {
 
     printf("Uniform locations:\n");
     printf("  translation: %d\n", g->translation_loc);
+    printf("  view: %d\n", g->view_loc);
     printf("  projection: %d\n", g->projection_loc);
     printf("  ourTexture: %d\n", g->texture_loc);
     printf("  tintColor: %d\n", g->tint_loc);
@@ -252,9 +254,7 @@ int load_shader(game* g) {
   
     float screen_width = (float)display_w;
     float screen_height = (float)display_h;
-    
-    printf("Screen dimensions: %dx%d\n", display_w, display_h);
-    
+        
     float temp_ortho[16] = {
         2.0f / screen_width,  0.0f,                  0.0f,   0.0f,
         0.0f,                 2.0f / screen_height,  0.0f,   0.0f,
