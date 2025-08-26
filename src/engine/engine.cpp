@@ -33,6 +33,21 @@ rect pixel_to_uv(pixel_rect p ) {
     return uv;
 }
 
+void debug_draw_line(debug_renderer* dr, vec2 start, vec2 end, debug_color color) {
+    int idx = dr->current_line_count * 10;
+    dr->vertex_buffer[idx + 0] = start.x;
+    dr->vertex_buffer[idx + 1] = start.y;
+    dr->vertex_buffer[idx + 2] = color.r;
+    dr->vertex_buffer[idx + 3] = color.g;
+    dr->vertex_buffer[idx + 4] = color.b;
+    dr->vertex_buffer[idx + 5] = end.x;
+    dr->vertex_buffer[idx + 6] = end.y;
+    dr->vertex_buffer[idx + 7] = color.r;  // Same color for both vertices
+    dr->vertex_buffer[idx + 8] = color.g;
+    dr->vertex_buffer[idx + 9] = color.b;
+    dr->current_line_count++;
+}
+
 void render_sprite(game* g, GLuint texture, float x, float y) {
     if (!g || g->sprite_shader == 0 || texture == 0) {
         
@@ -217,12 +232,34 @@ void update_input(game* g) {
 
 EXPORT void hotreloadable_imgui_draw(game *g) {
     if (!g || !g->ctx) return;
+    g->debug_renderer.current_line_count = 0;
+
     update_input(g);
     update_animation(g);
     render_tiles(g);
     render_entities(g);
 
+    debug_draw_line(&g->debug_renderer, {0,0},{10,20}, DEBUG_GREEN);
+    debug_draw_line(&g->debug_renderer, {10,10},{100,200}, DEBUG_BLUE);
+
+
+    glUseProgram(g->debug_renderer.debug_shader);
+    if (g->debug_renderer.debug_projection_loc != -1) {
+        glUniformMatrix4fv(g->debug_renderer.debug_projection_loc, 1, GL_FALSE, g->ortho_projection);
+    }
+    glEnable(GL_BLEND);
+
+    if (g->debug_renderer.current_line_count > 0) {
+        glBindVertexArray(g->debug_renderer.line_VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g->debug_renderer.line_VBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, g->debug_renderer.current_line_count * 10 * sizeof(float), g->debug_renderer.vertex_buffer);
+        glDrawArrays(GL_LINES, 0, g->debug_renderer.current_line_count * 2);
+    }
     
+    glDisable(GL_BLEND);
+    glBindVertexArray(0);
+    glUseProgram(0);
+
     // ImGui setup
     ImGui::SetCurrentContext(g->ctx);
     ImGui::SetAllocatorFunctions(g->alloc_func, g->free_func, g->user_data);
