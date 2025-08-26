@@ -1,5 +1,6 @@
 #include <externals.h>
 #include <game.h>
+#include <debug_render.h>
 #include <stdio.h>
 
 #include <imgui.h>
@@ -125,6 +126,47 @@ void check_gl_error(const char* operation) {
 }
 
 int load_shader(game* g) {
+    static const char* debug_vertex_shader = 
+      "#version 330 core\n"
+      "layout(location = 0) in vec2 aPos;\n"
+      "layout(location = 1) in vec3 aColor;\n"
+      "uniform mat4 projection;\n"
+      "uniform vec2 translation;\n"
+      "out vec3 vertexColor;\n"
+      "void main() {\n"
+      "    gl_Position = projection * vec4(aPos + translation, 0.0, 1.0);\n"
+      "    vertexColor = aColor;\n"
+      "}\n";
+
+    static const char* debug_fragment_shader = 
+      "#version 330 core\n"
+      "in vec3 vertexColor;\n"
+      "out vec4 FragColor;\n"
+      "void main() {\n"
+      "    FragColor = vec4(vertexColor, 1.0);\n"
+      "}\n";
+
+    debug_renderer* dr = &g->debug_renderer;
+    dr->debug_shader = create_shader_program(debug_vertex_shader, debug_fragment_shader);
+    dr->debug_projection_loc = glGetUniformLocation(dr->debug_shader, "projection");
+    dr->debug_translation_loc = glGetUniformLocation(dr->debug_shader, "translation");
+    
+    dr->max_lines = 1000;
+    dr->vertex_buffer = (float*)malloc(dr->max_lines * 10 *sizeof(float));
+    
+    glGenVertexArrays(1, &dr->line_VAO);
+    glGenBuffers(1, &dr->line_VBO);
+    
+    glBindVertexArray(dr->line_VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, dr->line_VBO);
+    glBufferData(GL_ARRAY_BUFFER, dr->max_lines * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
     const char* vertex_source = 
         "#version 330 core\n"
         "layout (location = 0) in vec2 aPos;\n"      // 2D position
@@ -140,7 +182,6 @@ int load_shader(game* g) {
         "    TexCoord = sprite_offset + (aTexCoord * sprite_size);\n"
         "}\n";
     
-    // Fragment shader with alpha support
     const char* fragment_source = 
         "#version 330 core\n"
         "in vec2 TexCoord;\n"
@@ -160,6 +201,7 @@ int load_shader(game* g) {
 
     printf("Shader program created successfully: ID = %u\n", shader_program);
     g->sprite_shader = shader_program;
+    
 
     g->translation_loc = glGetUniformLocation(shader_program, "translation");
     g->projection_loc = glGetUniformLocation(shader_program, "projection");

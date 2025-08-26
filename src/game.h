@@ -1,14 +1,12 @@
 #ifndef GAME_H
 #define GAME_H
 
+#include "debug_render.h"
 #include <glad.h>
 
 typedef void *(*ImGuiMemAllocFunc)(size_t sz, void *user_data);
 typedef void (*ImGuiMemFreeFunc)(void *ptr, void *user_data);
 
-typedef struct {
-    float x, y;
-} vec2;
 
 typedef struct {
     int x, y, w, h;
@@ -76,6 +74,7 @@ struct game {
   struct ImGuiContext *ctx;
   ImGuiMemAllocFunc alloc_func;
   ImGuiMemFreeFunc free_func;
+  debug_renderer debug_renderer;
   void *user_data;
   void *engine_lib;
   GLuint quad_VAO;
