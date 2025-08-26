@@ -228,6 +228,12 @@ void update_input(game* g) {
     
     player->pos.x += g->input.horizontal * move_speed * g->dt;
     player->pos.y += g->input.vertical * move_speed * g->dt;
+
+    bool attack_pressed = (g->input.input_mask & INPUT_A) ;
+    if(attack_pressed) {
+        debug_draw_line(&g->debug_renderer, {0,0},{10,20}, DEBUG_GREEN);
+        debug_draw_line(&g->debug_renderer, {10,10},{100,200}, DEBUG_BLUE);
+    }
 }
 
 EXPORT void hotreloadable_imgui_draw(game *g) {
@@ -239,15 +245,11 @@ EXPORT void hotreloadable_imgui_draw(game *g) {
     render_tiles(g);
     render_entities(g);
 
-    debug_draw_line(&g->debug_renderer, {0,0},{10,20}, DEBUG_GREEN);
-    debug_draw_line(&g->debug_renderer, {10,10},{100,200}, DEBUG_BLUE);
-
-
     glUseProgram(g->debug_renderer.debug_shader);
     if (g->debug_renderer.debug_projection_loc != -1) {
         glUniformMatrix4fv(g->debug_renderer.debug_projection_loc, 1, GL_FALSE, g->ortho_projection);
     }
-    glEnable(GL_BLEND);
+    
 
     if (g->debug_renderer.current_line_count > 0) {
         glBindVertexArray(g->debug_renderer.line_VAO);
@@ -256,7 +258,6 @@ EXPORT void hotreloadable_imgui_draw(game *g) {
         glDrawArrays(GL_LINES, 0, g->debug_renderer.current_line_count * 2);
     }
     
-    glDisable(GL_BLEND);
     glBindVertexArray(0);
     glUseProgram(0);
 
