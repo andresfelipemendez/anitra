@@ -48,9 +48,20 @@ void debug_draw_line(debug_renderer* dr, vec2 start, vec2 end, debug_color color
     dr->current_line_count++;
 }
 
+void update_camera_matrix(camera* cam, float* matrix) {
+    for (int i = 0; i < 16; i++) matrix[i] = 0.0f;
+
+    matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
+
+    matrix[0] = cam->zoom;
+    matrix[5] = cam->zoom;
+
+    matrix[12] = -cam->position.x * cam->zoom;
+    matrix[13] = -cam->position.y * cam->zoom;
+}
+
 void render_sprite(game* g, GLuint texture, float x, float y) {
     if (!g || g->sprite_shader == 0 || texture == 0) {
-        
         return;
     }
     
@@ -84,11 +95,7 @@ void render_sprite_region(game* g, GLuint texture, float x, float y, rect region
     }
     
     glUseProgram(g->sprite_shader);
-    
-    if (g->translation_loc != -1) {
-        glUniform2f(g->translation_loc, x, y);
-    }
-    
+    glUniform2f(g->translation_loc, x, y);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture);
     
@@ -155,7 +162,7 @@ void render_tile(game* g, int tile, float x, float y) {
     if (g->translation_loc != -1) {
         glUniform2f(g->translation_loc, x, y);
     }
-        
+    glUniformMatrix4fv(g->view_loc, 1, GL_FALSE, g->view_matrix);
     pixel_rect pixel_region = tiles.sprites[tile];
     rect region = pixel_to_uv(pixel_region, tiles);
     if (g->sprite_offset_loc != -1) {
@@ -191,11 +198,10 @@ void render_entities(game* g) {
     if (g->sprite_shader != 0) {
         glUseProgram(g->sprite_shader);
         
-        if (g->projection_loc != -1) {
-            glUniformMatrix4fv(g->projection_loc, 1, GL_FALSE, g->ortho_projection);
-        }
+
+        glUniformMatrix4fv(g->view_loc, 1, GL_FALSE, g->view_matrix);
+        glUniformMatrix4fv(g->projection_loc, 1, GL_FALSE, g->ortho_projection);
         
-        // Render each entity using sprite regions
         for (int i = 0; i < scene.entity_count; i++) {
             const entity* e = &scene.entities[i];
             float x = e->pos.x;
@@ -234,6 +240,19 @@ void update_input(game* g) {
         debug_draw_line(&g->debug_renderer, {0,0},{10,20}, DEBUG_GREEN);
         debug_draw_line(&g->debug_renderer, {10,10},{100,200}, DEBUG_BLUE);
     }
+
+    const float camera_speed = 300.0f;
+    const float zoom_speed = 2.0f;
+    
+
+    if (g->input.input_mask & INPUT_X) {
+        g->camera.position.x += g->input.horizontal * camera_speed * g->dt;
+        g->camera.position.y += g->input.vertical * camera_speed * g->dt;
+    }
+    if (g->input.input_mask & INPUT_Y) {
+        float zoom_delta = g->input.vertical * zoom_speed * g->dt;
+        g->camera.zoom = fmaxf(0.1f, fminf(5.0f, g->camera.zoom + zoom_delta));
+    }
 }
 
 EXPORT void hotreloadable_imgui_draw(game *g) {
@@ -241,6 +260,7 @@ EXPORT void hotreloadable_imgui_draw(game *g) {
     g->debug_renderer.current_line_count = 0;
 
     update_input(g);
+    update_camera_matrix(&g->camera, g->view_matrix);
     update_animation(g);
     render_tiles(g);
     render_entities(g);
