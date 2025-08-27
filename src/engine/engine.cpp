@@ -255,7 +255,11 @@ void update_input(game* g) {
     }
 }
 
-EXPORT void hotreloadable_imgui_draw(game *g) {
+EXPORT void init_engine(game *g) {
+    printf("hi from init engine\n");
+}
+
+EXPORT void update_engine(game *g) {
     if (!g || !g->ctx) return;
     g->debug_renderer.current_line_count = 0;
 
@@ -281,13 +285,12 @@ EXPORT void hotreloadable_imgui_draw(game *g) {
     glBindVertexArray(0);
     glUseProgram(0);
 
-    // ImGui setup
     ImGui::SetCurrentContext(g->ctx);
     ImGui::SetAllocatorFunctions(g->alloc_func, g->free_func, g->user_data);
 
-    // Debug window with texture display
     ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
-   
-    
-    // ImGui::End();
+}
+
+EXPORT void destroy_engine(game *g) {
+    printf("hi from destroy_engine \n");
 }

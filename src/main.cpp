@@ -11,7 +11,7 @@ int main() {
   }
   printf("Library loaded successfully\n");
 
-  init_func init = (init_func)getfunction(lib, "init");
+  init_core_func init = (init_core_func)getfunction(lib, "init_core");
   if (init == NULL) {
     fprintf(stderr, "Failed to get init function address\n");
     return 1;
