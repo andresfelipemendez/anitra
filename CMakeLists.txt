@@ -122,7 +122,7 @@ target_link_libraries(
 )
 target_compile_definitions(core PRIVATE TRACY_ENABLE)
 
-set(ENGINE_SRC_FILES src/engine/engine.cpp)
+file(GLOB ENGINE_SRC_FILES src/engine/*.cpp)
 add_library(engine SHARED ${ENGINE_SRC_FILES})
 target_include_directories(
   engine
