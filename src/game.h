@@ -7,7 +7,6 @@
 typedef void *(*ImGuiMemAllocFunc)(size_t sz, void *user_data);
 typedef void (*ImGuiMemFreeFunc)(void *ptr, void *user_data);
 
-
 typedef struct {
     int x, y, w, h;
 } pixel_rect;
@@ -51,6 +50,7 @@ struct animator {
 
 typedef struct entity {
     vec2 pos;
+    float health;
     sprite_sheet sprite_sheet;
     sprite spr;
     animator current_animation;

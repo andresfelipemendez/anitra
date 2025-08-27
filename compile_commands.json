@@ -1,0 +1,92 @@
+[
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLFW_STATIC -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -std=c++20 -o CMakeFiles\\AnitraEngine.dir\\src\\main.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\src\\main.cpp",
+  "file": "C:/Users/andres/Development/anitra/src/main.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/AnitraEngine.dir/src/main.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLFW_STATIC -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -std=c++20 -o CMakeFiles\\AnitraEngine.dir\\src\\core\\loadlibrary_windows.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\src\\core\\loadlibrary_windows.cpp",
+  "file": "C:/Users/andres/Development/anitra/src/core/loadlibrary_windows.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/AnitraEngine.dir/src/core/loadlibrary_windows.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\cc.exe -DGLAD_GLAPI_EXPORT -Dglad_loader_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/lib/glad -o CMakeFiles\\glad_loader.dir\\lib\\glad\\glad.c.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\glad\\glad.c",
+  "file": "C:/Users/andres/Development/anitra/lib/glad/glad.c",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/glad_loader.dir/lib/glad/glad.c.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DIMGUI_IMPL_OPENGL_LOADER_GLAD -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dexternals_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\externals.dir\\src\\externals\\externals.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\src\\externals\\externals.cpp",
+  "file": "C:/Users/andres/Development/anitra/src/externals/externals.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/externals.dir/src/externals/externals.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DIMGUI_IMPL_OPENGL_LOADER_GLAD -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dexternals_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\externals.dir\\lib\\imgui-1.90.9\\imgui.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\imgui-1.90.9\\imgui.cpp",
+  "file": "C:/Users/andres/Development/anitra/lib/imgui-1.90.9/imgui.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/externals.dir/lib/imgui-1.90.9/imgui.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DIMGUI_IMPL_OPENGL_LOADER_GLAD -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dexternals_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\externals.dir\\lib\\imgui-1.90.9\\imgui_demo.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\imgui-1.90.9\\imgui_demo.cpp",
+  "file": "C:/Users/andres/Development/anitra/lib/imgui-1.90.9/imgui_demo.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/externals.dir/lib/imgui-1.90.9/imgui_demo.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DIMGUI_IMPL_OPENGL_LOADER_GLAD -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dexternals_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\externals.dir\\lib\\imgui-1.90.9\\imgui_draw.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\imgui-1.90.9\\imgui_draw.cpp",
+  "file": "C:/Users/andres/Development/anitra/lib/imgui-1.90.9/imgui_draw.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/externals.dir/lib/imgui-1.90.9/imgui_draw.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DIMGUI_IMPL_OPENGL_LOADER_GLAD -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dexternals_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\externals.dir\\lib\\imgui-1.90.9\\imgui_tables.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\imgui-1.90.9\\imgui_tables.cpp",
+  "file": "C:/Users/andres/Development/anitra/lib/imgui-1.90.9/imgui_tables.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/externals.dir/lib/imgui-1.90.9/imgui_tables.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DIMGUI_IMPL_OPENGL_LOADER_GLAD -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dexternals_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\externals.dir\\lib\\imgui-1.90.9\\imgui_widgets.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\imgui-1.90.9\\imgui_widgets.cpp",
+  "file": "C:/Users/andres/Development/anitra/lib/imgui-1.90.9/imgui_widgets.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/externals.dir/lib/imgui-1.90.9/imgui_widgets.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DIMGUI_IMPL_OPENGL_LOADER_GLAD -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dexternals_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\externals.dir\\lib\\imgui-1.90.9\\backends\\imgui_impl_glfw.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\imgui-1.90.9\\backends\\imgui_impl_glfw.cpp",
+  "file": "C:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/externals.dir/lib/imgui-1.90.9/backends/imgui_impl_glfw.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DIMGUI_IMPL_OPENGL_LOADER_GLAD -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dexternals_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\externals.dir\\lib\\imgui-1.90.9\\backends\\imgui_impl_opengl3.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\imgui-1.90.9\\backends\\imgui_impl_opengl3.cpp",
+  "file": "C:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/externals.dir/lib/imgui-1.90.9/backends/imgui_impl_opengl3.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dcore_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\core.dir\\src\\core\\core.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\src\\core\\core.cpp",
+  "file": "C:/Users/andres/Development/anitra/src/core/core.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/core.dir/src/core/core.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dcore_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\core.dir\\src\\core\\loadlibrary_windows.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\src\\core\\loadlibrary_windows.cpp",
+  "file": "C:/Users/andres/Development/anitra/src/core/loadlibrary_windows.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/core.dir/src/core/loadlibrary_windows.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DGLAD_GLAPI_EXPORT -DGLAD_GLAPI_IMPORT -DGLFW_STATIC -DTRACY_ENABLE -DTRACY_ON_DEMAND -Dengine_EXPORTS -IC:/Users/andres/Development/anitra/include -IC:/Users/andres/Development/anitra/src/engine -IC:/Users/andres/Development/anitra/src/core -IC:/Users/andres/Development/anitra/src/externals -IC:/Users/andres/Development/anitra/src -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9 -IC:/Users/andres/Development/anitra/lib/imgui-1.90.9/backends -IC:/Users/andres/Development/anitra/lib/glad -IC:/Users/andres/Development/anitra -IC:/Users/andres/Development/anitra/lib/glfw/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o CMakeFiles\\engine.dir\\src\\engine\\engine.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\src\\engine\\engine.cpp",
+  "file": "C:/Users/andres/Development/anitra/src/engine/engine.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/CMakeFiles/engine.dir/src/engine/engine.cpp.obj"
+},
+{
+  "directory": "C:/Users/andres/Development/anitra/ninja",
+  "command": "C:\\Users\\andres\\scoop\\apps\\mingw\\current\\bin\\c++.exe -DTRACY_ENABLE -DTRACY_ON_DEMAND -IC:/Users/andres/Development/anitra/include -isystem C:/Users/andres/Development/anitra/lib/tracy/public -std=c++20 -o lib\\tracy\\CMakeFiles\\TracyClient.dir\\public\\TracyClient.cpp.obj -c C:\\Users\\andres\\Development\\anitra\\lib\\tracy\\public\\TracyClient.cpp",
+  "file": "C:/Users/andres/Development/anitra/lib/tracy/public/TracyClient.cpp",
+  "output": "C:/Users/andres/Development/anitra/ninja/lib/tracy/CMakeFiles/TracyClient.dir/public/TracyClient.cpp.obj"
+}
+]

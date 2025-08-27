@@ -1,7 +1,7 @@
 #ifndef CORE_H
 #define CORE_H
 
-#include "export.h"
+#include <export.h>
 
 DECLARE_FUNC_VOID(init_core)
 
