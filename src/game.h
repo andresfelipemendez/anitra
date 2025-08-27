@@ -21,10 +21,20 @@ typedef struct {
     rect coords;
 } sprite;
 
-typedef struct {
-    GLuint char_spritesheet;
-    GLuint tiles_spritesheet;
-} textures;
+
+typedef enum {
+    TEXTURE_PLAYER,
+    TEXTURE_TILES,
+    TEXTURE_SLIME,
+    TEXTURE_COUNT 
+} TextureID;
+
+struct sprite_sheet {
+    TextureID texture_id;
+    int width;     
+    int height;
+    pixel_rect sprites[64];
+};
 
 typedef struct {
     int frames[10];
@@ -41,7 +51,7 @@ struct animator {
 
 typedef struct entity {
     vec2 pos;
-    GLuint texture;
+    sprite_sheet sprite_sheet;
     sprite spr;
     animator current_animation;
 } entity;
@@ -67,7 +77,7 @@ struct input_state {
 };
 
 struct camera {
-    vec2 position = {0,0};
+    vec2 position = {150,150};
     float zoom = 1;
 };
 
@@ -99,7 +109,7 @@ struct game {
   input_state input;
   entity entities[8];
   size_t entities_size;
-  textures textures;
+  GLuint textures[TEXTURE_COUNT];
   render_entities_func render_entities;
   render_sprite_func render_sprite;
   load_texture_func load_texture;

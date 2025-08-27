@@ -349,8 +349,9 @@ EXPORT int init_externals(game *g) {
 
   load_shader(g);
 
-  g->textures.char_spritesheet = load_texture("assets\\char_spritesheet.png");
-  g->textures.tiles_spritesheet = load_texture("assets\\Dungeon_Tileset.png");
+  g->textures[TEXTURE_PLAYER] = load_texture("assets\\char_spritesheet.png");
+  g->textures[TEXTURE_TILES] = load_texture("assets\\Dungeon_Tileset.png");
+  g->textures[TEXTURE_SLIME] = load_texture("assets\\pinkslime_spritesheet.png");
   
   g->_t_prev = glfwGetTime();
   g->dt = 0.0f;

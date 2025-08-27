@@ -2,29 +2,8 @@
 #define SCENE_H
 #include "game.h"
 
-static const struct {
-    int width;     
-    int height;  
-} spritesheet_info = {
-    .width = 415,   
-    .height = 368
-};
-
-static const pixel_rect char_sprites[] = {
-    {16,  16,  16, 16},
-    {32,  16,  16, 16},
-    {48,  16,  16, 16},
-    {64,  16,  16, 16},
-    {80,  16,  16, 16},
-};
-
-struct sprite_sheet {
-    int width;     
-    int height;
-    pixel_rect sprites[];
-};
-
 sprite_sheet tiles {
+    .texture_id = TEXTURE_TILES,
     .width = 192,
     .height = 208,
     .sprites = {
@@ -33,9 +12,31 @@ sprite_sheet tiles {
     }
 };
 
-static const pixel_rect tiles_sprites[] = {
-    {16,  0,  16, 16},
-    {0,    176,  16, 16},
+sprite_sheet player {
+    .texture_id = TEXTURE_PLAYER,
+    .width = 415,
+    .height = 368,
+    .sprites = {
+        {16,  16,  16, 16},
+        {32,  16,  16, 16},
+        {48,  16,  16, 16},
+        {64,  16,  16, 16},
+        {80,  16,  16, 16},
+    }
+};
+
+sprite_sheet slime {
+    .texture_id = TEXTURE_SLIME,
+    .width = 192,
+    .height = 208,
+    .sprites = {
+        {0,  170,  16, 32},
+        {16,  170,  16, 32},
+        {32,  170,  16, 32},
+        {48,  170,  16, 32},
+        {64,  170,  16, 32},
+        {80,  170,  16, 32},
+    }
 };
 
 static const animation_clip player_walk_down = {
@@ -48,25 +49,32 @@ static struct {
     int entity_count;
     entity entities[8];
 } scene = {
-    .entity_count = 1,
+    .entity_count = 2,
     .entities = {
         {
-            .pos = {0.0f, 0.0f},
+            .pos = {150.0f, 150.0f},
+            .sprite_sheet = player,
             .current_animation = {
                 .animation = player_walk_down,
-
+            }
+        },
+        {
+            .pos = {150.0f, 10.0f},
+            .sprite_sheet = slime,
+            .current_animation = {
+                .animation = player_walk_down,
             }
         },
     }
 };
 
 static const int level[][6] = {
-    {0,0,0,0,0,0},
-    {0,1,1,1,0,0},
-    {0,1,1,1,0,0},
-    {0,1,1,1,0,0},
-    {0,1,1,1,0,0},
-    {0,0,0,0,0,0},
+    {1,1,1,1,1,1},
+    {1,1,1,1,1,1},
+    {1,1,1,1,1,1},
+    {1,1,1,1,1,1},
+    {1,1,1,1,1,1},
+    {1,1,1,1,1,1},
 };
 
 #endif
