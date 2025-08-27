@@ -13,7 +13,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-hotreloadable_imgui_draw_func g_imguiUpdate = NULL;
+init g_init = NULL;
+destroy g_destroy = NULL;
+update g_update = NULL;
 
 ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
@@ -358,6 +360,14 @@ EXPORT int init_externals(game *g) {
   return 1;
 }
 
+EXPORT void init_engine(game *g){
+  g_init(g);
+}
+
+EXPORT void destroy_engine(game *g){
+  g_destroy(g);
+}
+
 void update_input(game *g) {
   g->input.horizontal = 0.0f;
   g->input.vertical = 0.0f;
@@ -486,7 +496,7 @@ EXPORT void update_externals(game *g) {
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
 
-  g_imguiUpdate(g);
+  g_update(g);
 
   ImGui::SetCurrentContext(g->ctx);
   ImGui::SetAllocatorFunctions(g->alloc_func, g->free_func, g->user_data);
@@ -504,8 +514,16 @@ EXPORT void end_externals(game *g) {
 
 }
 
-EXPORT void assign_hotreloadable(hotreloadable_imgui_draw_func func) {
-  g_imguiUpdate = func;
+EXPORT void assign_init(init func) {
+  g_init = func;
+}
+
+EXPORT void assign_destroy(destroy func) {
+  g_destroy = func;
+}
+
+EXPORT void assign_update(update func) {
+  g_update = func;
 }
 
 EXPORT ImGuiContext *GetImguiContext() { return ImGui::GetCurrentContext(); }

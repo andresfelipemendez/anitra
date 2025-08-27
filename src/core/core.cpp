@@ -38,7 +38,7 @@ std::string getCurrentWorkingDirectory() {
   return std::string(buffer);
 }
 
-EXPORT void init() {
+EXPORT void init_core() {
   printf("Core initialized\n");
 
   std::string cwd = getCurrentWorkingDirectory();
@@ -57,11 +57,12 @@ EXPORT void init() {
   std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
 
   g.engine_lib = loadlibrary("engine_copy");
-
-  assign_hotreloadable((hotreloadable_imgui_draw_func)getfunction(
-      g.engine_lib, "hotreloadable_imgui_draw"));
+  assign_init((init)getfunction(g.engine_lib, "init_engine"));
+  assign_destroy((destroy)getfunction(g.engine_lib, "destroy_engine"));
+  assign_update((update)getfunction(g.engine_lib, "update_engine"));
 
   init_externals(&g);
+  init_engine(&g);
   begin_watch_src_directory(g);
   begin_game_loop(g);
 }
@@ -140,7 +141,9 @@ void begin_game_loop(game &g) {
   while (g.play) {
     if (reloadFlag.load()) {
       reloadFlag.store(false);
+      destroy_engine(&g);
       printf("Reloading...\n");
+
       unloadlibrary(g.engine_lib);
 
       std::string cwd = getCurrentWorkingDirectory();
@@ -149,9 +152,10 @@ void begin_game_loop(game &g) {
       std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
 
       g.engine_lib = loadlibrary("engine_copy");
-      assign_hotreloadable(
-          (hotreloadable_imgui_draw_func)getfunction(g.engine_lib, "hotreloadable_imgui_draw")
-      );
+      assign_init((init)getfunction(g.engine_lib, "init_engine"));
+      assign_destroy((destroy)getfunction(g.engine_lib, "destroy_engine"));
+      assign_update((update)getfunction(g.engine_lib, "update_engine"));
+      init_engine(&g);
     }
     update_externals(&g);
     FrameMark;
