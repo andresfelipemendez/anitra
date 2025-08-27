@@ -189,7 +189,6 @@ void render_entities(game* g) {
     if (g->sprite_shader != 0) {
         glUseProgram(g->sprite_shader);
         
-
         glUniformMatrix4fv(g->view_loc, 1, GL_FALSE, g->view_matrix);
         glUniformMatrix4fv(g->projection_loc, 1, GL_FALSE, g->ortho_projection);
         

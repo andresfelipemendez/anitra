@@ -2,8 +2,11 @@ cmake_minimum_required(VERSION 4.1)
 
 project(AnitraEngine)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 include(FetchContent)
 include_directories(include)
 
@@ -35,6 +38,8 @@ target_include_directories(
   ${PROJECT_NAME} 
   PRIVATE 
   "${CMAKE_SOURCE_DIR}/include" 
+  "${CMAKE_SOURCE_DIR}/src" 
+  "${CMAKE_SOURCE_DIR}/src/core"
   "${OPENGL_INCLUDE_DIR}"
   "${GLFW_INCLUDE_DIR}"
 )
