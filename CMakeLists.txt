@@ -2,27 +2,11 @@ cmake_minimum_required(VERSION 4.1)
 
 project(AnitraEngine)
 
-# Build speed optimizations
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
-
-# Enable parallel compilation on Windows
-if(WIN32)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
-endif()
-
-# Use precompiled headers for faster compilation
-set(CMAKE_PCH_INSTANTIATE_TEMPLATES ON)
-
-# Enable ccache if available
-find_program(CCACHE_PROGRAM ccache)
-if(CCACHE_PROGRAM)
-  set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
-endif()
 include(FetchContent)
 include_directories(include)
 
@@ -89,17 +73,6 @@ set(EXTERNALS_SRC_FILES
 
 add_library(externals SHARED ${EXTERNALS_SRC_FILES})
 set_target_properties(externals PROPERTIES CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
-
-# Add precompiled header for externals (standard library headers only)
-target_precompile_headers(externals PRIVATE 
-  <iostream>
-  <vector>
-  <string>
-  <memory>
-  <algorithm>
-  <cstdint>
-  <cstring>
-)
 target_include_directories(
   externals
   PUBLIC 

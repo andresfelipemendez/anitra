@@ -97,15 +97,8 @@ struct game {
   void *engine_lib;
   camera camera;
   GLuint quad_VAO;
-  GLuint tile_quad_VAO;   // Shared buffer for all tile rendering
-  GLuint tile_quad_VBO;
-  GLuint tile_quad_EBO;
-  GLuint sprite_quad_VAO; // Shared buffer for sprite rendering (dynamic size via uniforms)
-  GLuint sprite_quad_VBO;
-  GLuint sprite_quad_EBO;
   GLuint sprite_shader;
   GLuint translation_loc;
-  GLuint scale_loc;
   GLuint view_loc;
   GLuint projection_loc;
   GLuint texture_loc;

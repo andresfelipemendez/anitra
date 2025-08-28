@@ -175,14 +175,12 @@ int load_shader(game* g) {
         "layout (location = 1) in vec2 aTexCoord;\n" // texture coordinates
         "out vec2 TexCoord;\n"
         "uniform vec2 translation;\n"                 // entity position
-        "uniform vec2 scale;\n"                       // sprite scale (width, height)
         "uniform mat4 view; \n"
         "uniform mat4 projection;\n"                  // orthographic projection
         "uniform vec2 sprite_offset;\n"
         "uniform vec2 sprite_size;\n"
         "void main() {\n"
-        "    vec2 scaledPos = aPos * scale;\n"
-        "    vec2 worldPos = scaledPos + translation;\n" 
+        "    vec2 worldPos = aPos + translation;\n" 
         "    gl_Position = projection * view* vec4(worldPos, 0.0, 1.0);\n"
         "    TexCoord = sprite_offset + (aTexCoord * sprite_size);\n"
         "}\n";
@@ -209,7 +207,6 @@ int load_shader(game* g) {
     
     g->view_loc = glGetUniformLocation(shader_program, "view");
     g->translation_loc = glGetUniformLocation(shader_program, "translation");
-    g->scale_loc = glGetUniformLocation(shader_program, "scale");
     g->projection_loc = glGetUniformLocation(shader_program, "projection");
     g->texture_loc = glGetUniformLocation(shader_program, "ourTexture");
     g->tint_loc = glGetUniformLocation(shader_program, "tintColor");  
@@ -273,70 +270,6 @@ int load_shader(game* g) {
     
     g->quad_VAO = VAO;
     printf("Quad VAO created: %u\n", VAO);
-    
-    // Create shared tile quad buffer (unit quad scaled by shader)
-    float tile_vertices[] = {
-        -0.5f,  0.5f,  0.0f, 0.0f,  // top left
-         0.5f,  0.5f,  1.0f, 0.0f,  // top right
-         0.5f, -0.5f,  1.0f, 1.0f,  // bottom right
-        -0.5f, -0.5f,  0.0f, 1.0f   // bottom left
-    };
-    
-    unsigned int tile_indices[] = {
-        0, 1, 2,  
-        2, 3, 0   
-    };
-    
-    glGenVertexArrays(1, &g->tile_quad_VAO);
-    glGenBuffers(1, &g->tile_quad_VBO);
-    glGenBuffers(1, &g->tile_quad_EBO);
-    
-    glBindVertexArray(g->tile_quad_VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, g->tile_quad_VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(tile_vertices), tile_vertices, GL_STATIC_DRAW);
-    
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g->tile_quad_EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(tile_indices), tile_indices, GL_STATIC_DRAW);
-    
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    
-    printf("Tile Quad VAO created: %u\n", g->tile_quad_VAO);
-    
-    // Create shared sprite quad buffer for all sprite rendering (unit quad scaled by shader)
-    float sprite_vertices[] = {
-        -0.5f,  0.5f,  0.0f, 0.0f,  // top left
-         0.5f,  0.5f,  1.0f, 0.0f,  // top right
-         0.5f, -0.5f,  1.0f, 1.0f,  // bottom right
-        -0.5f, -0.5f,  0.0f, 1.0f   // bottom left
-    };
-    
-    unsigned int sprite_indices[] = {
-        0, 1, 2,  
-        2, 3, 0   
-    };
-    
-    glGenVertexArrays(1, &g->sprite_quad_VAO);
-    glGenBuffers(1, &g->sprite_quad_VBO);
-    glGenBuffers(1, &g->sprite_quad_EBO);
-    
-    glBindVertexArray(g->sprite_quad_VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, g->sprite_quad_VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(sprite_vertices), sprite_vertices, GL_STATIC_DRAW);
-    
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g->sprite_quad_EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(sprite_indices), sprite_indices, GL_STATIC_DRAW);
-    
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    
-    printf("Sprite Quad VAO created: %u\n", g->sprite_quad_VAO);
     
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -572,6 +505,7 @@ EXPORT void update_externals(game *g) {
   ImGui::SetAllocatorFunctions(g->alloc_func, g->free_func, g->user_data);
 
   ImGui::Render();
+  
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
   glfwSwapBuffers(g->window);
