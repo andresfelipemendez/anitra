@@ -11,15 +11,20 @@ if not exist "%BUILD_DIR%" (
     exit /b 1
 )
 
+:: Use maximum available cores for parallel building
+set CORES=%NUMBER_OF_PROCESSORS%
+if "%CORES%"=="" set CORES=4
+echo Using %CORES% cores for parallel compilation...
+
 :: Build the glad_loader dependency first
 echo Building glad_loader dependency...
-cmake --build "%BUILD_DIR%" --target glad_loader --config Debug
+cmake --build "%BUILD_DIR%" --target glad_loader --config Debug --parallel %CORES%
 
 :: Build the engine target (delete any locked PDB files first)
 echo Building the engine target...
 echo Cleaning any potentially locked PDB files...
 del "%BUILD_DIR%\Debug\engine*.pdb" >NUL 2>&1
-cmake --build "%BUILD_DIR%" --target engine --config Debug
+cmake --build "%BUILD_DIR%" --target engine --config Debug --parallel %CORES%
 
 :: Check if the build was successful
 if %ERRORLEVEL% neq 0 (

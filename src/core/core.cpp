@@ -68,6 +68,7 @@ EXPORT void init_core() {
 }
 
 void compile_dll() {
+  ZoneScoped;
   std::string cwd = getCurrentWorkingDirectory();
   std::string command =
       "cd /d " + cwd +
@@ -81,6 +82,7 @@ void copy_dll(const std::string &src, const std::string &dest) {
 }
 
 void watch_src_directory() {
+  ZoneScoped;
   std::cout << "inside watch_src_directory" << std::endl;
   HANDLE hDir = CreateFile(
       "src", FILE_LIST_DIRECTORY,
@@ -139,6 +141,8 @@ void begin_watch_src_directory(game &g) {
 
 void begin_game_loop(game &g) {
   while (g.play) {
+    FrameMark;
+    
     if (reloadFlag.load()) {
       reloadFlag.store(false);
       destroy_engine(&g);
@@ -157,7 +161,10 @@ void begin_game_loop(game &g) {
       assign_update((update)getfunction(g.engine_lib, "update_engine"));
       init_engine(&g);
     }
-    update_externals(&g);
-    FrameMark;
+    
+    {
+      ZoneNamedN(engine_zone, "Engine Update", true);
+      update_externals(&g);
+    }
   }
 }
