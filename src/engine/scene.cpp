@@ -56,7 +56,7 @@ Scene scene = {
         },
         {
             .pos = {150.0f, 10.0f},
-            .health = 50.0f,
+            .health = 75.0f,
             .sprite_sheet = slime,
             .current_animation = {
                 .animation = player_walk_down,

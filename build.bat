@@ -15,12 +15,7 @@ if not exist "%BUILD_DIR%" (
 echo Building the project...
 echo Cleaning any potentially locked PDB files...
 del "%BUILD_DIR%\Debug\engine*.pdb" >NUL 2>&1
-
-:: Use maximum available cores for parallel building
-set CORES=%NUMBER_OF_PROCESSORS%
-if "%CORES%"=="" set CORES=4
-echo Using %CORES% cores for parallel compilation...
-cmake --build "%BUILD_DIR%" --config Debug --parallel %CORES%
+cmake --build "%BUILD_DIR%" --config Debug
 
 :: Check if the build was successful
 if %ERRORLEVEL% neq 0 (

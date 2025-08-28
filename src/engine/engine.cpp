@@ -11,13 +11,6 @@
 
 #include <glad.h>
 
-#if defined ( __clang__ ) || defined ( __GNUC__ )
-#define TracyFunction __PRETTY_FUNCTION__
-#elif defined ( _MSC_VER )
-#define TracyFunction __FUNCSIG__
-#endif
-#include <tracy/Tracy.hpp>
-
 void update_input(game* g) {
     if (!g || scene.entity_count == 0) return;
     
@@ -52,63 +45,35 @@ EXPORT void init_engine(game *g) {
 }
 
 EXPORT void update_engine(game *g) {
-    ZoneScoped;
-    FrameMark; // Mark frame boundary for Tracy
     if (!g || !g->ctx) return;
-    
-    {
-        ZoneNamedN(frame_setup_zone, "Frame Setup", true);
-        g->debug_renderer.current_line_count = 0;
-        TracyPlot("Delta Time", g->dt);
-        TracyPlot("FPS", 1.0f / g->dt);
-    }
+    g->debug_renderer.current_line_count = 0;
 
-    {
-        ZoneNamedN(input_zone, "Input Processing", true);
-        update_input(g);
-    }
-    
-    {
-        ZoneNamedN(camera_zone, "Camera Update", true);
-        update_camera_matrix(&g->camera, g->view_matrix);
-    }
-    
-    {
-        ZoneNamedN(animation_zone, "Animation Update", true);
-        update_animation(g);
-    }
-    
-    {
-        ZoneNamedN(render_zone, "Main Rendering", true);
-        render_tiles(g);
-        render_entities(g);
-    }
+    update_input(g);
+    update_camera_matrix(&g->camera, g->view_matrix);
+    update_animation(g);
+    render_tiles(g);
+    render_entities(g);
 
-    {
-        ZoneNamedN(debug_render_zone, "Debug Rendering", true);
-        glUseProgram(g->debug_renderer.debug_shader);
-        if (g->debug_renderer.debug_projection_loc != -1) {
-            glUniformMatrix4fv(g->debug_renderer.debug_projection_loc, 1, GL_FALSE, g->ortho_projection);
-        }
-        
-        if (g->debug_renderer.current_line_count > 0) {
-            ZoneNamedN(debug_draw_zone, "Debug Draw Commands", true);
-            glBindVertexArray(g->debug_renderer.line_VAO);
-            glBindBuffer(GL_ARRAY_BUFFER, g->debug_renderer.line_VBO);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, g->debug_renderer.current_line_count * 10 * sizeof(float), g->debug_renderer.vertex_buffer);
-            glDrawArrays(GL_LINES, 0, g->debug_renderer.current_line_count * 2);
-        }
-        
-        glBindVertexArray(0);
-        glUseProgram(0);
+    glUseProgram(g->debug_renderer.debug_shader);
+    if (g->debug_renderer.debug_projection_loc != -1) {
+        glUniformMatrix4fv(g->debug_renderer.debug_projection_loc, 1, GL_FALSE, g->ortho_projection);
     }
+    
 
-    {
-        ZoneNamedN(imgui_zone, "ImGui Setup", true);
-        ImGui::SetCurrentContext(g->ctx);
-        ImGui::SetAllocatorFunctions(g->alloc_func, g->free_func, g->user_data);
-        ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
+    if (g->debug_renderer.current_line_count > 0) {
+        glBindVertexArray(g->debug_renderer.line_VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g->debug_renderer.line_VBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, g->debug_renderer.current_line_count * 10 * sizeof(float), g->debug_renderer.vertex_buffer);
+        glDrawArrays(GL_LINES, 0, g->debug_renderer.current_line_count * 2);
     }
+    
+    glBindVertexArray(0);
+    glUseProgram(0);
+
+    ImGui::SetCurrentContext(g->ctx);
+    ImGui::SetAllocatorFunctions(g->alloc_func, g->free_func, g->user_data);
+
+    ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
 }
 
 EXPORT void destroy_engine(game *g) {
