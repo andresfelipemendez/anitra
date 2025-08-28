@@ -21,10 +21,13 @@ typedef struct {
 } sprite;
 
 
+
 typedef enum {
     TEXTURE_PLAYER,
     TEXTURE_TILES,
     TEXTURE_SLIME,
+    TEXTURE_HEALTH_BAR,
+    TEXTURE_HEALTH_FILL,
     TEXTURE_COUNT 
 } TextureID;
 
