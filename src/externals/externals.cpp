@@ -352,6 +352,8 @@ EXPORT int init_externals(game *g) {
   g->textures[TEXTURE_PLAYER] = load_texture("assets\\char_spritesheet.png");
   g->textures[TEXTURE_TILES] = load_texture("assets\\Dungeon_Tileset.png");
   g->textures[TEXTURE_SLIME] = load_texture("assets\\pinkslime_spritesheet.png");
+  g->textures[TEXTURE_HEALTH_BAR] = load_texture("assets\\health_bar_hud.png");
+  g->textures[TEXTURE_HEALTH_FILL] = load_texture("assets\\health_hud.png");
   
   g->_t_prev = glfwGetTime();
   g->dt = 0.0f;

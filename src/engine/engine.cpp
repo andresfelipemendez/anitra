@@ -11,7 +11,6 @@
 
 #include <glad.h>
 
-
 void update_input(game* g) {
     if (!g || scene.entity_count == 0) return;
     
