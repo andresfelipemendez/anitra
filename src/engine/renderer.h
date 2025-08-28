@@ -7,10 +7,13 @@ void update_camera_matrix(camera* cam, float* matrix) ;
 void render_sprite(game* g, GLuint texture, float x, float y);
 void render_sprite_region(game* g, GLuint texture, float x, float y, rect region) ;
 void render_sprite_pixel_perfect(game* g, GLuint texture, float x, float y, pixel_rect sprite_rect, int texture_width, int texture_height);
+void render_sprite_pixel_perfect_optimized(game* g, GLuint texture, float x, float y, pixel_rect sprite_rect, int texture_width, int texture_height);
 void update_animation(game* g);
 void render_tile(game* g, int tile, float x, float y) ;
+void render_tile_optimized(game* g, int tile, float x, float y) ;
 void render_tiles(game* g);
 void render_entities(game* g);
 void render_health_bar(game* g, float x, float y, float health, float max_health);
 void render_scaled_sprite(game* g, GLuint texture, float x, float y, float width, float height);
+void render_scaled_sprite_optimized(game* g, GLuint texture, float x, float y, float width, float height);
 #endif
