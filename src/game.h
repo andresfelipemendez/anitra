@@ -40,12 +40,12 @@ struct sprite_sheet {
 
 typedef struct {
     int frames[10];
-    int frame_count;
     float frame_time;
+    int frame_count;
 } animation_clip;
 
 struct animator {
-     animation_clip animation; 
+     animation_clip animation;
      float timer = 0.0f;
      int   frame_index = 0;
      bool playing = true;
@@ -55,18 +55,25 @@ typedef enum {
     COLLIDER
 } collider_type;
 
+
+typedef enum {
+    ENEMY,
+    PLAYER,
+} entity_type;
+
 struct collider {
-    collider_type type;
     rect rect;
+    collider_type type;
 };
 
 typedef struct entity {
+    sprite_sheet sprite_sheet;
+    animator current_animation;
+    collider collider;
+    sprite spr;
     vec2 pos;
     float health;
-    sprite_sheet sprite_sheet;
-    sprite spr;
-    collider collider;
-    animator current_animation;
+    entity_type type;
 } entity;
 
 struct game;
@@ -77,10 +84,10 @@ typedef void (*render_sprite_func)(struct game *g, GLuint texture, float x, floa
 typedef GLuint (*load_texture_func)(const char* filepath);
 
 enum InputButton {
-    INPUT_A = 1 << 0,  // Primary action
-    INPUT_B = 1 << 1,  // Secondary action
-    INPUT_X = 1 << 2,  // Use item
-    INPUT_Y = 1 << 3,  // Menu/inventory
+    INPUT_A = 1 << 0,
+    INPUT_B = 1 << 1,
+    INPUT_X = 1 << 2,
+    INPUT_Y = 1 << 3,
 };
 
 struct input_state {
@@ -90,22 +97,35 @@ struct input_state {
 };
 
 struct camera {
-    vec2 position = {150,150};
+    vec2 position = {0,160};
     float zoom = 1;
 };
 
 struct game {
-  int play;
-  int width;
-  int height;
   struct GLFWwindow *window;
   struct ImGuiContext *ctx;
   ImGuiMemAllocFunc alloc_func;
   ImGuiMemFreeFunc free_func;
-  debug_renderer debug_renderer;
   void *user_data;
   void *engine_lib;
+  render_entities_func render_entities;
+  render_sprite_func render_sprite;
+  load_texture_func load_texture;
+  double _t_prev;
+  size_t entities_size;
+  
+  debug_renderer debug_renderer;
+  entity entities[8];
+  float view_matrix[16];
+  float ortho_projection[16];
+  GLuint textures[TEXTURE_COUNT];
+  
   camera camera;
+  input_state input;
+  
+  int play;
+  int width;
+  int height;
   GLuint quad_VAO;
   GLuint sprite_shader;
   GLuint translation_loc;
@@ -115,17 +135,7 @@ struct game {
   GLuint tint_loc;
   GLuint sprite_offset_loc;
   GLuint sprite_size_loc;
-  float view_matrix[16];
-  float ortho_projection[16];
-  float dt;  
-  double _t_prev;
-  input_state input;
-  entity entities[8];
-  size_t entities_size;
-  GLuint textures[TEXTURE_COUNT];
-  render_entities_func render_entities;
-  render_sprite_func render_sprite;
-  load_texture_func load_texture;
+  float dt;
 };
 
-#endif // !GAME_H
+#endif
