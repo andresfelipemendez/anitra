@@ -8,7 +8,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
-
+#include <physics.h>
 #include <glad.h>
 
 void update_input(game* g) {
@@ -48,6 +48,7 @@ EXPORT void update_engine(game *g) {
     if (!g || !g->ctx) return;
     g->debug_renderer.current_line_count = 0;
 
+    collision(g);
     update_input(g);
     update_camera_matrix(&g->camera, g->view_matrix);
     update_animation(g);
@@ -57,6 +58,9 @@ EXPORT void update_engine(game *g) {
     glUseProgram(g->debug_renderer.debug_shader);
     if (g->debug_renderer.debug_projection_loc != -1) {
         glUniformMatrix4fv(g->debug_renderer.debug_projection_loc, 1, GL_FALSE, g->ortho_projection);
+    }
+    if (g->debug_renderer.debug_view_loc != -1) {
+        glUniformMatrix4fv(g->debug_renderer.debug_view_loc, 1, GL_FALSE, g->view_matrix);
     }
     
 

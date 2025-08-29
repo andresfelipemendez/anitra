@@ -51,11 +51,21 @@ struct animator {
      bool playing = true;
 };
 
+typedef enum {
+    COLLIDER
+} collider_type;
+
+struct collider {
+    collider_type type;
+    rect rect;
+};
+
 typedef struct entity {
     vec2 pos;
     float health;
     sprite_sheet sprite_sheet;
     sprite spr;
+    collider collider;
     animator current_animation;
 } entity;
 

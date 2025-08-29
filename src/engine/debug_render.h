@@ -22,6 +22,7 @@ typedef struct {
     GLuint line_VAO, line_VBO;
     GLuint circle_VAO, circle_VBO;
     GLuint debug_projection_loc;
+    GLuint debug_view_loc;
     GLuint debug_translation_loc;
     
     float* vertex_buffer;

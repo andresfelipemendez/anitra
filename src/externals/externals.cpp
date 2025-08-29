@@ -133,10 +133,11 @@ int load_shader(game* g) {
       "layout(location = 0) in vec2 aPos;\n"
       "layout(location = 1) in vec3 aColor;\n"
       "uniform mat4 projection;\n"
+      "uniform mat4 view;\n"
       "uniform vec2 translation;\n"
       "out vec3 vertexColor;\n"
       "void main() {\n"
-      "    gl_Position = projection * vec4(aPos + translation, 0.0, 1.0);\n"
+      "    gl_Position = projection * view * vec4(aPos + translation, 0.0, 1.0);\n"
       "    vertexColor = aColor;\n"
       "}\n";
 
@@ -151,6 +152,7 @@ int load_shader(game* g) {
     debug_renderer* dr = &g->debug_renderer;
     dr->debug_shader = create_shader_program(debug_vertex_shader, debug_fragment_shader);
     dr->debug_projection_loc = glGetUniformLocation(dr->debug_shader, "projection");
+    dr->debug_view_loc = glGetUniformLocation(dr->debug_shader, "view");
     dr->debug_translation_loc = glGetUniformLocation(dr->debug_shader, "translation");
     
     dr->max_lines = 1000;
