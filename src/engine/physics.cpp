@@ -23,8 +23,8 @@ void collision(game* g) {
     entity* player = &scene.entities[0];
     assert(player->type == PLAYER);
     
-    player->collider.rect.x = player->pos.x;
-    player->collider.rect.y = player->pos.y;
+    player->collider.rect.x = player->pos.x + (player->velocity.x * g->dt);
+    player->collider.rect.y = player->pos.y + (player->velocity.y * g->dt);
     
     vec2 player_center = {player->collider.rect.x, player->collider.rect.y};
     debug_draw_rect(&g->debug_renderer, player_center, player->collider.rect.w, player->collider.rect.h, DEBUG_BLUE);
@@ -64,4 +64,41 @@ void collision(game* g) {
         debug_draw_line(&g->debug_renderer, enemy_center_h1, enemy_center_h2, DEBUG_RED);
         debug_draw_line(&g->debug_renderer, enemy_center_v1, enemy_center_v2, DEBUG_RED);
     }
+
+    player->collider.rect.x = player->pos.x;
+    player->collider.rect.y = player->pos.y;
+}
+
+void apply_movement(game* g) {
+    entity* player = &scene.entities[0];
+    assert(player->type == PLAYER);
+        
+    vec2 new_pos = {
+        player->pos.x + player->velocity.x * g->dt,
+        player->pos.y + player->velocity.y * g->dt
+    };
+    
+    player->collider.rect.x = new_pos.x;
+    player->collider.rect.y = new_pos.y;
+    
+    bool collision_detected = false;
+    
+    for (int j = 1; j < scene.entity_count; j++) {
+        entity* other = &scene.entities[j];
+        other->collider.rect.x = other->pos.x;
+        other->collider.rect.y = other->pos.y;
+        
+        if (bbox_collide(player->collider, other->collider)) {
+            collision_detected = true;
+            break;
+        }
+    }
+    
+    if (!collision_detected) {
+        player->pos = new_pos;
+    }
+    
+    player->velocity.x = 0.0f;
+    player->velocity.y = 0.0f;
+    
 }
