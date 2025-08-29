@@ -7,6 +7,7 @@ extern sprite_sheet player;
 extern sprite_sheet slime;
 
 extern const animation_clip player_walk_down;
+extern const animation_clip player_attack_anim;
 
 struct Scene {
     int entity_count;

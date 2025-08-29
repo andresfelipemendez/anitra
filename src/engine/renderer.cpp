@@ -298,20 +298,13 @@ void render_entities(game* g) {
             entity* e = &scene.entities[i];
             float x = e->pos.x;
             float y = e->pos.y;
-            int sprite_id = e->current_animation.frame_index;
+            int sprite_id = e->current_animation.animation.frames[e->current_animation.frame_index];
             
             // Render entity sprite at 4x pixel scale
             if (g->textures[e->sprite_sheet.texture_id] != 0) {
-                if (sprite_id >= 0 && sprite_id < 6) { // Updated to 6 for slime sprites
                     pixel_rect pixel_region = e->sprite_sheet.sprites[sprite_id];
                     render_sprite_pixel_perfect(g, g->textures[e->sprite_sheet.texture_id], x, y, 
                                                pixel_region, e->sprite_sheet.width, e->sprite_sheet.height);
-                } else {
-                    // Fallback: render first sprite if index is out of bounds
-                    pixel_rect pixel_region = e->sprite_sheet.sprites[0];
-                    render_sprite_pixel_perfect(g, g->textures[e->sprite_sheet.texture_id], x, y, 
-                                               pixel_region, e->sprite_sheet.width, e->sprite_sheet.height);
-                }
             }
             
             render_health_bar(g, x, y, e->health, 100.0f); // assuming max health is 100
