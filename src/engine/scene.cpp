@@ -16,11 +16,19 @@ sprite_sheet player = {
     .width = 415,
     .height = 368,
     .sprites = {
+        
         {16,  16,  16, 16},
         {32,  16,  16, 16},
         {48,  16,  16, 16},
         {64,  16,  16, 16},
         {80,  16,  16, 16},
+        {0,  192,   48, 48},
+        {48, 192,   48, 48},
+        {96, 192,   48, 48},
+        {144, 192,   48, 48},
+        {192, 192,   48, 48},
+        {240, 192,   48, 48},
+        
     }
 };
 
@@ -39,9 +47,21 @@ sprite_sheet slime = {
 };
 
 const animation_clip player_walk_down = {
-    .frames = {0,1,2,3,4},
+    .frames = {5,6,7},
     .frame_time = 0.16f,
     .frame_count = 5,
+};
+
+const animation_clip slime_idle = {
+    .frames = {0,1,2,3,4,5},
+    .frame_time = 0.16f,
+    .frame_count = 5,
+};
+
+const animation_clip player_attack_anim = {
+    .frames = {5,6,7,8,9,10},
+    .frame_time = 0.08f,
+    .frame_count = 6,
 };
 
 Scene scene = {
@@ -50,7 +70,7 @@ Scene scene = {
         {
             .sprite_sheet = player,
             .current_animation = {
-                .animation = player_walk_down,
+                .animation = player_attack_anim,
             },
             .collider = {
                 .rect = {160.0f, 160.0f, 58.0f, 64.0f},
@@ -64,7 +84,7 @@ Scene scene = {
         {
             .sprite_sheet = slime,
             .current_animation = {
-                .animation = player_walk_down,
+                .animation = slime_idle,
             },
             .collider = {
                 .rect = {160.0f, 80.0f, 59.0f, 50.0f},
