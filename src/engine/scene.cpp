@@ -52,6 +52,10 @@ Scene scene = {
             .current_animation = {
                 .animation = player_walk_down,
             },
+            .collider = {
+                .rect = {160.0f, 160.0f, 58.0f, 64.0f},
+                .type = COLLIDER,
+            },
             .pos = {160.0f, 160.0f},
             .health = 100.0f,
             .type = PLAYER,
@@ -60,6 +64,10 @@ Scene scene = {
             .sprite_sheet = slime,
             .current_animation = {
                 .animation = player_walk_down,
+            },
+            .collider = {
+                .rect = {160.0f, 80.0f, 59.0f, 50.0f},
+                .type = COLLIDER,
             },
             .pos = {160.0f, 80.0f},
             .health = 50.0f,

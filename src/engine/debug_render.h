@@ -31,6 +31,7 @@ typedef struct {
 } debug_renderer;
 
 void debug_draw_line(debug_renderer* dr, vec2 start, vec2 end, debug_color color);
+void debug_draw_rect(debug_renderer* dr, vec2 center, float width, float height, debug_color color);
 
 static const debug_color DEBUG_RED = {1.0f, 0.0f, 0.0f};
 static const debug_color DEBUG_GREEN = {0.0f, 1.0f, 0.0f};
