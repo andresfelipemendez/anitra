@@ -72,6 +72,7 @@ typedef struct entity {
     collider collider;
     sprite spr;
     vec2 pos;
+    vec2 velocity;
     float health;
     entity_type type;
 } entity;

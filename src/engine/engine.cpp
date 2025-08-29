@@ -17,8 +17,8 @@ void update_input(game* g) {
     entity* player = &scene.entities[0];
     const float move_speed = 200.0f;
     
-    player->pos.x += g->input.horizontal * move_speed * g->dt;
-    player->pos.y += g->input.vertical * move_speed * g->dt;
+    player->velocity.x = g->input.horizontal * move_speed;
+    player->velocity.y = g->input.vertical * move_speed;
 
     bool attack_pressed = (g->input.input_mask & INPUT_A) ;
     if(attack_pressed) {
@@ -48,8 +48,9 @@ EXPORT void update_engine(game *g) {
     if (!g || !g->ctx) return;
     g->debug_renderer.current_line_count = 0;
 
-    collision(g);
     update_input(g);
+    collision(g);
+    apply_movement(g);
     update_camera_matrix(&g->camera, g->view_matrix);
     update_animation(g);
     render_tiles(g);
