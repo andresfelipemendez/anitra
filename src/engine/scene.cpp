@@ -47,7 +47,7 @@ Scene scene = {
     .entity_count = 2,
     .entities = {
         {
-            .pos = {150.0f, 150.0f},
+            .pos = {160.0f, 160.0f},  // Position in 4x pixel coordinates
             .health = 100.0f,
             .sprite_sheet = player,
             .current_animation = {
@@ -55,8 +55,8 @@ Scene scene = {
             }
         },
         {
-            .pos = {150.0f, 10.0f},
-            .health = 75.0f,
+            .pos = {160.0f, 80.0f},  // Position in 4x pixel coordinates
+            .health = 5.0f,
             .sprite_sheet = slime,
             .current_animation = {
                 .animation = player_walk_down,

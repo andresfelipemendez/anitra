@@ -120,7 +120,7 @@ void render_tiles(game* g) {
     for (int y = 0; y < rows; y++) {
         for (int x = 0; x < cols; x++) {
             int tile = level[rows - 1 - y][cols - 1 - x];
-            render_tile(g, tile, x * 64, y * 64);
+            render_tile(g, tile, x * 64, y * 64);  // Use 4x pixel coordinates (16*4=64)
         }
     }
 }
@@ -130,8 +130,8 @@ void render_sprite_pixel_perfect(game* g, GLuint texture, float x, float y, pixe
         return;
     }
     
-    float quad_width = sprite_rect.w * 4.0f;
-    float quad_height = sprite_rect.h * 4.0f;
+    float quad_width = sprite_rect.w * 4.0f;   // 4x pixel scaling
+    float quad_height = sprite_rect.h * 4.0f;  // 4x pixel scaling
     
     float hw = quad_width * 0.5f;   
     float hh = quad_height * 0.5f;

@@ -18,6 +18,9 @@
 #endif
 #include <tracy/Tracy.hpp>
 
+// Forward declarations
+void compile_dll();
+
 std::atomic<bool> reloadFlag(false);
 
 void waitforreloadsignal(HANDLE hEvent) {
@@ -52,6 +55,10 @@ EXPORT void init_core() {
   signalThread.detach();
 
   game g;
+  
+  // Compile engine DLL before loading
+  compile_dll();
+  
   std::string src = cwd + "\\build\\debug\\engine.dll";
   std::string dest = cwd + "\\build\\debug\\engine_copy.dll";
   std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
