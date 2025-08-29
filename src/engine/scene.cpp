@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "game.h"
 
 sprite_sheet tiles = {
     .texture_id = TEXTURE_TILES,
@@ -39,28 +40,30 @@ sprite_sheet slime = {
 
 const animation_clip player_walk_down = {
     .frames = {0,1,2,3,4},
-    .frame_count = 5,
     .frame_time = 0.16f,
+    .frame_count = 5,
 };
 
 Scene scene = {
     .entity_count = 2,
     .entities = {
         {
-            .pos = {160.0f, 160.0f},  // Position in 4x pixel coordinates
-            .health = 100.0f,
             .sprite_sheet = player,
             .current_animation = {
                 .animation = player_walk_down,
-            }
+            },
+            .pos = {160.0f, 160.0f},
+            .health = 100.0f,
+            .type = PLAYER,
         },
         {
-            .pos = {160.0f, 80.0f},  // Position in 4x pixel coordinates
-            .health = 5.0f,
             .sprite_sheet = slime,
             .current_animation = {
                 .animation = player_walk_down,
-            }
+            },
+            .pos = {160.0f, 80.0f},
+            .health = 50.0f,
+            .type = ENEMY,
         },
     }
 };
