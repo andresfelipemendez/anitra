@@ -16,7 +16,6 @@ sprite_sheet player = {
     .width = 415,
     .height = 368,
     .sprites = {
-        
         {16,  16,  16, 16},
         {32,  16,  16, 16},
         {48,  16,  16, 16},
@@ -28,7 +27,6 @@ sprite_sheet player = {
         {144, 192,   48, 48},
         {192, 192,   48, 48},
         {240, 192,   48, 48},
-        
     }
 };
 
@@ -48,6 +46,7 @@ sprite_sheet slime = {
 
 const animation_clip player_walk_down = {
     .frames = {5,6,7},
+    .keyframes = {},
     .frame_time = 0.16f,
     .frame_count = 5,
 };
@@ -60,6 +59,10 @@ const animation_clip slime_idle = {
 
 const animation_clip player_attack_anim = {
     .frames = {5,6,7,8,9,10},
+    .collider = {0,-45,60,30},
+    .keyframes = {
+        {2},{3}
+    },
     .frame_time = 0.08f,
     .frame_count = 6,
 };
@@ -90,7 +93,7 @@ Scene scene = {
                 .rect = {160.0f, 80.0f, 59.0f, 50.0f},
                 .type = COLLIDER,
             },
-            .pos = {160.0f, 80.0f},
+            .pos = {160.0f, 0.0f},
             .velocity = {0.0f, 0.0f},
             .health = 50.0f,
             .type = ENEMY,

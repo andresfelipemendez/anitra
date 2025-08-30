@@ -97,7 +97,8 @@ void update_animation(game* g) {
         while (a->timer >= a->animation.frame_time) {
             a->timer -= a->animation.frame_time;
             a->frame_index = (a->frame_index + 1) % a->animation.frame_count;
-
+           
+            
             int current_frame_id = a->animation.frames[a->frame_index];
         }
     }

@@ -20,8 +20,6 @@ typedef struct {
     rect coords;
 } sprite;
 
-
-
 typedef enum {
     TEXTURE_PLAYER,
     TEXTURE_TILES,
@@ -38,8 +36,14 @@ struct sprite_sheet {
     pixel_rect sprites[64];
 };
 
+struct keyframe {
+    int frame = -1;
+};
+
 typedef struct {
     int frames[10];
+    rect collider;
+    keyframe keyframes[2];
     float frame_time;
     int frame_count;
 } animation_clip;
