@@ -29,7 +29,6 @@ void update_input(game* g) {
     const float camera_speed = 300.0f;
     const float zoom_speed = 2.0f;
     
-
     if (g->input.input_mask & INPUT_X) {
         g->camera.position.x += g->input.horizontal * camera_speed * g->dt;
         g->camera.position.y += g->input.vertical * camera_speed * g->dt;
@@ -49,11 +48,11 @@ EXPORT void update_engine(game *g) {
     g->debug_renderer.current_line_count = 0;
 
     update_input(g);
+    update_animation(g);
+    render_tiles(g);
     collision(g);
     apply_movement(g);
     update_camera_matrix(&g->camera, g->view_matrix);
-    update_animation(g);
-    render_tiles(g);
     render_entities(g);
 
     glUseProgram(g->debug_renderer.debug_shader);

@@ -4,16 +4,16 @@
 #include <cassert>
 #include <scene.h>
 
-bool bbox_collide(struct collider a, struct collider b) {
-    float a_left = a.rect.x - a.rect.w * 0.5f;
-    float a_right = a.rect.x + a.rect.w * 0.5f;
-    float a_top = a.rect.y + a.rect.h * 0.5f;
-    float a_bottom = a.rect.y - a.rect.h * 0.5f;
+bool bbox_collide(const rect& a, const rect& b) {
+    float a_left = a.x - a.w * 0.5f;
+    float a_right = a.x + a.w * 0.5f;
+    float a_top = a.y + a.h * 0.5f;
+    float a_bottom = a.y - a.h * 0.5f;
     
-    float b_left = b.rect.x - b.rect.w * 0.5f;
-    float b_right = b.rect.x + b.rect.w * 0.5f;
-    float b_top = b.rect.y + b.rect.h * 0.5f;
-    float b_bottom = b.rect.y - b.rect.h * 0.5f;
+    float b_left = b.x - b.w * 0.5f;
+    float b_right = b.x + b.w * 0.5f;
+    float b_top = b.y + b.h * 0.5f;
+    float b_bottom = b.y - b.h * 0.5f;
     
     return (a_left < b_right && a_right > b_left && 
             a_bottom < b_top && a_top > b_bottom);
@@ -29,6 +29,7 @@ void collision(game* g) {
     vec2 player_center = {player->collider.rect.x, player->collider.rect.y};
     debug_draw_rect(&g->debug_renderer, player_center, player->collider.rect.w, player->collider.rect.h, DEBUG_BLUE);
     
+
     float cross_size = 8.0f;
     vec2 center_h1 = {player->pos.x - cross_size, player->pos.y};
     vec2 center_h2 = {player->pos.x + cross_size, player->pos.y};
@@ -45,14 +46,46 @@ void collision(game* g) {
         e->collider.rect.y = e->pos.y;
         
         debug_color color = DEBUG_GREEN;
-        if (bbox_collide(player->collider, e->collider)) {
+        const animator& pa = player->current_animation;
+        if(pa.animation.keyframes[0].frame != -1 && 
+                pa.frame_index >= pa.animation.keyframes[0].frame && 
+                pa.frame_index <= pa.animation.keyframes[1].frame) {
+            vec2 hit_center = { 
+                player->pos.x + pa.animation.collider.x,
+                player->pos.y + pa.animation.collider.y,
+            };
+            debug_draw_rect(&g->debug_renderer, hit_center, pa.animation.collider.w, pa.animation.collider.h, DEBUG_YELLOW);
+            rect hit_box = {
+                player->pos.x + pa.animation.collider.x,
+                player->pos.y + pa.animation.collider.y,
+                pa.animation.collider.w, 
+                pa.animation.collider.h,
+            };
+            if(bbox_collide(hit_box, e->collider.rect)){
+                color = DEBUG_RED;
+                e->health -= 5 * g->dt;
+            }
+        }
+        if (bbox_collide(player->collider.rect, e->collider.rect)) {
             color = DEBUG_RED;
             player->health -= 5.0f * g->dt;
             if (player->health < 0.0f) {
                 player->health = 0.0f;
             }
         }
+        animator* a = &e->current_animation;
         
+        if(a->animation.keyframes[0].frame != -1 && 
+            a->frame_index >= a->animation.keyframes[0].frame && 
+            a->frame_index <= a->animation.keyframes[1].frame) {
+                
+            vec2 hit_center = { 
+                player->pos.x + a->animation.collider.x,
+                player->pos.y + a->animation.collider.y,
+            };
+            debug_draw_rect(&g->debug_renderer, hit_center, a->animation.collider.w, a->animation.collider.h, DEBUG_YELLOW);
+        }
+
         vec2 center = {e->collider.rect.x, e->collider.rect.y};
         debug_draw_rect(&g->debug_renderer, center, e->collider.rect.w, e->collider.rect.h, color);
         
@@ -88,7 +121,7 @@ void apply_movement(game* g) {
         other->collider.rect.x = other->pos.x;
         other->collider.rect.y = other->pos.y;
         
-        if (bbox_collide(player->collider, other->collider)) {
+        if (bbox_collide(player->collider.rect, other->collider.rect)) {
             collision_detected = true;
             break;
         }
