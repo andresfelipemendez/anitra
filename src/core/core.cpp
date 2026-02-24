@@ -78,7 +78,7 @@ void compile_dll() {
   std::string cwd = getCurrentWorkingDirectory();
   std::string command =
       "cd /d " + cwd +
-      " && build_engine.bat"; // Use /d to change the drive as well
+      " && build.exe engine"; // Use /d to change the drive as well
   std::cout << "Compiling DLL with command: " << command << std::endl;
   system(command.c_str());
 }

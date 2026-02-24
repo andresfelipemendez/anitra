@@ -5,3 +5,5 @@ build/
 /.cache
 /ninja
 /.vs
+/build.exe
+/build.obj
