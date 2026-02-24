@@ -1,8 +1,8 @@
 #ifndef PHYSICS_H
 #define PHYSICS_H
-struct game;
-struct collider;
-void collision(game* g);
-void apply_movement(game* g);
-bool bbox_collide(struct collider a, struct collider b);
+#include <stdbool.h>
+#include <game.h>
+void collision(struct game* g);
+void apply_movement(struct game* g);
+bool bbox_collide(rect a, rect b);
 #endif
