@@ -41,7 +41,8 @@
     "/Ilib\\SDL3\\include /Ilib\\SDL_shadercross\\include " \
     "/Ilib\\SDL_shadercross\\external\\SPIRV-Cross " \
     "/Ilib\\SDL_shadercross\\external\\prebuilt\\inc " \
-    "/Ilib\\tracy\\public"
+    "/Ilib\\tracy\\public " \
+    "/Ilib\\harfbuzz-src\\src"
 
 /* MSVC tool paths (resolved at startup to avoid Git's link.exe shadowing) */
 static char msvc_cl[MAX_PATH];
@@ -277,6 +278,21 @@ static int build_externals(void)
     printf("\n=== Building externals ===\n");
     if (ensure_dirs() != 0) return 1;
 
+    /* Compile HarfBuzz amalgamated (C++) */
+    if (needs_rebuild("lib\\harfbuzz-src\\src\\harfbuzz.cc",
+                       OBJ_EXT_DIR "\\harfbuzz.obj")) {
+        snprintf(cmd, sizeof(cmd),
+            "\"%s\" /std:c++17 /EHsc /MD /Zi /Od /nologo /c "
+            "/DHAVE_DIRECTWRITE "
+            "/Ilib\\harfbuzz-src\\src "
+            "/Fo" OBJ_EXT_DIR "\\harfbuzz.obj "
+            "/Fd" OBJ_EXT_DIR "\\harfbuzz.pdb "
+            "lib\\harfbuzz-src\\src\\harfbuzz.cc",
+            msvc_cl);
+        if (run_cmd(cmd) != 0) return 1;
+        any_rebuilt = 1;
+    }
+
     for (i = 0; i < count; i++) {
         if (needs_rebuild(sources[i], objs[i])) {
             snprintf(cmd, sizeof(cmd),
@@ -304,6 +320,8 @@ static int build_externals(void)
                 return 1;
             }
         }
+        pos += snprintf(obj_list + pos, sizeof(obj_list) - pos,
+                        OBJ_EXT_DIR "\\harfbuzz.obj ");
 
         rand_hex(pdb_suffix, 8);
 
@@ -316,7 +334,7 @@ static int build_externals(void)
             DEBUG_DIR "\\SDL3.lib "
             DEBUG_DIR "\\SDL3_shadercross.lib "
             DEBUG_DIR "\\TracyClient.lib "
-            "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
+            "ws2_32.lib dbghelp.lib advapi32.lib user32.lib dwrite.lib",
             msvc_link, pdb_suffix, obj_list);
         if (run_cmd(cmd) != 0) return 1;
     } else {
