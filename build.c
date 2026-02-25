@@ -42,7 +42,8 @@
     "/Ilib\\SDL_shadercross\\external\\SPIRV-Cross " \
     "/Ilib\\SDL_shadercross\\external\\prebuilt\\inc " \
     "/Ilib\\tracy\\public " \
-    "/Ilib\\harfbuzz-src\\src"
+    "/Ilib\\harfbuzz-src\\src " \
+    "/Ilib\\clay"
 
 /* MSVC tool paths (resolved at startup to avoid Git's link.exe shadowing) */
 static char msvc_cl[MAX_PATH];
@@ -56,9 +57,10 @@ static char msvc_lib[MAX_PATH];
 static int find_msvc_tools(void)
 {
     /*
-     * Find cl.exe in PATH, then derive link.exe and lib.exe from same dir.
-     * If the found cl.exe is the x86 version, try to use the x64 version
-     * instead (since our libraries are x64).
+     * Strategy:
+     *  1. Try PATH first (fast path when running from Dev Command Prompt).
+     *  2. If cl.exe not in PATH, use vswhere to find VS, then run vcvarsall
+     *     to set up the full environment (INCLUDE, LIB, PATH, etc.).
      */
     char cl_path[MAX_PATH];
     char x64_path[MAX_PATH];
@@ -67,9 +69,99 @@ static int find_msvc_tools(void)
     DWORD len;
 
     len = SearchPathA(NULL, "cl.exe", NULL, MAX_PATH, cl_path, NULL);
+
     if (len == 0) {
-        printf("!! cl.exe not found in PATH. Run from VS Developer Command Prompt.\n");
-        return 1;
+        /* cl.exe not in PATH — try to set up MSVC environment automatically */
+        char cmd[CMD_MAX];
+        FILE *fp;
+        char vs_path[MAX_PATH];
+        char vcvarsall[MAX_PATH];
+
+        /* Use vswhere to find VS installation */
+        fp = _popen(
+            "\"C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe\" "
+            "-latest -property installationPath 2>nul", "r");
+        if (!fp) {
+            printf("!! cl.exe not found and vswhere.exe not available.\n");
+            printf("!! Install Visual Studio or run from VS Developer Command Prompt.\n");
+            return 1;
+        }
+        if (!fgets(vs_path, MAX_PATH, fp)) {
+            _pclose(fp);
+            printf("!! vswhere.exe found no Visual Studio installation.\n");
+            return 1;
+        }
+        _pclose(fp);
+
+        /* Strip trailing newline */
+        {
+            size_t slen = strlen(vs_path);
+            while (slen > 0 && (vs_path[slen-1] == '\n' || vs_path[slen-1] == '\r'))
+                vs_path[--slen] = '\0';
+        }
+
+        snprintf(vcvarsall, MAX_PATH, "%s\\VC\\Auxiliary\\Build\\vcvarsall.bat", vs_path);
+        if (GetFileAttributesA(vcvarsall) == INVALID_FILE_ATTRIBUTES) {
+            printf("!! vcvarsall.bat not found at: %s\n", vcvarsall);
+            return 1;
+        }
+
+        /*
+         * Run vcvarsall, dump the resulting environment into a temp file,
+         * then parse it to set our process environment.
+         */
+        {
+            char tmp_file[MAX_PATH];
+            char line[8192];
+            FILE *env_fp;
+
+            GetTempPathA(MAX_PATH, tmp_file);
+            strcat(tmp_file, "anitra_env.txt");
+
+            snprintf(cmd, sizeof(cmd),
+                "cmd /C \"call \"%s\" x64 >nul 2>&1 && set > \"%s\"\"",
+                vcvarsall, tmp_file);
+            if (system(cmd) != 0) {
+                printf("!! vcvarsall.bat failed.\n");
+                return 1;
+            }
+
+            env_fp = fopen(tmp_file, "r");
+            if (!env_fp) {
+                printf("!! failed to read environment from vcvarsall.\n");
+                return 1;
+            }
+
+            while (fgets(line, sizeof(line), env_fp)) {
+                /* Strip trailing newline */
+                size_t slen = strlen(line);
+                while (slen > 0 && (line[slen-1] == '\n' || line[slen-1] == '\r'))
+                    line[--slen] = '\0';
+                /* Only import vars that matter for compilation */
+                if (strncmp(line, "PATH=", 5) == 0 ||
+                    strncmp(line, "Path=", 5) == 0 ||
+                    strncmp(line, "LIB=", 4) == 0 ||
+                    strncmp(line, "LIBPATH=", 8) == 0 ||
+                    strncmp(line, "INCLUDE=", 8) == 0 ||
+                    strncmp(line, "WindowsSdkDir=", 14) == 0 ||
+                    strncmp(line, "WindowsSDKVersion=", 18) == 0 ||
+                    strncmp(line, "UCRTVersion=", 12) == 0 ||
+                    strncmp(line, "VCToolsInstallDir=", 18) == 0) {
+                    _putenv(line);
+                }
+            }
+            fclose(env_fp);
+            DeleteFileA(tmp_file);
+        }
+
+        printf("   MSVC environment set up via vcvarsall.bat\n");
+
+        /* Now cl.exe should be in PATH */
+        len = SearchPathA(NULL, "cl.exe", NULL, MAX_PATH, cl_path, NULL);
+        if (len == 0) {
+            printf("!! cl.exe still not found after running vcvarsall.\n");
+            return 1;
+        }
     }
 
     /*
@@ -79,7 +171,6 @@ static int find_msvc_tools(void)
      */
     arch_pos = strstr(cl_path, "\\x86\\cl.exe");
     if (arch_pos) {
-        /* Build the x64 path */
         strncpy(x64_path, cl_path, arch_pos - cl_path);
         x64_path[arch_pos - cl_path] = '\0';
         strcat(x64_path, "\\x64\\cl.exe");
@@ -95,45 +186,11 @@ static int find_msvc_tools(void)
         printf("!! unexpected cl.exe path: %s\n", cl_path);
         return 1;
     }
-    last_sep[1] = '\0'; /* keep trailing backslash */
+    last_sep[1] = '\0';
 
     snprintf(msvc_cl, MAX_PATH, "%scl.exe", cl_path);
     snprintf(msvc_link, MAX_PATH, "%slink.exe", cl_path);
     snprintf(msvc_lib, MAX_PATH, "%slib.exe", cl_path);
-
-    /*
-     * If we switched to x64 tools, fix the LIB environment variable too.
-     * The x86 environment has lib paths like ...\lib\x86 and ...\um\x86.
-     * Replace \x86 path segments with \x64 so the linker finds the right libs.
-     */
-    {
-        const char *old_lib = getenv("LIB");
-        if (old_lib && strstr(cl_path, "\\x64\\")) {
-            char new_lib[4096];
-            const char *p = old_lib;
-            char *out = new_lib;
-            char *end = new_lib + sizeof(new_lib) - 1;
-
-            while (*p && out < end) {
-                if (strncmp(p, "\\x86", 4) == 0 &&
-                    (p[4] == ';' || p[4] == '\\' || p[4] == '\0')) {
-                    if (out + 4 < end) {
-                        memcpy(out, "\\x64", 4);
-                        out += 4;
-                        p += 4;
-                    } else break;
-                } else {
-                    *out++ = *p++;
-                }
-            }
-            *out = '\0';
-            {
-                char env_str[4096 + 8];
-                snprintf(env_str, sizeof(env_str), "LIB=%s", new_lib);
-                _putenv(env_str);
-            }
-        }
-    }
 
     return 0;
 }
