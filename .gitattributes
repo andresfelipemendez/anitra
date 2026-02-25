@@ -3,3 +3,4 @@
 *.png filter=lfs diff=lfs merge=lfs -text
 tcc.exe filter=lfs diff=lfs merge=lfs -text
 libtcc.dll filter=lfs diff=lfs merge=lfs -text
+lib/SDL_shadercross/external/prebuilt/bin/x64/*.dll filter=lfs diff=lfs merge=lfs -text
