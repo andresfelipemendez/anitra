@@ -1,16 +1,13 @@
 #ifndef DEBUG_RENDER_H
 #define DEBUG_RENDER_H
 
-#include <glad.h>
-#include <math.h>
-
 typedef struct {
     float x, y;
 } vec2;
 
 typedef struct {
-    float x, y;        
-    float r, g, b;    
+    float x, y;
+    float r, g, b;
 } debug_vertex;
 
 typedef struct {
@@ -18,13 +15,6 @@ typedef struct {
 } debug_color;
 
 typedef struct {
-    GLuint debug_shader;
-    GLuint line_VAO, line_VBO;
-    GLuint circle_VAO, circle_VBO;
-    GLuint debug_projection_loc;
-    GLuint debug_view_loc;
-    GLuint debug_translation_loc;
-    
     float* vertex_buffer;
     int max_lines;
     int current_line_count;
