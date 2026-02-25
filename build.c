@@ -4,7 +4,7 @@
  * Compile:  cl build.c
  * Usage:    build.exe [target]
  *
- * Targets:  all (default), tracy, glad, sdl3, externals, core, engine, exe, clean
+ * Targets:  all (default), tracy, glad, sdl3, spirvcross, shadercross, externals, core, engine, exe, clean
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes cl.exe, link.exe, and lib.exe directly via system().
@@ -32,7 +32,9 @@
 #define OBJ_CORE_DIR    "build\\obj\\core"
 #define OBJ_ENGINE_DIR  "build\\obj\\engine"
 #define OBJ_EXE_DIR     "build\\obj\\exe"
-#define OBJ_SDL3_DIR    "build\\obj\\sdl3"
+#define OBJ_SDL3_DIR        "build\\obj\\sdl3"
+#define OBJ_SPIRVCROSS_DIR  "build\\obj\\spirvcross"
+#define OBJ_SHADERCROSS_DIR "build\\obj\\shadercross"
 
 /* Common include paths used by externals, core, engine, and exe targets */
 #define COMMON_INCLUDES \
@@ -190,7 +192,9 @@ static int ensure_dirs(void)
     if (ensure_dir(OBJ_CORE_DIR))   return 1;
     if (ensure_dir(OBJ_ENGINE_DIR)) return 1;
     if (ensure_dir(OBJ_EXE_DIR))    return 1;
-    if (ensure_dir(OBJ_SDL3_DIR))   return 1;
+    if (ensure_dir(OBJ_SDL3_DIR))       return 1;
+    if (ensure_dir(OBJ_SPIRVCROSS_DIR)) return 1;
+    if (ensure_dir(OBJ_SHADERCROSS_DIR)) return 1;
     return 0;
 }
 
@@ -974,6 +978,141 @@ static int build_sdl3(void)
     return 0;
 }
 
+/* ------- spirv-cross (DLL) ---------------------------------------------- */
+static int build_spirvcross(void)
+{
+    static const char *sources[] = {
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_cfg.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_cpp.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_cross.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_cross_c.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_cross_parsed_ir.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_cross_util.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_glsl.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_hlsl.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_msl.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_parser.cpp",
+        "lib\\SDL_shadercross\\external\\SPIRV-Cross\\spirv_reflect.cpp"
+    };
+    static const char *objs[] = {
+        OBJ_SPIRVCROSS_DIR "\\spirv_cfg.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_cpp.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_cross.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_cross_c.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_cross_parsed_ir.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_cross_util.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_glsl.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_hlsl.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_msl.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_parser.obj",
+        OBJ_SPIRVCROSS_DIR "\\spirv_reflect.obj"
+    };
+    int count = sizeof(sources) / sizeof(sources[0]);
+    int i;
+    int any_rebuilt = 0;
+    char cmd[CMD_MAX];
+    FILE *rsp;
+
+    printf("\n=== Building SPIRV-Cross ===\n");
+    if (ensure_dirs() != 0) return 1;
+
+    for (i = 0; i < count; i++) {
+        if (!needs_rebuild(sources[i], objs[i]))
+            continue;
+
+        snprintf(cmd, sizeof(cmd),
+            "\"%s\" /std:c++17 /EHsc /MD /O2 /nologo /c "
+            "/DSPVC_EXPORT_SYMBOLS "
+            "/Ilib\\SDL_shadercross\\external\\SPIRV-Cross "
+            "/Fo%s "
+            "/Fd" OBJ_SPIRVCROSS_DIR "\\spirvcross.pdb "
+            "%s",
+            msvc_cl, objs[i], sources[i]);
+        if (run_cmd(cmd) != 0) return 1;
+        any_rebuilt = 1;
+    }
+
+    if (any_rebuilt ||
+        needs_rebuild(objs[0], DEBUG_DIR "\\spirv-cross-c-shared.dll")) {
+
+        /* Write response file with all .obj paths */
+        rsp = fopen(OBJ_SPIRVCROSS_DIR "\\spirvcross_objs.txt", "w");
+        if (!rsp) {
+            printf("!! failed to create response file\n");
+            return 1;
+        }
+        for (i = 0; i < count; i++) {
+            fprintf(rsp, "%s\n", objs[i]);
+        }
+        fclose(rsp);
+
+        snprintf(cmd, sizeof(cmd),
+            "\"%s\" /nologo /DLL /DEBUG "
+            "/OUT:" DEBUG_DIR "\\spirv-cross-c-shared.dll "
+            "/IMPLIB:" DEBUG_DIR "\\spirv-cross-c-shared.lib "
+            "@" OBJ_SPIRVCROSS_DIR "\\spirvcross_objs.txt",
+            msvc_link);
+        if (run_cmd(cmd) != 0) return 1;
+    } else {
+        printf("   SPIRV-Cross is up to date.\n");
+    }
+
+    return 0;
+}
+
+/* ------- shadercross (DLL) ---------------------------------------------- */
+static int build_shadercross(void)
+{
+    char cmd[CMD_MAX];
+    int any_rebuilt = 0;
+
+    printf("\n=== Building SDL_shadercross ===\n");
+    if (ensure_dirs() != 0) return 1;
+
+    if (needs_rebuild("lib\\SDL_shadercross\\src\\SDL_shadercross.c",
+                      OBJ_SHADERCROSS_DIR "\\SDL_shadercross.obj")) {
+        snprintf(cmd, sizeof(cmd),
+            "\"%s\" /TC /MD /O2 /nologo /c "
+            "/DDLL_EXPORT "
+            "/DSDL_SHADERCROSS_DXC "
+            "/Ilib\\SDL_shadercross\\include "
+            "/Ilib\\SDL3\\include "
+            "/Ilib\\SDL_shadercross\\external\\SPIRV-Cross "
+            "/Ilib\\SDL_shadercross\\external\\prebuilt\\inc "
+            "/Fo" OBJ_SHADERCROSS_DIR "\\SDL_shadercross.obj "
+            "/Fd" OBJ_SHADERCROSS_DIR "\\shadercross.pdb "
+            "lib\\SDL_shadercross\\src\\SDL_shadercross.c",
+            msvc_cl);
+        if (run_cmd(cmd) != 0) return 1;
+        any_rebuilt = 1;
+    }
+
+    if (any_rebuilt ||
+        needs_rebuild(OBJ_SHADERCROSS_DIR "\\SDL_shadercross.obj",
+                      DEBUG_DIR "\\SDL3_shadercross.dll")) {
+        snprintf(cmd, sizeof(cmd),
+            "\"%s\" /nologo /DLL /DEBUG "
+            "/OUT:" DEBUG_DIR "\\SDL3_shadercross.dll "
+            "/IMPLIB:" DEBUG_DIR "\\SDL3_shadercross.lib "
+            OBJ_SHADERCROSS_DIR "\\SDL_shadercross.obj "
+            DEBUG_DIR "\\SDL3.lib "
+            DEBUG_DIR "\\spirv-cross-c-shared.lib "
+            "lib\\SDL_shadercross\\external\\prebuilt\\lib\\x64\\dxcompiler.lib",
+            msvc_link);
+        if (run_cmd(cmd) != 0) return 1;
+    } else {
+        printf("   SDL_shadercross is up to date.\n");
+    }
+
+    /* Copy DXC runtime DLLs to build output */
+    run_cmd("copy lib\\SDL_shadercross\\external\\prebuilt\\bin\\x64\\dxcompiler.dll "
+            DEBUG_DIR "\\");
+    run_cmd("copy lib\\SDL_shadercross\\external\\prebuilt\\bin\\x64\\dxil.dll "
+            DEBUG_DIR "\\");
+
+    return 0;
+}
+
 /* ------- all ------------------------------------------------------------ */
 static int build_all(void)
 {
@@ -982,6 +1121,8 @@ static int build_all(void)
     if (build_tracy() != 0) return 1;
     if (build_glad() != 0) return 1;
     if (build_sdl3() != 0) return 1;
+    if (build_spirvcross() != 0) return 1;
+    if (build_shadercross() != 0) return 1;
     if (build_externals() != 0) return 1;
     if (build_core() != 0) return 1;
     if (build_engine() != 0) return 1;
@@ -1007,16 +1148,18 @@ static void print_usage(void)
     printf("Usage: build.exe [target]\n");
     printf("\n");
     printf("Targets:\n");
-    printf("  all        Build everything (default)\n");
-    printf("  tracy      Build TracyClient static library\n");
-    printf("  glad       Build glad_loader DLL\n");
-    printf("  sdl3       Build SDL3 DLL\n");
-    printf("  externals  Build externals DLL (GLFW + OpenGL setup)\n");
-    printf("  core       Build core DLL\n");
-    printf("  engine     Build engine DLL\n");
-    printf("  exe        Build AnitraEngine executable\n");
-    printf("  clean      Delete build directory\n");
-    printf("  help       Show this message\n");
+    printf("  all          Build everything (default)\n");
+    printf("  tracy        Build TracyClient static library\n");
+    printf("  glad         Build glad_loader DLL\n");
+    printf("  sdl3         Build SDL3 DLL\n");
+    printf("  spirvcross   Build SPIRV-Cross shared DLL\n");
+    printf("  shadercross  Build SDL_shadercross DLL\n");
+    printf("  externals    Build externals DLL (GLFW + OpenGL setup)\n");
+    printf("  core         Build core DLL\n");
+    printf("  engine       Build engine DLL\n");
+    printf("  exe          Build AnitraEngine executable\n");
+    printf("  clean        Delete build directory\n");
+    printf("  help         Show this message\n");
 }
 
 int main(int argc, char *argv[])
@@ -1040,6 +1183,10 @@ int main(int argc, char *argv[])
         rc = build_glad();
     } else if (strcmp(target, "sdl3") == 0) {
         rc = build_sdl3();
+    } else if (strcmp(target, "spirvcross") == 0) {
+        rc = build_spirvcross();
+    } else if (strcmp(target, "shadercross") == 0) {
+        rc = build_shadercross();
     } else if (strcmp(target, "externals") == 0) {
         rc = build_externals();
     } else if (strcmp(target, "core") == 0) {
