@@ -22,6 +22,7 @@
 void compile_dll();
 
 std::atomic<bool> reloadFlag(false);
+static void *engine_lib = NULL;
 
 void waitforreloadsignal(HANDLE hEvent) {
   std::cout << "Current wating for reload signal" << std::endl;
@@ -54,8 +55,8 @@ EXPORT void init_core() {
   std::thread signalThread(waitforreloadsignal, hEvent);
   signalThread.detach();
 
-  game g;
-  
+  game g = {};
+
   // Compile engine DLL before loading
   compile_dll();
   
@@ -63,10 +64,10 @@ EXPORT void init_core() {
   std::string dest = cwd + "\\build\\debug\\engine_copy.dll";
   std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
 
-  g.engine_lib = loadlibrary("engine_copy");
-  assign_init((init)getfunction(g.engine_lib, "init_engine"));
-  assign_destroy((destroy)getfunction(g.engine_lib, "destroy_engine"));
-  assign_update((update)getfunction(g.engine_lib, "update_engine"));
+  engine_lib = loadlibrary("engine_copy");
+  assign_init((init)getfunction(engine_lib, "init_engine"));
+  assign_destroy((destroy)getfunction(engine_lib, "destroy_engine"));
+  assign_update((update)getfunction(engine_lib, "update_engine"));
 
   init_externals(&g);
   init_engine(&g);
@@ -78,8 +79,15 @@ void compile_dll() {
   std::string cwd = getCurrentWorkingDirectory();
   std::string command =
       "cd /d " + cwd +
-      " && build.exe engine"; // Use /d to change the drive as well
-  std::cout << "Compiling DLL with command: " << command << std::endl;
+      " && tcc.exe -Blib/tcc -shared"
+      " -o build\\Debug\\engine.dll"
+      " -Isrc -Isrc/engine"
+      " src/engine/engine.c"
+      " src/engine/renderer.c"
+      " src/engine/physics.c"
+      " src/engine/scene.c"
+      " src/engine/debug_render.c";
+  std::cout << "TCC compiling engine: " << command << std::endl;
   system(command.c_str());
 }
 
@@ -151,17 +159,17 @@ void begin_game_loop(game &g) {
       destroy_engine(&g);
       printf("Reloading...\n");
 
-      unloadlibrary(g.engine_lib);
+      unloadlibrary(engine_lib);
 
       std::string cwd = getCurrentWorkingDirectory();
       std::string src = cwd + "\\build\\Debug\\engine.dll";
       std::string dest = cwd + "\\build\\Debug\\engine_copy.dll";
       std::filesystem::copy_file(src, dest, std::filesystem::copy_options::overwrite_existing);
 
-      g.engine_lib = loadlibrary("engine_copy");
-      assign_init((init)getfunction(g.engine_lib, "init_engine"));
-      assign_destroy((destroy)getfunction(g.engine_lib, "destroy_engine"));
-      assign_update((update)getfunction(g.engine_lib, "update_engine"));
+      engine_lib = loadlibrary("engine_copy");
+      assign_init((init)getfunction(engine_lib, "init_engine"));
+      assign_destroy((destroy)getfunction(engine_lib, "destroy_engine"));
+      assign_update((update)getfunction(engine_lib, "update_engine"));
       init_engine(&g);
     }
     update_externals(&g);
