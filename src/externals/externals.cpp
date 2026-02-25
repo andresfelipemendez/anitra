@@ -159,35 +159,16 @@ static FontData editor_font;
 // Helper: compile HLSL -> SPIRV -> SDL_GPUShader
 // ---------------------------------------------------------------------------
 
-static SDL_GPUShader* compile_shader_from_hlsl(
+static SDL_GPUShader* load_shader_from_spirv(
     const char* filename,
     const char* entrypoint,
     SDL_ShaderCross_ShaderStage stage)
 {
-    // Read HLSL source from disk
-    size_t file_size = 0;
-    void* file_data = SDL_LoadFile(filename, &file_size);
-    if (!file_data) {
-        fprintf(stderr, "Failed to load shader file: %s (%s)\n", filename, SDL_GetError());
-        return NULL;
-    }
-
-    // Compile HLSL -> SPIRV
-    SDL_ShaderCross_HLSL_Info hlsl_info = {};
-    hlsl_info.source = (const char*)file_data;
-    hlsl_info.entrypoint = entrypoint;
-    hlsl_info.include_dir = NULL;
-    hlsl_info.defines = NULL;
-    hlsl_info.shader_stage = stage;
-    hlsl_info.props = 0;
-
+    // Read pre-compiled SPIR-V from disk
     size_t spirv_size = 0;
-    void* spirv_bytecode = SDL_ShaderCross_CompileSPIRVFromHLSL(&hlsl_info, &spirv_size);
-    SDL_free(file_data);
-
+    void* spirv_bytecode = SDL_LoadFile(filename, &spirv_size);
     if (!spirv_bytecode) {
-        fprintf(stderr, "Failed to compile HLSL to SPIRV: %s entry=%s (%s)\n",
-                filename, entrypoint, SDL_GetError());
+        fprintf(stderr, "Failed to load SPIR-V file: %s (%s)\n", filename, SDL_GetError());
         return NULL;
     }
 
@@ -195,8 +176,7 @@ static SDL_GPUShader* compile_shader_from_hlsl(
     SDL_ShaderCross_GraphicsShaderMetadata* metadata =
         SDL_ShaderCross_ReflectGraphicsSPIRV((const Uint8*)spirv_bytecode, spirv_size, 0);
     if (!metadata) {
-        fprintf(stderr, "Failed to reflect SPIRV: %s entry=%s (%s)\n",
-                filename, entrypoint, SDL_GetError());
+        fprintf(stderr, "Failed to reflect SPIRV: %s (%s)\n", filename, SDL_GetError());
         SDL_free(spirv_bytecode);
         return NULL;
     }
@@ -216,8 +196,7 @@ static SDL_GPUShader* compile_shader_from_hlsl(
     SDL_free(spirv_bytecode);
 
     if (!shader) {
-        fprintf(stderr, "Failed to compile GPU shader: %s entry=%s (%s)\n",
-                filename, entrypoint, SDL_GetError());
+        fprintf(stderr, "Failed to compile GPU shader: %s (%s)\n", filename, SDL_GetError());
     }
 
     return shader;
@@ -867,10 +846,10 @@ EXPORT int init_externals(game *g) {
     }
 
     // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
-    SDL_GPUShader* sprite_vs = compile_shader_from_hlsl(
-        "assets\\shaders\\sprite_vs.hlsl", "VSMain", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-    SDL_GPUShader* sprite_fs = compile_shader_from_hlsl(
-        "assets\\shaders\\sprite_fs.hlsl", "PSMain", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+    SDL_GPUShader* sprite_vs = load_shader_from_spirv(
+        "assets/shaders/compiled/sprite_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+    SDL_GPUShader* sprite_fs = load_shader_from_spirv(
+        "assets/shaders/compiled/sprite_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!sprite_vs || !sprite_fs) {
         fprintf(stderr, "Failed to compile sprite shaders\n");
         return -1;
@@ -955,10 +934,10 @@ EXPORT int init_externals(game *g) {
     SDL_ReleaseGPUShader(gpu_device, sprite_fs);
 
     // 8. Compile debug line shaders (split files)
-    SDL_GPUShader* line_vs = compile_shader_from_hlsl(
-        "assets\\shaders\\debug_lines_vs.hlsl", "VSMain", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-    SDL_GPUShader* line_fs = compile_shader_from_hlsl(
-        "assets\\shaders\\debug_lines_fs.hlsl", "PSMain", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+    SDL_GPUShader* line_vs = load_shader_from_spirv(
+        "assets/shaders/compiled/debug_lines_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+    SDL_GPUShader* line_fs = load_shader_from_spirv(
+        "assets/shaders/compiled/debug_lines_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!line_vs || !line_fs) {
         fprintf(stderr, "Failed to compile debug line shaders\n");
         return -1;
@@ -1029,10 +1008,10 @@ EXPORT int init_externals(game *g) {
 
     // 10. Compile and create UI rect pipeline
     {
-        SDL_GPUShader *ui_vs = compile_shader_from_hlsl(
-            "assets\\shaders\\ui_rect_vs.hlsl", "VSMain", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-        SDL_GPUShader *ui_fs = compile_shader_from_hlsl(
-            "assets\\shaders\\ui_rect_fs.hlsl", "PSMain", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        SDL_GPUShader *ui_vs = load_shader_from_spirv(
+            "assets/shaders/compiled/ui_rect_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        SDL_GPUShader *ui_fs = load_shader_from_spirv(
+            "assets/shaders/compiled/ui_rect_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!ui_vs || !ui_fs) {
             fprintf(stderr, "Failed to compile UI rect shaders\n");
             return -1;
@@ -1096,10 +1075,10 @@ EXPORT int init_externals(game *g) {
 
     // 11. Compile and create font pipeline
     {
-        SDL_GPUShader *font_vs = compile_shader_from_hlsl(
-            "assets\\shaders\\font_vs.hlsl", "VSMain", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-        SDL_GPUShader *font_fs = compile_shader_from_hlsl(
-            "assets\\shaders\\font_fs.hlsl", "PSMain", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        SDL_GPUShader *font_vs = load_shader_from_spirv(
+            "assets/shaders/compiled/font_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        SDL_GPUShader *font_fs = load_shader_from_spirv(
+            "assets/shaders/compiled/font_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!font_vs || !font_fs) {
             fprintf(stderr, "Failed to compile font shaders\n");
             return -1;
@@ -1192,14 +1171,14 @@ EXPORT int init_externals(game *g) {
     }
 
     // 11. Load textures
-    gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture("assets\\char_spritesheet.png");
-    gpu_textures[TEXTURE_TILES]       = load_gpu_texture("assets\\Dungeon_Tileset.png");
-    gpu_textures[TEXTURE_SLIME]       = load_gpu_texture("assets\\pinkslime_spritesheet.png");
-    gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture("assets\\health_bar_hud.png");
-    gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture("assets\\health_hud.png");
+    gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture("assets/char_spritesheet.png");
+    gpu_textures[TEXTURE_TILES]       = load_gpu_texture("assets/Dungeon_Tileset.png");
+    gpu_textures[TEXTURE_SLIME]       = load_gpu_texture("assets/pinkslime_spritesheet.png");
+    gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture("assets/health_bar_hud.png");
+    gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture("assets/health_hud.png");
 
     // Load editor font and upload to GPU
-    if (font_load(&editor_font, "assets\\fonts\\SourceCodePro-Regular.ttf") != 0) {
+    if (font_load(&editor_font, "assets/fonts/SourceCodePro-Regular.ttf") != 0) {
         fprintf(stderr, "Failed to load editor font\n");
         return -1;
     }

@@ -8,7 +8,11 @@
 #define EXPORT __declspec(dllexport)
 #endif
 #else
+#ifdef __cplusplus
+#define EXPORT extern "C"
+#else
 #define EXPORT
+#endif
 #endif
 
 typedef void (*init)(struct game *g);
