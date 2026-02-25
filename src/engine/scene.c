@@ -46,13 +46,14 @@ sprite_sheet slime = {
 
 const animation_clip player_walk_down = {
     .frames = {5,6,7},
-    .keyframes = {},
+    .keyframes = {{-1},{-1}},
     .frame_time = 0.16f,
     .frame_count = 5,
 };
 
 const animation_clip slime_idle = {
     .frames = {0,1,2,3,4,5},
+    .keyframes = {{-1},{-1}},
     .frame_time = 0.16f,
     .frame_count = 5,
 };
@@ -67,39 +68,47 @@ const animation_clip player_attack_anim = {
     .frame_count = 6,
 };
 
-Scene scene = {
-    .entity_count = 2,
-    .entities = {
-        {
-            .sprite_sheet = player,
-            .current_animation = {
-                .animation = player_attack_anim,
-            },
-            .collider = {
-                .rect = {160.0f, 160.0f, 58.0f, 64.0f},
-                .type = COLLIDER,
-            },
-            .pos = {160.0f, 160.0f},
-            .velocity = {0.0f, 0.0f},
-            .health = 100.0f,
-            .type = PLAYER,
-        },
-        {
-            .sprite_sheet = slime,
-            .current_animation = {
-                .animation = slime_idle,
-            },
-            .collider = {
-                .rect = {160.0f, 80.0f, 59.0f, 50.0f},
-                .type = COLLIDER,
-            },
-            .pos = {160.0f, 0.0f},
-            .velocity = {0.0f, 0.0f},
-            .health = 50.0f,
-            .type = ENEMY,
-        },
-    }
-};
+Scene scene = {0};
+
+void scene_init(void) {
+    scene.entity_count = 2;
+
+    /* Player entity */
+    scene.entities[0].sprite_sheet = player;
+    scene.entities[0].current_animation.animation = player_attack_anim;
+    scene.entities[0].current_animation.timer = 0.0f;
+    scene.entities[0].current_animation.frame_index = 0;
+    scene.entities[0].current_animation.playing = 1;
+    scene.entities[0].collider.rect.x = 160.0f;
+    scene.entities[0].collider.rect.y = 160.0f;
+    scene.entities[0].collider.rect.w = 58.0f;
+    scene.entities[0].collider.rect.h = 64.0f;
+    scene.entities[0].collider.type = COLLIDER;
+    scene.entities[0].pos.x = 160.0f;
+    scene.entities[0].pos.y = 160.0f;
+    scene.entities[0].velocity.x = 0.0f;
+    scene.entities[0].velocity.y = 0.0f;
+    scene.entities[0].health = 100.0f;
+    scene.entities[0].type = PLAYER;
+
+    /* Slime entity */
+    scene.entities[1].sprite_sheet = slime;
+    scene.entities[1].current_animation.animation = slime_idle;
+    scene.entities[1].current_animation.timer = 0.0f;
+    scene.entities[1].current_animation.frame_index = 0;
+    scene.entities[1].current_animation.playing = 1;
+    scene.entities[1].collider.rect.x = 160.0f;
+    scene.entities[1].collider.rect.y = 80.0f;
+    scene.entities[1].collider.rect.w = 59.0f;
+    scene.entities[1].collider.rect.h = 50.0f;
+    scene.entities[1].collider.type = COLLIDER;
+    scene.entities[1].pos.x = 160.0f;
+    scene.entities[1].pos.y = 0.0f;
+    scene.entities[1].velocity.x = 0.0f;
+    scene.entities[1].velocity.y = 0.0f;
+    scene.entities[1].health = 50.0f;
+    scene.entities[1].type = ENEMY;
+}
 
 const int level[6][6] = {
     {1,1,1,1,1,1},

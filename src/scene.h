@@ -9,12 +9,13 @@ extern sprite_sheet slime;
 extern const animation_clip player_walk_down;
 extern const animation_clip player_attack_anim;
 
-struct Scene {
+typedef struct Scene {
     int entity_count;
     entity entities[8];
-};
+} Scene;
 
 extern Scene scene;
+void scene_init(void);
 
 extern const int level[6][6];
 

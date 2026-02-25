@@ -102,7 +102,6 @@ typedef struct camera {
 
 typedef struct game {
   double _t_prev;
-  size_t entities_size;
 
   debug_renderer debug_renderer;
   entity entities[8];

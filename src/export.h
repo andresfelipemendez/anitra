@@ -1,5 +1,12 @@
+#ifndef EXPORT_H
+#define EXPORT_H
+
 #ifdef _WIN32
+#ifdef __cplusplus
 #define EXPORT extern "C" __declspec(dllexport)
+#else
+#define EXPORT __declspec(dllexport)
+#endif
 #else
 #define EXPORT
 #endif
@@ -26,10 +33,6 @@ typedef void (*update)(struct game *g);
   EXPORT int func(struct game *g);                                             \
   typedef int (*func##_func)(struct game * g);
 
-#define DECLARE_FUNC_VOID_pIMGUICONTEXT(func)                                  \
-  EXPORT void func(struct ImGuiContext *g);                                    \
-  typedef void (*func##_func)(struct ImGuiContext * g);
-
 #define DECLARE_FUNC_VOID_pINIT(func)                       \
   EXPORT void func(init g);                                 \
   typedef void (*func##_func)(init g);
@@ -41,3 +44,5 @@ typedef void (*update)(struct game *g);
 #define DECLARE_FUNC_VOID_pUPDATE(func)                       \
   EXPORT void func(update g);                                 \
   typedef void (*func##_func)(update g);
+
+#endif /* EXPORT_H */
