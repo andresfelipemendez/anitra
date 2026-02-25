@@ -6,9 +6,9 @@
 
 Extract the file watching and compilation responsibilities from the engine (core.cpp) into a `build.exe watch` mode. The engine should never touch the compiler. Two processes running side by side: forge builds, engine runs.
 
-## Current State
+## Previous State (before implementation)
 
-`core.cpp` does everything: watches `src/` via `ReadDirectoryChangesW`, calls TCC to compile `engine.dll`, copies the DLL, and reloads it. The engine IS the builder. This violates the architecture described in BUILD.md and HOTRELOAD.md.
+`core.cpp` did everything: watched `src/` via `ReadDirectoryChangesW`, called TCC to compile `engine.dll`, copied the DLL, and reloaded it. The engine was the builder.
 
 ## Desired State
 
