@@ -489,7 +489,6 @@ static int watch_and_rebuild(void)
     OVERLAPPED overlapped = {0};
     char src_path[MAX_PATH];
     char dst_path[MAX_PATH];
-    DWORD cwd_len;
 
     printf("=== Forge: watching src\\engine for changes ===\n");
     fflush(stdout);
@@ -526,12 +525,12 @@ static int watch_and_rebuild(void)
     }
 
     /* Build absolute paths for DLL copy */
-    cwd_len = GetCurrentDirectoryA(MAX_PATH, src_path);
-    snprintf(src_path + cwd_len, MAX_PATH - cwd_len,
-             "\\build\\Debug\\engine.dll");
-    GetCurrentDirectoryA(MAX_PATH, dst_path);
-    snprintf(dst_path + cwd_len, MAX_PATH - cwd_len,
-             "\\build\\Debug\\engine_copy.dll");
+    {
+        char cwd[MAX_PATH];
+        GetCurrentDirectoryA(MAX_PATH, cwd);
+        snprintf(src_path, MAX_PATH, "%s\\build\\Debug\\engine.dll", cwd);
+        snprintf(dst_path, MAX_PATH, "%s\\build\\Debug\\engine_copy.dll", cwd);
+    }
 
     /* Ensure build output directory exists */
     if (ensure_dirs() != 0) return 1;
@@ -543,7 +542,6 @@ static int watch_and_rebuild(void)
         CopyFileA(src_path, dst_path, FALSE);
         printf("   Initial compile OK, engine_copy.dll ready.\n");
         SetEvent(hEvent);
-        ResetEvent(hEvent);
     } else {
         printf("!! Initial compile failed. Waiting for changes...\n");
     }
