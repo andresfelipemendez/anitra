@@ -1,11 +1,11 @@
 /*
  * build.c - nobuild build system for the Anitra game engine
  *
- * Compile:  cl build.c                                  (Windows)
- *           ./tcc -Blib/tcc-linux -o build build.c      (Linux)
- * Usage:    build [target]
+ * Compile:  tcc -Blib/tcc-windows -o builder.exe build.c  (Windows)
+ *           ./tcc -Blib/tcc-linux -o builder build.c      (Linux)
+ * Usage:    builder [target]
  *
- * Targets:  all (default), tracy, sdl3, spirvcross, shadercross, shaders, externals, core, engine, exe, watch, clean
+ * Targets:  all (default), run, tracy, sdl3, spirvcross, shadercross, shaders, externals, core, engine, exe, watch, clean
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes the platform's native toolchain directly via system().
@@ -739,7 +739,7 @@ static int build_engine(void)
 #define HOTRELOAD_EVENT_NAME "Global\\ReloadEvent"
 
 #define TCC_COMPILE_CMD \
-    ".\\tcc.exe -Blib/tcc -shared" \
+    ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/engine.dll" \
     " -Isrc -Isrc/engine" \
     " src/engine/engine.c" \
@@ -1970,6 +1970,70 @@ static int build_all(void)
     return 0;
 }
 
+/* ------- run ------------------------------------------------------------ */
+static int build_and_run(void)
+{
+    printf("=== Building and running engine ===\n\n");
+    
+    /* First build everything */
+    if (build_all() != 0) return 1;
+    
+    printf("\n=== Launching engine and starting watch mode ===\n");
+    
+#ifdef _WIN32
+    /* Launch the engine in a separate process */
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+    char engine_path[PATH_SIZE];
+    
+    si.cb = sizeof(si);
+    
+    snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine.exe", DEBUG_DIR);
+    
+    if (!CreateProcessA(
+            engine_path,
+            NULL,
+            NULL,
+            NULL,
+            FALSE,
+            0,
+            NULL,
+            NULL,
+            &si,
+            &pi)) {
+        printf("!! Failed to launch engine (error %lu)\n", GetLastError());
+        return 1;
+    }
+    
+    printf("   Engine launched (PID: %lu)\n", (unsigned long)pi.dwProcessId);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    
+    /* Now start watching for changes */
+    return watch_and_rebuild();
+#else
+    /* Fork and exec the engine on Linux */
+    pid_t pid = fork();
+    if (pid < 0) {
+        printf("!! Failed to fork\n");
+        return 1;
+    }
+    
+    if (pid == 0) {
+        /* Child process: run the engine */
+        char engine_path[PATH_SIZE];
+        snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
+        execl(engine_path, "AnitraEngine", NULL);
+        printf("!! Failed to exec engine\n");
+        exit(1);
+    }
+    
+    /* Parent process: watch for changes */
+    printf("   Engine launched (PID: %d)\n", pid);
+    return watch_and_rebuild();
+#endif
+}
+
 /* ------- clean ---------------------------------------------------------- */
 static int build_clean(void)
 {
@@ -1995,6 +2059,7 @@ static void print_usage(void)
     printf("\n");
     printf("Targets:\n");
     printf("  all          Build everything (default)\n");
+    printf("  run          Build everything, launch engine, and watch for changes\n");
     printf("  tracy        Build TracyClient static library\n");
     printf("  sdl3         Build SDL3 shared library\n");
     printf("  spirvcross   Build SPIRV-Cross shared library\n");
@@ -2024,6 +2089,8 @@ int main(int argc, char *argv[])
 
     if (strcmp(target, "all") == 0) {
         rc = build_all();
+    } else if (strcmp(target, "run") == 0) {
+        rc = build_and_run();
     } else if (strcmp(target, "tracy") == 0) {
         rc = build_tracy();
     } else if (strcmp(target, "sdl3") == 0) {
