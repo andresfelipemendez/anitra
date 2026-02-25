@@ -4,7 +4,7 @@
  * Compile:  cl build.c
  * Usage:    build.exe [target]
  *
- * Targets:  all (default), tracy, sdl3, spirvcross, shadercross, externals, core, engine, exe, clean
+ * Targets:  all (default), tracy, sdl3, spirvcross, shadercross, externals, core, engine, exe, watch, clean
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes cl.exe, link.exe, and lib.exe directly via system().
@@ -463,6 +463,141 @@ static int build_engine(void)
         printf("   engine is up to date.\n");
     }
 
+    return 0;
+}
+
+/* ------- watch (forge) -------------------------------------------------- */
+
+#define HOTRELOAD_EVENT_NAME "Global\\ReloadEvent"
+
+#define TCC_COMPILE_CMD \
+    ".\\tcc.exe -Blib/tcc -shared" \
+    " -o build\\Debug\\engine.dll" \
+    " -Isrc -Isrc/engine" \
+    " src/engine/engine.c" \
+    " src/engine/renderer.c" \
+    " src/engine/physics.c" \
+    " src/engine/scene.c" \
+    " src/engine/debug_render.c"
+
+static int watch_and_rebuild(void)
+{
+    HANDLE hDir;
+    HANDLE hEvent;
+    char buffer[4096];
+    DWORD bytesReturned;
+    OVERLAPPED overlapped = {0};
+    char src_path[MAX_PATH];
+    char dst_path[MAX_PATH];
+    DWORD cwd_len;
+
+    printf("=== Forge: watching src\\engine for changes ===\n");
+    fflush(stdout);
+
+    /* Open directory handle for watching */
+    hDir = CreateFileA(
+        "src\\engine",
+        FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+        NULL);
+    if (hDir == INVALID_HANDLE_VALUE) {
+        printf("!! Failed to open src\\engine for watching (error %lu)\n",
+               GetLastError());
+        return 1;
+    }
+
+    overlapped.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (overlapped.hEvent == NULL) {
+        printf("!! CreateEvent failed (error %lu)\n", GetLastError());
+        CloseHandle(hDir);
+        return 1;
+    }
+
+    /* Create/open the named event for signaling the engine */
+    hEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EVENT_NAME);
+    if (hEvent == NULL) {
+        printf("!! Failed to create reload event (error %lu)\n",
+               GetLastError());
+        CloseHandle(overlapped.hEvent);
+        CloseHandle(hDir);
+        return 1;
+    }
+
+    /* Build absolute paths for DLL copy */
+    cwd_len = GetCurrentDirectoryA(MAX_PATH, src_path);
+    snprintf(src_path + cwd_len, MAX_PATH - cwd_len,
+             "\\build\\Debug\\engine.dll");
+    GetCurrentDirectoryA(MAX_PATH, dst_path);
+    snprintf(dst_path + cwd_len, MAX_PATH - cwd_len,
+             "\\build\\Debug\\engine_copy.dll");
+
+    /* Ensure build output directory exists */
+    if (ensure_dirs() != 0) return 1;
+
+    /* Do an initial compile so engine_copy.dll exists on disk */
+    printf(">> " TCC_COMPILE_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_COMPILE_CMD) == 0) {
+        CopyFileA(src_path, dst_path, FALSE);
+        printf("   Initial compile OK, engine_copy.dll ready.\n");
+        SetEvent(hEvent);
+        ResetEvent(hEvent);
+    } else {
+        printf("!! Initial compile failed. Waiting for changes...\n");
+    }
+
+    /* Watch loop */
+    while (1) {
+        if (!ReadDirectoryChangesW(
+                hDir, buffer, sizeof(buffer), TRUE,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                &bytesReturned, &overlapped, NULL)) {
+            printf("!! ReadDirectoryChangesW failed (error %lu)\n",
+                   GetLastError());
+            break;
+        }
+
+        WaitForSingleObject(overlapped.hEvent, INFINITE);
+        ResetEvent(overlapped.hEvent);
+
+        /* Debounce: wait 50ms, drain any extra notifications */
+        Sleep(50);
+        {
+            OVERLAPPED drain = {0};
+            DWORD drained;
+            drain.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+            ReadDirectoryChangesW(hDir, buffer, sizeof(buffer), TRUE,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                &drained, &drain, NULL);
+            CancelIo(hDir);
+            CloseHandle(drain.hEvent);
+        }
+
+        printf("\n--- Change detected, recompiling... ---\n");
+        fflush(stdout);
+
+        printf(">> " TCC_COMPILE_CMD "\n");
+        fflush(stdout);
+
+        if (system(TCC_COMPILE_CMD) == 0) {
+            if (CopyFileA(src_path, dst_path, FALSE)) {
+                printf("   Compile OK. Signaling engine...\n");
+                SetEvent(hEvent);
+                ResetEvent(hEvent);
+            } else {
+                printf("!! DLL copy failed (error %lu)\n", GetLastError());
+            }
+        } else {
+            printf("!! Compile failed. Engine keeps running old code.\n");
+        }
+        fflush(stdout);
+    }
+
+    CloseHandle(hEvent);
+    CloseHandle(overlapped.hEvent);
+    CloseHandle(hDir);
     return 0;
 }
 
@@ -1115,6 +1250,7 @@ static void print_usage(void)
     printf("  core         Build core DLL\n");
     printf("  engine       Build engine DLL\n");
     printf("  exe          Build AnitraEngine executable\n");
+    printf("  watch        Watch src/engine and recompile on change (forge)\n");
     printf("  clean        Delete build directory\n");
     printf("  help         Show this message\n");
 }
@@ -1150,6 +1286,8 @@ int main(int argc, char *argv[])
         rc = build_engine();
     } else if (strcmp(target, "exe") == 0) {
         rc = build_exe();
+    } else if (strcmp(target, "watch") == 0) {
+        rc = watch_and_rebuild();
     } else if (strcmp(target, "clean") == 0) {
         rc = build_clean();
     } else if (strcmp(target, "help") == 0 || strcmp(target, "-h") == 0 ||
