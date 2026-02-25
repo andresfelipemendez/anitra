@@ -977,6 +977,11 @@ static int build_spirvcross(void)
         snprintf(cmd, sizeof(cmd),
             "\"%s\" /std:c++17 /EHsc /MD /O2 /nologo /c "
             "/DSPVC_EXPORT_SYMBOLS "
+            "/DSPIRV_CROSS_C_API_GLSL=1 "
+            "/DSPIRV_CROSS_C_API_HLSL=1 "
+            "/DSPIRV_CROSS_C_API_MSL=1 "
+            "/DSPIRV_CROSS_C_API_CPP=1 "
+            "/DSPIRV_CROSS_C_API_REFLECT=1 "
             "/Ilib\\SDL_shadercross\\external\\SPIRV-Cross "
             "/Fo%s "
             "/Fd" OBJ_SPIRVCROSS_DIR "\\spirvcross.pdb "

@@ -79,7 +79,7 @@ void compile_dll() {
   std::string cwd = getCurrentWorkingDirectory();
   std::string command =
       "cd /d " + cwd +
-      " && tcc.exe -Blib/tcc -shared"
+      " && .\\tcc.exe -Blib/tcc -shared"
       " -o build\\Debug\\engine.dll"
       " -Isrc -Isrc/engine"
       " src/engine/engine.c"

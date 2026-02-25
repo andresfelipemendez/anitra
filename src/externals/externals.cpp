@@ -112,6 +112,13 @@ static SDL_GPUShader* compile_shader_from_hlsl(
     spirv_info.shader_stage = stage;
     spirv_info.props = 0;
 
+    printf("  Reflect %s [%s]: samplers=%u storage_tex=%u storage_buf=%u uniform_buf=%u\n",
+           filename, entrypoint,
+           metadata->resource_info.num_samplers,
+           metadata->resource_info.num_storage_textures,
+           metadata->resource_info.num_storage_buffers,
+           metadata->resource_info.num_uniform_buffers);
+
     SDL_GPUShader* shader = SDL_ShaderCross_CompileGraphicsShaderFromSPIRV(
         gpu_device, &spirv_info, &metadata->resource_info, 0);
 
@@ -224,40 +231,44 @@ EXPORT int init_externals(game *g) {
         return -1;
     }
 
-    // 2. Create window
+    // 2. Init shadercross BEFORE creating GPU device (needs DXC/SPIRV-Cross loaded
+    //    so GetSPIRVShaderFormats returns correct format flags)
+    if (!SDL_ShaderCross_Init()) {
+        fprintf(stderr, "SDL_ShaderCross_Init failed: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    // 3. Create window
     window = SDL_CreateWindow("Anitra", 800, 600, SDL_WINDOW_RESIZABLE);
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         return -1;
     }
 
-    // 3. Create GPU device
+    // 4. Create GPU device
     gpu_device = SDL_CreateGPUDevice(
         SDL_ShaderCross_GetSPIRVShaderFormats(),
         true,  // debug_mode
-        NULL); // name (auto-select backend)
+        NULL); // auto-select (D3D12 on Windows)
     if (!gpu_device) {
         fprintf(stderr, "SDL_CreateGPUDevice failed: %s\n", SDL_GetError());
         return -1;
     }
 
-    // 4. Claim window
+    // 5. Claim window
     if (!SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
         fprintf(stderr, "SDL_ClaimWindowForGPUDevice failed: %s\n", SDL_GetError());
         return -1;
     }
 
-    // 5. Init shadercross
-    if (!SDL_ShaderCross_Init()) {
-        fprintf(stderr, "SDL_ShaderCross_Init failed: %s\n", SDL_GetError());
-        return -1;
-    }
+    printf("GPU driver: %s\n", SDL_GetGPUDeviceDriver(gpu_device));
+    printf("Shader formats: 0x%x\n", SDL_GetGPUShaderFormats(gpu_device));
 
-    // 6. Compile sprite shaders
+    // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
     SDL_GPUShader* sprite_vs = compile_shader_from_hlsl(
-        "assets\\shaders\\sprite.hlsl", "VSMain", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        "assets\\shaders\\sprite_vs.hlsl", "VSMain", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* sprite_fs = compile_shader_from_hlsl(
-        "assets\\shaders\\sprite.hlsl", "PSMain", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        "assets\\shaders\\sprite_fs.hlsl", "PSMain", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!sprite_vs || !sprite_fs) {
         fprintf(stderr, "Failed to compile sprite shaders\n");
         return -1;
@@ -341,11 +352,11 @@ EXPORT int init_externals(game *g) {
     SDL_ReleaseGPUShader(gpu_device, sprite_vs);
     SDL_ReleaseGPUShader(gpu_device, sprite_fs);
 
-    // 8. Compile debug line shaders
+    // 8. Compile debug line shaders (split files)
     SDL_GPUShader* line_vs = compile_shader_from_hlsl(
-        "assets\\shaders\\debug_lines.hlsl", "VSMain", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        "assets\\shaders\\debug_lines_vs.hlsl", "VSMain", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* line_fs = compile_shader_from_hlsl(
-        "assets\\shaders\\debug_lines.hlsl", "PSMain", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        "assets\\shaders\\debug_lines_fs.hlsl", "PSMain", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!line_vs || !line_fs) {
         fprintf(stderr, "Failed to compile debug line shaders\n");
         return -1;
