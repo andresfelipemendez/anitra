@@ -1,5 +1,7 @@
 # Forge — Separate Builder/Watcher Process
 
+> Status: Implemented (2026-02-25)
+
 ## Goal
 
 Extract the file watching and compilation responsibilities from the engine (core.cpp) into a `build.exe watch` mode. The engine should never touch the compiler. Two processes running side by side: forge builds, engine runs.
