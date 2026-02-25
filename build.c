@@ -4,7 +4,7 @@
  * Compile:  cl build.c
  * Usage:    build.exe [target]
  *
- * Targets:  all (default), tracy, glad, sdl3, spirvcross, shadercross, externals, core, engine, exe, clean
+ * Targets:  all (default), tracy, sdl3, spirvcross, shadercross, externals, core, engine, exe, clean
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes cl.exe, link.exe, and lib.exe directly via system().
@@ -27,7 +27,6 @@
 #define DEBUG_DIR       "build\\Debug"
 #define OBJ_DIR         "build\\obj"
 #define OBJ_TRACY_DIR   "build\\obj\\tracy"
-#define OBJ_GLAD_DIR    "build\\obj\\glad"
 #define OBJ_EXT_DIR     "build\\obj\\externals"
 #define OBJ_CORE_DIR    "build\\obj\\core"
 #define OBJ_ENGINE_DIR  "build\\obj\\engine"
@@ -39,7 +38,10 @@
 /* Common include paths used by externals, core, engine, and exe targets */
 #define COMMON_INCLUDES \
     "/Isrc /Isrc\\core /Isrc\\engine /Isrc\\externals /Iinclude " \
-    "/Ilib\\glad /Ilib\\glfw\\include /Ilib\\tracy\\public"
+    "/Ilib\\SDL3\\include /Ilib\\SDL_shadercross\\include " \
+    "/Ilib\\SDL_shadercross\\external\\SPIRV-Cross " \
+    "/Ilib\\SDL_shadercross\\external\\prebuilt\\inc " \
+    "/Ilib\\tracy\\public"
 
 /* MSVC tool paths (resolved at startup to avoid Git's link.exe shadowing) */
 static char msvc_cl[MAX_PATH];
@@ -187,7 +189,6 @@ static int ensure_dirs(void)
     if (ensure_dir(DEBUG_DIR))      return 1;
     if (ensure_dir(OBJ_DIR))        return 1;
     if (ensure_dir(OBJ_TRACY_DIR))  return 1;
-    if (ensure_dir(OBJ_GLAD_DIR))   return 1;
     if (ensure_dir(OBJ_EXT_DIR))    return 1;
     if (ensure_dir(OBJ_CORE_DIR))   return 1;
     if (ensure_dir(OBJ_ENGINE_DIR)) return 1;
@@ -256,47 +257,6 @@ static int build_tracy(void)
     return 0;
 }
 
-/* ------- glad (DLL) ----------------------------------------------------- */
-static int build_glad(void)
-{
-    char cmd[CMD_MAX];
-    int any_rebuilt = 0;
-
-    printf("\n=== Building glad_loader ===\n");
-    if (ensure_dirs() != 0) return 1;
-
-    if (needs_rebuild("lib\\glad\\glad.c",
-                      OBJ_GLAD_DIR "\\glad.obj")) {
-        snprintf(cmd, sizeof(cmd),
-            "\"%s\" /MD /Zi /Od /nologo /c "
-            "/DGLAD_GLAPI_EXPORT /DGLAD_GLAPI_EXPORT_BUILD "
-            "/Ilib\\glad "
-            "/Fo" OBJ_GLAD_DIR "\\glad.obj "
-            "/Fd" OBJ_GLAD_DIR "\\glad.pdb "
-            "lib\\glad\\glad.c",
-            msvc_cl);
-        if (run_cmd(cmd) != 0) return 1;
-        any_rebuilt = 1;
-    }
-
-    if (any_rebuilt ||
-        needs_rebuild(OBJ_GLAD_DIR "\\glad.obj",
-                      DEBUG_DIR "\\glad_loader.dll")) {
-        snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /DLL /DEBUG "
-            "/OUT:" DEBUG_DIR "\\glad_loader.dll "
-            "/IMPLIB:" DEBUG_DIR "\\glad_loader.lib "
-            OBJ_GLAD_DIR "\\glad.obj "
-            "opengl32.lib lib\\glfw\\lib\\glfw3.lib",
-            msvc_link);
-        if (run_cmd(cmd) != 0) return 1;
-    } else {
-        printf("   glad_loader is up to date.\n");
-    }
-
-    return 0;
-}
-
 /* ------- externals (DLL) ------------------------------------------------ */
 static int build_externals(void)
 {
@@ -321,7 +281,7 @@ static int build_externals(void)
         if (needs_rebuild(sources[i], objs[i])) {
             snprintf(cmd, sizeof(cmd),
                 "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-                "/DGLAD_GLAPI_EXPORT /DTRACY_ENABLE "
+                "/DTRACY_ENABLE "
                 COMMON_INCLUDES " "
                 "/Fo%s "
                 "/Fd" OBJ_EXT_DIR "\\externals.pdb "
@@ -353,10 +313,9 @@ static int build_externals(void)
             "/OUT:" DEBUG_DIR "\\externals.dll "
             "/IMPLIB:" DEBUG_DIR "\\externals.lib "
             "%s"
-            DEBUG_DIR "\\glad_loader.lib "
+            DEBUG_DIR "\\SDL3.lib "
+            DEBUG_DIR "\\SDL3_shadercross.lib "
             DEBUG_DIR "\\TracyClient.lib "
-            "opengl32.lib lib\\glfw\\lib\\glfw3.lib "
-            "gdi32.lib shell32.lib "
             "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
             msvc_link, pdb_suffix, obj_list);
         if (run_cmd(cmd) != 0) return 1;
@@ -422,8 +381,8 @@ static int build_core(void)
             "%s"
             DEBUG_DIR "\\externals.lib "
             DEBUG_DIR "\\TracyClient.lib "
-            "opengl32.lib lib\\glfw\\lib\\glfw3.lib "
-            "ws2_32.lib dbghelp.lib advapi32.lib user32.lib gdi32.lib shell32.lib",
+            DEBUG_DIR "\\SDL3.lib "
+            "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
             msvc_link, obj_list);
         if (run_cmd(cmd) != 0) return 1;
     } else {
@@ -465,7 +424,6 @@ static int build_engine(void)
         if (needs_rebuild(sources[i], objs[i])) {
             snprintf(cmd, sizeof(cmd),
                 "\"%s\" /TC /MD /Zi /Od /nologo /c "
-                "/DGLFW_STATIC /DGLAD_GLAPI_EXPORT "
                 COMMON_INCLUDES " "
                 "/Fo%s "
                 "/Fd" OBJ_ENGINE_DIR "\\engine.pdb "
@@ -497,10 +455,7 @@ static int build_engine(void)
             "/IMPLIB:" DEBUG_DIR "\\engine.lib "
             "%s"
             DEBUG_DIR "\\externals.lib "
-            DEBUG_DIR "\\glad_loader.lib "
             DEBUG_DIR "\\TracyClient.lib "
-            "opengl32.lib lib\\glfw\\lib\\glfw3.lib "
-            "gdi32.lib shell32.lib "
             "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
             msvc_link, pdb_suffix, obj_list);
         if (run_cmd(cmd) != 0) return 1;
@@ -536,7 +491,6 @@ static int build_exe(void)
         if (needs_rebuild(sources[i], objs[i])) {
             snprintf(cmd, sizeof(cmd),
                 "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-                "/DGLFW_STATIC "
                 COMMON_INCLUDES " "
                 "/Fo%s "
                 "/Fd" OBJ_EXE_DIR "\\exe.pdb "
@@ -563,8 +517,8 @@ static int build_exe(void)
             "\"%s\" /nologo /DEBUG "
             "/OUT:" DEBUG_DIR "\\AnitraEngine.exe "
             "%s"
-            "opengl32.lib lib\\glfw\\lib\\glfw3.lib "
-            "gdi32.lib user32.lib shell32.lib",
+            DEBUG_DIR "\\SDL3.lib "
+            "user32.lib",
             msvc_link, obj_list);
         if (run_cmd(cmd) != 0) return 1;
     } else {
@@ -1118,11 +1072,10 @@ static int build_all(void)
 {
     printf("=== Building all targets ===\n\n");
 
-    if (build_tracy() != 0) return 1;
-    if (build_glad() != 0) return 1;
     if (build_sdl3() != 0) return 1;
     if (build_spirvcross() != 0) return 1;
     if (build_shadercross() != 0) return 1;
+    if (build_tracy() != 0) return 1;
     if (build_externals() != 0) return 1;
     if (build_core() != 0) return 1;
     if (build_engine() != 0) return 1;
@@ -1150,11 +1103,10 @@ static void print_usage(void)
     printf("Targets:\n");
     printf("  all          Build everything (default)\n");
     printf("  tracy        Build TracyClient static library\n");
-    printf("  glad         Build glad_loader DLL\n");
     printf("  sdl3         Build SDL3 DLL\n");
     printf("  spirvcross   Build SPIRV-Cross shared DLL\n");
     printf("  shadercross  Build SDL_shadercross DLL\n");
-    printf("  externals    Build externals DLL (GLFW + OpenGL setup)\n");
+    printf("  externals    Build externals DLL\n");
     printf("  core         Build core DLL\n");
     printf("  engine       Build engine DLL\n");
     printf("  exe          Build AnitraEngine executable\n");
@@ -1179,8 +1131,6 @@ int main(int argc, char *argv[])
         rc = build_all();
     } else if (strcmp(target, "tracy") == 0) {
         rc = build_tracy();
-    } else if (strcmp(target, "glad") == 0) {
-        rc = build_glad();
     } else if (strcmp(target, "sdl3") == 0) {
         rc = build_sdl3();
     } else if (strcmp(target, "spirvcross") == 0) {
