@@ -112,13 +112,6 @@ static SDL_GPUShader* compile_shader_from_hlsl(
     spirv_info.shader_stage = stage;
     spirv_info.props = 0;
 
-    printf("  Reflect %s [%s]: samplers=%u storage_tex=%u storage_buf=%u uniform_buf=%u\n",
-           filename, entrypoint,
-           metadata->resource_info.num_samplers,
-           metadata->resource_info.num_storage_textures,
-           metadata->resource_info.num_storage_buffers,
-           metadata->resource_info.num_uniform_buffers);
-
     SDL_GPUShader* shader = SDL_ShaderCross_CompileGraphicsShaderFromSPIRV(
         gpu_device, &spirv_info, &metadata->resource_info, 0);
 
@@ -128,8 +121,6 @@ static SDL_GPUShader* compile_shader_from_hlsl(
     if (!shader) {
         fprintf(stderr, "Failed to compile GPU shader: %s entry=%s (%s)\n",
                 filename, entrypoint, SDL_GetError());
-    } else {
-        printf("Compiled shader: %s [%s]\n", filename, entrypoint);
     }
 
     return shader;
@@ -249,7 +240,7 @@ EXPORT int init_externals(game *g) {
     gpu_device = SDL_CreateGPUDevice(
         SDL_ShaderCross_GetSPIRVShaderFormats(),
         true,  // debug_mode
-        NULL); // auto-select (D3D12 on Windows)
+        NULL);
     if (!gpu_device) {
         fprintf(stderr, "SDL_CreateGPUDevice failed: %s\n", SDL_GetError());
         return -1;
@@ -260,9 +251,6 @@ EXPORT int init_externals(game *g) {
         fprintf(stderr, "SDL_ClaimWindowForGPUDevice failed: %s\n", SDL_GetError());
         return -1;
     }
-
-    printf("GPU driver: %s\n", SDL_GetGPUDeviceDriver(gpu_device));
-    printf("Shader formats: 0x%x\n", SDL_GetGPUShaderFormats(gpu_device));
 
     // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
     SDL_GPUShader* sprite_vs = compile_shader_from_hlsl(
