@@ -23,6 +23,10 @@ typedef struct editor_state {
     int   open;
     int   initialized;
 
+    /* Panel rect within the window (set by externals from dock layout each frame) */
+    float panel_x, panel_y;   /* top-left in window pixels */
+    float panel_w, panel_h;   /* content area size in pixels (below header) */
+
     /* Gizmo */
     int   gizmo_hovered;   /* 0=none, 1=X, 2=Y, 3=Z */
     int   gizmo_active;

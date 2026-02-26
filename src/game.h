@@ -6,6 +6,7 @@
 #include "draw_list.h"
 #include "gltf_types.h"
 #include "editor.h"
+#include "dock.h"
 
 #ifndef __cplusplus
 #include <stdbool.h>
@@ -160,6 +161,9 @@ typedef struct game {
 
   /* Editor state — populated by editor.dll, read by externals for rendering */
   editor_state editor;
+
+  /* Docking panel system — persists across hot-reload */
+  dock_state dock;
 } game;
 
 #endif

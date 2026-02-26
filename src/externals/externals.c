@@ -48,8 +48,7 @@ static SDL_GPUGraphicsPipeline *font_pipeline = NULL;
 // Mesh (3D skinned) pipeline
 static SDL_GPUGraphicsPipeline *mesh_pipeline = NULL;
 static SDL_GPUSampler *mesh_sampler = NULL;
-static SDL_GPUTexture *depth_texture = NULL;
-static Uint32 depth_w = 0, depth_h = 0;
+/* Per-panel depth textures live in panel_depth[] below */
 static SDL_GPUBuffer *bone_storage_buffer = NULL;
 static SDL_GPUTexture *white_texture = NULL;
 
@@ -70,17 +69,28 @@ static hb_face_t *hb_editor_face = NULL;
 static arena         *clay_arena_game = NULL;    // sub-arena backing Clay game context
 static Clay_Context  *clay_context = NULL;
 
-// Profiler window
-static SDL_Window    *profiler_window = NULL;
+// Clay profiler context (no longer a separate window — rendered to panel texture)
 static arena         *clay_arena_prof = NULL;    // sub-arena backing Clay profiler context
 static Clay_Context  *profiler_clay_context = NULL;
-static bool           profiler_open = true;
 
-// Scene editor window (rendering stays here, logic in editor.dll)
-static SDL_Window              *editor_window = NULL;
-static SDL_GPUTexture          *editor_depth_texture = NULL;
-static Uint32                   editor_depth_w = 0, editor_depth_h = 0;
+// Editor line pipeline (editor renders to panel texture)
 static SDL_GPUGraphicsPipeline *editor_line_pipeline = NULL;
+
+// Dock panel offscreen textures (render-to-texture per panel, composited into window)
+static SDL_GPUTexture *panel_color[PANEL_COUNT] = {0};
+static SDL_GPUTexture *panel_depth[PANEL_COUNT] = {0};
+static int panel_tex_w[PANEL_COUNT] = {0};
+static int panel_tex_h[PANEL_COUNT] = {0};
+
+// Composite pipeline (draws panel textures into window swapchain)
+static SDL_GPUGraphicsPipeline *composite_pipeline = NULL;
+static SDL_GPUSampler *composite_sampler = NULL;
+static SDL_GPUTextureFormat offscreen_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+
+// Pre-rendered tab header textures (CPU-rasterized text, created once at init)
+static SDL_GPUTexture *header_textures[PANEL_COUNT] = {0};
+static int header_tex_w[PANEL_COUNT] = {0};
+/* panel_names[] defined in dock.h */
 
 // Textures (one per TextureID enum)
 static SDL_GPUTexture *gpu_textures[TEXTURE_COUNT] = {NULL};
@@ -122,6 +132,133 @@ typedef struct font_vertex {
     float r, g, b, a;  // text color
     uint32_t glyph_id; // glyph index
 } font_vertex;
+
+typedef struct composite_vertex {
+    float x, y;       // NDC position
+    float u, v;        // UV
+    float r, g, b, a;  // tint color (multiplied with texture)
+} composite_vertex;
+
+/* Build composite quad vertices for a panel at a given rect in a window.
+   Converts pixel rect to NDC and writes 6 vertices (2 triangles).
+   r,g,b,a is the tint color multiplied with the texture sample. */
+static void build_composite_quad(composite_vertex *out, float px, float py,
+                                  float pw, float ph, float win_w, float win_h,
+                                  float u0_in, float v0_in, float u1_in, float v1_in,
+                                  float r, float g, float b, float a)
+{
+    /* Pixel to NDC: ndc_x = 2*px/win_w - 1, ndc_y = 1 - 2*py/win_h */
+    float x0 = 2.0f * px / win_w - 1.0f;
+    float y0 = 1.0f - 2.0f * py / win_h;
+    float x1 = 2.0f * (px + pw) / win_w - 1.0f;
+    float y1 = 1.0f - 2.0f * (py + ph) / win_h;
+
+    /* Triangle 1 */
+    out[0] = (composite_vertex){x0, y0, u0_in, v0_in, r, g, b, a};
+    out[1] = (composite_vertex){x1, y0, u1_in, v0_in, r, g, b, a};
+    out[2] = (composite_vertex){x1, y1, u1_in, v1_in, r, g, b, a};
+    /* Triangle 2 */
+    out[3] = (composite_vertex){x0, y0, u0_in, v0_in, r, g, b, a};
+    out[4] = (composite_vertex){x1, y1, u1_in, v1_in, r, g, b, a};
+    out[5] = (composite_vertex){x0, y1, u0_in, v1_in, r, g, b, a};
+}
+
+/* ── Per-window composite data (used in multi-window composite pass) ──── */
+#define MAX_COMP_QUADS 64  /* max quads per window (tabs + panels) */
+typedef enum { CQUAD_HEADER, CQUAD_PANEL } CompQuadType;
+typedef struct {
+    CompQuadType type;
+    PanelId panel;  /* which panel's texture to bind */
+} CompQuadInfo;
+typedef struct {
+    SDL_GPUBuffer *gpu_buf;
+    int quad_count;
+    CompQuadInfo quads[MAX_COMP_QUADS]; /* per-quad: what texture to bind */
+} CompWindowData;
+
+/* Count total composite quads needed for a subtree.
+   Each visible leaf produces: panel_count header quads + 1 panel content quad. */
+static int count_tree_quads(dock_state *d, int node_idx)
+{
+    DockNode *n;
+    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) return 0;
+    n = &d->nodes[node_idx];
+    if (!n->in_use) return 0;
+    if (n->type == DOCK_TABS) {
+        PanelId pid;
+        if (n->panel_count == 0) return 0;
+        pid = n->panels[n->active_tab];
+        if (panel_color[pid] && n->w > 0 && (n->h - DOCK_HEADER_HEIGHT) > 0)
+            return n->panel_count + 1; /* N tab headers + 1 panel content */
+        return 0;
+    }
+    return count_tree_quads(d, n->children[0]) + count_tree_quads(d, n->children[1]);
+}
+
+/* Build composite quads for all visible leaves in a subtree.
+   Per leaf: N tab header quads (side-by-side) + 1 panel content quad.
+   Returns updated qi (quad index).
+   Also records per-quad info (type + panel) into quads_out. */
+static int build_tree_quads(dock_state *d, int node_idx,
+                             composite_vertex *verts, int qi,
+                             float win_w, float win_h,
+                             CompQuadInfo *quads_out, int *qcount, int max_quads)
+{
+    DockNode *n;
+    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) return qi;
+    n = &d->nodes[node_idx];
+    if (!n->in_use) return qi;
+
+    if (n->type == DOCK_TABS) {
+        PanelId pid;
+        float px, pw, content_h;
+        int ti;
+        float tab_w;
+        if (n->panel_count == 0) return qi;
+        pid = n->panels[n->active_tab];
+        if (!panel_color[pid]) return qi;
+        px = n->x; pw = n->w;
+        content_h = n->h - DOCK_HEADER_HEIGHT;
+        if (pw <= 0 || content_h <= 0) return qi;
+
+        /* Tab header quads — one per panel, side by side */
+        tab_w = pw / (float)n->panel_count;
+        for (ti = 0; ti < n->panel_count; ti++) {
+            float tx = px + tab_w * ti;
+            float u_right = tab_w / 1600.0f;
+            /* Active tab: bright, inactive: dimmed */
+            float tint = (ti == n->active_tab) ? 1.0f : 0.5f;
+            if (u_right > 1.0f) u_right = 1.0f;
+            build_composite_quad(&verts[qi * 6], tx, n->y, tab_w, (float)DOCK_HEADER_HEIGHT,
+                                 win_w, win_h, 0.0f, 0.0f, u_right, 1.0f,
+                                 tint, tint, tint, 1.0f);
+            if (*qcount < max_quads) {
+                quads_out[*qcount].type = CQUAD_HEADER;
+                quads_out[*qcount].panel = n->panels[ti];
+                (*qcount)++;
+            }
+            qi++;
+        }
+
+        /* Panel content quad (active tab's texture) */
+        build_composite_quad(&verts[qi * 6], px, n->y + DOCK_HEADER_HEIGHT,
+                             pw, content_h, win_w, win_h,
+                             0.0f, 0.0f, 1.0f, 1.0f,
+                             1.0f, 1.0f, 1.0f, 1.0f);
+        if (*qcount < max_quads) {
+            quads_out[*qcount].type = CQUAD_PANEL;
+            quads_out[*qcount].panel = pid;
+            (*qcount)++;
+        }
+        qi++;
+
+        return qi;
+    }
+
+    qi = build_tree_quads(d, n->children[0], verts, qi, win_w, win_h, quads_out, qcount, max_quads);
+    qi = build_tree_quads(d, n->children[1], verts, qi, win_w, win_h, quads_out, qcount, max_quads);
+    return qi;
+}
 
 // ---------------------------------------------------------------------------
 // Uniform data (projection + view, matching HLSL cbuffer)
@@ -600,6 +737,123 @@ static float font_measure_width(FontData *font, const char *text, uint32_t len, 
 }
 
 // ---------------------------------------------------------------------------
+// Pre-render tab header text to GPU texture (CPU-side rasterization)
+// ---------------------------------------------------------------------------
+
+static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
+    int header_w = 1600;
+    int header_h = DOCK_HEADER_HEIGHT;
+    float font_size = 14.0f;
+    float scale = stbtt_ScaleForPixelHeight(&editor_font.stb_info, font_size);
+    int ascent_i, descent_i, line_gap_i;
+    int x_cursor, ch, i;
+    unsigned char *pixels;
+    SDL_GPUTexture *tex;
+    SDL_GPUTransferBufferCreateInfo tbi;
+    SDL_GPUTransferBuffer *transfer;
+    SDL_GPUCopyPass *copy_pass;
+    SDL_GPUCommandBuffer *cmd;
+    SDL_GPUTextureCreateInfo tex_info;
+    SDL_GPUTextureRegion tex_region;
+    SDL_GPUTextureTransferInfo transfer_info;
+    void *mapped;
+
+    stbtt_GetFontVMetrics(&editor_font.stb_info, &ascent_i, &descent_i, &line_gap_i);
+
+    pixels = (unsigned char *)calloc((size_t)(header_w * header_h * 4), 1);
+    if (!pixels) return NULL;
+
+    /* Fill with header background color */
+    for (i = 0; i < header_w * header_h; i++) {
+        pixels[i * 4 + 0] = 38;
+        pixels[i * 4 + 1] = 38;
+        pixels[i * 4 + 2] = 46;
+        pixels[i * 4 + 3] = 255;
+    }
+
+    /* Rasterize each character and composite onto the header */
+    x_cursor = 8; /* left padding */
+    {
+        int baseline = (int)(ascent_i * scale) + (header_h - (int)(font_size)) / 2;
+        const char *p = text;
+        while ((ch = (unsigned char)*p++) != 0) {
+            int advance, lsb, bw, bh, x0, y0, gx, gy;
+            unsigned char *bitmap;
+
+            stbtt_GetCodepointHMetrics(&editor_font.stb_info, ch, &advance, &lsb);
+            bitmap = stbtt_GetCodepointBitmap(&editor_font.stb_info, 0, scale, ch, &bw, &bh, &x0, &y0);
+
+            if (bitmap) {
+                for (gy = 0; gy < bh; gy++) {
+                    for (gx = 0; gx < bw; gx++) {
+                        int px = x_cursor + x0 + gx;
+                        int py = baseline + y0 + gy;
+                        if (px >= 0 && px < header_w && py >= 0 && py < header_h) {
+                            int idx = (py * header_w + px) * 4;
+                            unsigned char a = bitmap[gy * bw + gx];
+                            /* Blend white text onto dark background */
+                            pixels[idx + 0] = (unsigned char)(38 + (220 - 38) * a / 255);
+                            pixels[idx + 1] = (unsigned char)(38 + (220 - 38) * a / 255);
+                            pixels[idx + 2] = (unsigned char)(46 + (220 - 46) * a / 255);
+                        }
+                    }
+                }
+                stbtt_FreeBitmap(bitmap, NULL);
+            }
+
+            x_cursor += (int)(advance * scale);
+            if (*p) {
+                x_cursor += (int)(stbtt_GetCodepointKernAdvance(&editor_font.stb_info, ch, (unsigned char)*p) * scale);
+            }
+        }
+    }
+
+    /* Create GPU texture */
+    memset(&tex_info, 0, sizeof(tex_info));
+    tex_info.type = SDL_GPU_TEXTURETYPE_2D;
+    tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    tex_info.width = (Uint32)header_w;
+    tex_info.height = (Uint32)header_h;
+    tex_info.layer_count_or_depth = 1;
+    tex_info.num_levels = 1;
+    tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    tex = SDL_CreateGPUTexture(gpu_device, &tex_info);
+    if (!tex) { free(pixels); return NULL; }
+
+    /* Upload via transfer buffer */
+    memset(&tbi, 0, sizeof(tbi));
+    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbi.size = (Uint32)(header_w * header_h * 4);
+    transfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
+    mapped = SDL_MapGPUTransferBuffer(gpu_device, transfer, false);
+    memcpy(mapped, pixels, (size_t)(header_w * header_h * 4));
+    SDL_UnmapGPUTransferBuffer(gpu_device, transfer);
+
+    cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
+    copy_pass = SDL_BeginGPUCopyPass(cmd);
+
+    memset(&transfer_info, 0, sizeof(transfer_info));
+    transfer_info.transfer_buffer = transfer;
+    transfer_info.rows_per_layer = (Uint32)header_h;
+    transfer_info.pixels_per_row = (Uint32)header_w;
+
+    memset(&tex_region, 0, sizeof(tex_region));
+    tex_region.texture = tex;
+    tex_region.w = (Uint32)header_w;
+    tex_region.h = (Uint32)header_h;
+    tex_region.d = 1;
+
+    SDL_UploadToGPUTexture(copy_pass, &transfer_info, &tex_region, false);
+    SDL_EndGPUCopyPass(copy_pass);
+    SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_ReleaseGPUTransferBuffer(gpu_device, transfer);
+
+    free(pixels);
+    *out_w = x_cursor + 8; /* text width + right padding */
+    return tex;
+}
+
+// ---------------------------------------------------------------------------
 // Clay text measurement callback
 // ---------------------------------------------------------------------------
 
@@ -826,8 +1080,10 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
 static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, game *g) {
     Clay_SetCurrentContext(clay_context);
 
-    int win_w, win_h;
-    SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
+    int win_w = panel_tex_w[PANEL_GAME];
+    int win_h = panel_tex_h[PANEL_GAME];
+    if (win_w <= 0) win_w = 800;
+    if (win_h <= 0) win_h = 600;
     Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
 
     Clay_BeginLayout();
@@ -943,8 +1199,10 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, game *g) {
 
     Clay_SetCurrentContext(profiler_clay_context);
 
-    int win_w, win_h;
-    SDL_GetWindowSizeInPixels(profiler_window, &win_w, &win_h);
+    int win_w = panel_tex_w[PANEL_PROFILER];
+    int win_h = panel_tex_h[PANEL_PROFILER];
+    if (win_w <= 0) win_w = 800;
+    if (win_h <= 0) win_h = 600;
     Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
 
     Clay_BeginLayout();
@@ -1232,6 +1490,10 @@ static void ui_release_buffers(UIRenderState *ui) {
     if (ui->font_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->font_gpu_buf); ui->font_gpu_buf = NULL; }
 }
 
+// Forward declarations (defined after init_externals, needed by TCC)
+static int  ensure_panel_texture(int panel_idx, int w, int h);
+static void ensure_panel_textures(dock_state *d);
+
 // ---------------------------------------------------------------------------
 // init_externals
 // ---------------------------------------------------------------------------
@@ -1251,8 +1513,8 @@ EXPORT int init_externals(struct game *g) {
         return -1;
     }
 
-    // 3. Create window
-    window = SDL_CreateWindow("Anitra", 800, 600, SDL_WINDOW_RESIZABLE);
+    // 3. Create single docked window (all panels inside)
+    window = SDL_CreateWindow("Anitra", 1600, 900, SDL_WINDOW_RESIZABLE);
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         return -1;
@@ -1276,6 +1538,9 @@ EXPORT int init_externals(struct game *g) {
         fprintf(stderr, "SDL_ClaimWindowForGPUDevice failed: %s\n", SDL_GetError());
         return -1;
     }
+
+    /* Store swapchain format — used for offscreen textures + pipelines */
+    offscreen_format = SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
 
     // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
     SDL_GPUShader* sprite_vs = load_shader_from_spirv(
@@ -1880,30 +2145,92 @@ EXPORT int init_externals(struct game *g) {
         printf("Clay profiler context initialized (%llu bytes from arena)\n", (unsigned long long)clay_mem_size);
     }
 
-    // Create profiler window
-    profiler_window = SDL_CreateWindow("Memory Profiler", 900, 600, SDL_WINDOW_RESIZABLE);
-    if (!profiler_window) {
-        fprintf(stderr, "Failed to create profiler window: %s\n", SDL_GetError());
-        return -1;
+    // Initialize dock system (single window, three-column layout)
+    if (!g->dock.initialized) {
+        dock_init_default(&g->dock);
     }
-    if (!SDL_ClaimWindowForGPUDevice(gpu_device, profiler_window)) {
-        fprintf(stderr, "Failed to claim profiler window: %s\n", SDL_GetError());
-        return -1;
-    }
-    profiler_open = true;
-
-    // Create scene editor window
-    editor_window = SDL_CreateWindow("Scene Editor", 1024, 768, SDL_WINDOW_RESIZABLE);
-    if (!editor_window) {
-        fprintf(stderr, "Failed to create editor window: %s\n", SDL_GetError());
-        return -1;
-    }
-    if (!SDL_ClaimWindowForGPUDevice(gpu_device, editor_window)) {
-        fprintf(stderr, "Failed to claim editor window: %s\n", SDL_GetError());
-        return -1;
-    }
+    g->dock.windows[0].sdl_window = window;
     g->editor.open = 1;
-    g->editor.window = editor_window;
+    g->editor.window = window;  /* editor gets the main window handle for focus/mouse checks */
+
+    // Create composite pipeline (draws panel textures into window)
+    {
+        SDL_GPUShader *comp_vs = load_shader_from_spirv(
+            "assets/shaders/compiled/composite_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        SDL_GPUShader *comp_fs = load_shader_from_spirv(
+            "assets/shaders/compiled/composite_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        if (!comp_vs || !comp_fs) {
+            fprintf(stderr, "Failed to compile composite shaders\n");
+            return -1;
+        }
+
+        SDL_GPUVertexBufferDescription vbuf_desc = {0};
+        vbuf_desc.slot = 0;
+        vbuf_desc.pitch = sizeof(composite_vertex);
+        vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+
+        SDL_GPUVertexAttribute attrs[3] = {0};
+        attrs[0].location = 0;
+        attrs[0].buffer_slot = 0;
+        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+        attrs[0].offset = 0;
+        attrs[1].location = 1;
+        attrs[1].buffer_slot = 0;
+        attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+        attrs[1].offset = sizeof(float) * 2;
+        attrs[2].location = 2;
+        attrs[2].buffer_slot = 0;
+        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+        attrs[2].offset = sizeof(float) * 4;
+
+        SDL_GPUColorTargetDescription ct = {0};
+        ct.format = offscreen_format;
+
+        SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
+        pipe_info.vertex_shader = comp_vs;
+        pipe_info.fragment_shader = comp_fs;
+        pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
+        pipe_info.vertex_input_state.num_vertex_buffers = 1;
+        pipe_info.vertex_input_state.vertex_attributes = attrs;
+        pipe_info.vertex_input_state.num_vertex_attributes = 3;
+        pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        pipe_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+        pipe_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        pipe_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        pipe_info.target_info.color_target_descriptions = &ct;
+        pipe_info.target_info.num_color_targets = 1;
+        pipe_info.target_info.has_depth_stencil_target = false;
+
+        composite_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
+        if (!composite_pipeline) {
+            fprintf(stderr, "Failed to create composite pipeline: %s\n", SDL_GetError());
+            return -1;
+        }
+        SDL_ReleaseGPUShader(gpu_device, comp_vs);
+        SDL_ReleaseGPUShader(gpu_device, comp_fs);
+    }
+
+    // Create composite sampler (linear for smooth panel blitting)
+    {
+        SDL_GPUSamplerCreateInfo si = {0};
+        si.min_filter = SDL_GPU_FILTER_LINEAR;
+        si.mag_filter = SDL_GPU_FILTER_LINEAR;
+        si.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        si.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        composite_sampler = SDL_CreateGPUSampler(gpu_device, &si);
+    }
+
+    // Create pre-rendered tab header textures (once at init)
+    {
+        int i;
+        for (i = 0; i < PANEL_COUNT; i++) {
+            header_textures[i] = create_header_texture(panel_names[i], &header_tex_w[i]);
+            if (!header_textures[i]) {
+                fprintf(stderr, "Failed to create header texture for panel %d\n", i);
+            }
+        }
+    }
 
     // Allocate rendering sub-arena (draw_commands, debug_lines, debug_vertices)
     {
@@ -1925,53 +2252,12 @@ EXPORT int init_externals(struct game *g) {
     // Allocate gameplay sub-arena (entities, etc.)
     g->gameplay = arena_alloc_subarena(&g->arena, 256 * 1024, 16, "gameplay");
 
-    // Create initial depth texture (matching window size)
+    // Create initial panel textures (dock layout → panel rects → offscreen textures)
     {
         int win_w, win_h;
         SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
-        depth_w = (Uint32)win_w;
-        depth_h = (Uint32)win_h;
-
-        SDL_GPUTextureCreateInfo depth_info = {0};
-        depth_info.type = SDL_GPU_TEXTURETYPE_2D;
-        depth_info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
-        depth_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-        depth_info.width = depth_w;
-        depth_info.height = depth_h;
-        depth_info.layer_count_or_depth = 1;
-        depth_info.num_levels = 1;
-        depth_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-
-        depth_texture = SDL_CreateGPUTexture(gpu_device, &depth_info);
-        if (!depth_texture) {
-            fprintf(stderr, "Failed to create depth texture: %s\n", SDL_GetError());
-            return -1;
-        }
-        printf("Depth texture created (%u x %u)\n", depth_w, depth_h);
-    }
-
-    // Create editor depth texture
-    {
-        int ew, eh;
-        SDL_GetWindowSizeInPixels(editor_window, &ew, &eh);
-        editor_depth_w = (Uint32)ew;
-        editor_depth_h = (Uint32)eh;
-
-        SDL_GPUTextureCreateInfo ed_depth_info = {0};
-        ed_depth_info.type = SDL_GPU_TEXTURETYPE_2D;
-        ed_depth_info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
-        ed_depth_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-        ed_depth_info.width = editor_depth_w;
-        ed_depth_info.height = editor_depth_h;
-        ed_depth_info.layer_count_or_depth = 1;
-        ed_depth_info.num_levels = 1;
-        ed_depth_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-
-        editor_depth_texture = SDL_CreateGPUTexture(gpu_device, &ed_depth_info);
-        if (!editor_depth_texture) {
-            fprintf(stderr, "Failed to create editor depth texture: %s\n", SDL_GetError());
-            return -1;
-        }
+        dock_layout(&g->dock, 0, win_w, win_h);
+        ensure_panel_textures(&g->dock);
     }
 
     // Init game timing
@@ -1979,7 +2265,7 @@ EXPORT int init_externals(struct game *g) {
     g->dt = 0.0f;
     g->play = true;
 
-    printf("Externals initialized (SDL3 GPU, 2 windows)\n");
+    printf("Externals initialized (SDL3 GPU, docked panels)\n");
     return 1;
 }
 
@@ -2069,6 +2355,82 @@ static void update_input(game *g) {
 }
 
 // ---------------------------------------------------------------------------
+// Dock panel texture management
+// ---------------------------------------------------------------------------
+
+/* Create or resize an offscreen texture pair (color + depth) for a panel.
+   Returns 1 if textures were (re)created, 0 if already correct. */
+static int ensure_panel_texture(int panel_idx, int w, int h)
+{
+    if (w <= 0 || h <= 0) return 0;
+    if (panel_tex_w[panel_idx] == w && panel_tex_h[panel_idx] == h
+        && panel_color[panel_idx] != NULL)
+        return 0;
+
+    /* Release old textures */
+    if (panel_color[panel_idx]) {
+        SDL_ReleaseGPUTexture(gpu_device, panel_color[panel_idx]);
+        panel_color[panel_idx] = NULL;
+    }
+    if (panel_depth[panel_idx]) {
+        SDL_ReleaseGPUTexture(gpu_device, panel_depth[panel_idx]);
+        panel_depth[panel_idx] = NULL;
+    }
+
+    /* Color target (also sampled by composite pass) */
+    {
+        SDL_GPUTextureCreateInfo ci = {0};
+        ci.type = SDL_GPU_TEXTURETYPE_2D;
+        ci.format = offscreen_format;
+        ci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ci.width = (Uint32)w;
+        ci.height = (Uint32)h;
+        ci.layer_count_or_depth = 1;
+        ci.num_levels = 1;
+        ci.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        panel_color[panel_idx] = SDL_CreateGPUTexture(gpu_device, &ci);
+    }
+
+    /* Depth target */
+    {
+        SDL_GPUTextureCreateInfo di = {0};
+        di.type = SDL_GPU_TEXTURETYPE_2D;
+        di.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        di.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        di.width = (Uint32)w;
+        di.height = (Uint32)h;
+        di.layer_count_or_depth = 1;
+        di.num_levels = 1;
+        di.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        panel_depth[panel_idx] = SDL_CreateGPUTexture(gpu_device, &di);
+    }
+
+    panel_tex_w[panel_idx] = w;
+    panel_tex_h[panel_idx] = h;
+    return 1;
+}
+
+/* Ensure all visible panel textures match their dock layout rects */
+static void ensure_panel_textures(dock_state *d)
+{
+    int i, j;
+    for (i = 0; i < MAX_DOCK_WINDOWS; i++) {
+        if (!d->windows[i].in_use) continue;
+        for (j = 0; j < MAX_DOCK_NODES; j++) {
+            DockNode *n = &d->nodes[j];
+            if (!n->in_use || n->type != DOCK_TABS || n->panel_count == 0) continue;
+            {
+                PanelId pid = n->panels[n->active_tab];
+                int pw = (int)n->w;
+                int ph = (int)n->h - DOCK_HEADER_HEIGHT;
+                if (ph < 1) ph = 1;
+                ensure_panel_texture((int)pid, pw, ph);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // update_externals
 // ---------------------------------------------------------------------------
 
@@ -2093,15 +2455,69 @@ EXPORT void update_externals(struct game *g) {
                 TracyCZoneEnd(ctx_update);
                 return;
             }
+
+            /* Window close: main window = quit, tear-off = return panel */
             if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
-                g->play = false;
-                TracyCZoneEnd(ctx_poll);
-                TracyCZoneEnd(ctx_update);
-                return;
+                SDL_WindowID closing_id = event.window.windowID;
+                int wi;
+                int is_main = 0;
+                for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
+                    SDL_Window *dw = (SDL_Window *)g->dock.windows[wi].sdl_window;
+                    if (dw && SDL_GetWindowID(dw) == closing_id) {
+                        if (wi == 0) {
+                            is_main = 1;
+                        } else {
+                            /* Tear-off window closed: return panels to main window */
+                            PanelId recovered[PANEL_COUNT];
+                            int rcount = 0;
+                            int ri;
+                            dock_collect_leaves(&g->dock, g->dock.windows[wi].root_node,
+                                                recovered, &rcount, PANEL_COUNT);
+                            dock_free_subtree(&g->dock, g->dock.windows[wi].root_node);
+
+                            /* Add recovered panels as tabs to main window's first leaf */
+                            {
+                                int main_leaf = -1;
+                                int mni;
+                                for (mni = 0; mni < MAX_DOCK_NODES; mni++) {
+                                    DockNode *mn = &g->dock.nodes[mni];
+                                    if (mn->in_use && mn->type == DOCK_TABS && mn->panel_count > 0) {
+                                        /* Check if this node belongs to window 0 */
+                                        int chk = dock_leaf_for_panel(&g->dock, g->dock.windows[0].root_node, mn->panels[0]);
+                                        if (chk == mni) { main_leaf = mni; break; }
+                                    }
+                                }
+                                if (main_leaf >= 0) {
+                                    DockNode *ml = &g->dock.nodes[main_leaf];
+                                    for (ri = 0; ri < rcount && ml->panel_count < MAX_TABS_PER_NODE; ri++) {
+                                        ml->panels[ml->panel_count] = recovered[ri];
+                                        ml->panel_count++;
+                                    }
+                                }
+                            }
+
+                            /* Release and destroy the tear-off window */
+                            SDL_ReleaseWindowFromGPUDevice(gpu_device, dw);
+                            SDL_DestroyWindow(dw);
+                            g->dock.windows[wi].in_use = 0;
+                            g->dock.windows[wi].sdl_window = NULL;
+                        }
+                        break;
+                    }
+                }
+                if (is_main) {
+                    g->play = false;
+                    TracyCZoneEnd(ctx_poll);
+                    TracyCZoneEnd(ctx_update);
+                    return;
+                }
+                continue; /* don't forward close events to editor */
             }
-            /* Dispatch editor events (mouse look, gizmo drag) to editor.dll */
-            if (g->editor.open && editor_window && g_editor_handle_event) {
-                g_editor_handle_event(g, &event);
+
+            /* Dispatch all events to editor.dll (dock interaction + camera + gizmo) */
+            if (g_editor_handle_event) {
+                if (g_editor_handle_event(g, &event))
+                    continue; /* editor consumed the event */
             }
         }
         TracyCZoneEnd(ctx_poll);
@@ -2110,15 +2526,157 @@ EXPORT void update_externals(struct game *g) {
     // --- Input ---
     update_input(g);
 
-    // --- Window size ---
-    int display_w, display_h;
-    SDL_GetWindowSizeInPixels(window, &display_w, &display_h);
-    g->width = display_w;
-    g->height = display_h;
+    // --- Process dock commands from editor.dll ---
 
-    // --- Ortho projection ---
-    float w = (float)display_w;
-    float h = (float)display_h;
+    // Tear-off: editor set cmd_tear_off, we create the window + mutate tree
+    if (g->dock.cmd_tear_off) {
+        PanelId tp = g->dock.drag.panel;
+        int twi, new_win_idx = -1;
+        for (twi = 1; twi < MAX_DOCK_WINDOWS; twi++) {
+            if (!g->dock.windows[twi].in_use) { new_win_idx = twi; break; }
+        }
+        if (new_win_idx >= 0) {
+            SDL_Window *new_win = SDL_CreateWindow(panel_names[tp],
+                                                    600, 500, SDL_WINDOW_RESIZABLE);
+            if (new_win) {
+                int new_root;
+                int src_win_idx;
+                SDL_SetWindowPosition(new_win,
+                    (int)(g->dock.cmd_screen_x - 300),
+                    (int)(g->dock.cmd_screen_y - 12));
+                SDL_ClaimWindowForGPUDevice(gpu_device, new_win);
+
+                new_root = dock_alloc_node(&g->dock);
+                g->dock.nodes[new_root].panels[0] = tp;
+                g->dock.nodes[new_root].panel_count = 1;
+                g->dock.nodes[new_root].active_tab = 0;
+
+                g->dock.windows[new_win_idx].in_use = 1;
+                g->dock.windows[new_win_idx].sdl_window = new_win;
+                g->dock.windows[new_win_idx].root_node = new_root;
+
+                src_win_idx = g->dock.drag.source_window;
+                dock_remove_panel(&g->dock, g->dock.drag.source_node, tp);
+                {
+                    int new_src_root = dock_collapse_empty(&g->dock, g->dock.windows[src_win_idx].root_node);
+                    g->dock.windows[src_win_idx].root_node = new_src_root;
+                }
+
+                if (g->dock.windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
+                    SDL_Window *dead_win = (SDL_Window *)g->dock.windows[src_win_idx].sdl_window;
+                    if (dead_win) {
+                        SDL_ReleaseWindowFromGPUDevice(gpu_device, dead_win);
+                        SDL_DestroyWindow(dead_win);
+                    }
+                    g->dock.windows[src_win_idx].in_use = 0;
+                    g->dock.windows[src_win_idx].sdl_window = NULL;
+                }
+            }
+        }
+        g->dock.cmd_tear_off = 0;
+        g->dock.drag.phase = DRAG_IDLE;
+    }
+
+    // Re-dock: editor set cmd_redock, we add panel as tab + destroy empty source
+    if (g->dock.cmd_redock) {
+        PanelId rp = g->dock.drag.panel;
+        int src_win_idx = g->dock.drag.source_window;
+        int src_node = g->dock.drag.source_node;
+        int tgt_win_idx = g->dock.cmd_redock_target;
+
+        {
+            int tgt_root = g->dock.windows[tgt_win_idx].root_node;
+            int tgt_leaf = -1;
+            int ni;
+            for (ni = 0; ni < MAX_DOCK_NODES && tgt_leaf < 0; ni++) {
+                if (!g->dock.nodes[ni].in_use || g->dock.nodes[ni].type != DOCK_TABS) continue;
+                if (g->dock.nodes[ni].panel_count == 0) continue;
+                if (dock_leaf_for_panel(&g->dock, tgt_root, g->dock.nodes[ni].panels[0]) == ni)
+                    tgt_leaf = ni;
+            }
+
+            if (tgt_leaf >= 0 && g->dock.nodes[tgt_leaf].panel_count < MAX_TABS_PER_NODE) {
+                DockNode *tl = &g->dock.nodes[tgt_leaf];
+                tl->panels[tl->panel_count] = rp;
+                tl->panel_count++;
+                tl->active_tab = tl->panel_count - 1;
+
+                dock_remove_panel(&g->dock, src_node, rp);
+                {
+                    int new_src_root = dock_collapse_empty(&g->dock, g->dock.windows[src_win_idx].root_node);
+                    g->dock.windows[src_win_idx].root_node = new_src_root;
+                }
+
+                if (g->dock.windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
+                    SDL_Window *dead_win = (SDL_Window *)g->dock.windows[src_win_idx].sdl_window;
+                    if (dead_win) {
+                        SDL_ReleaseWindowFromGPUDevice(gpu_device, dead_win);
+                        SDL_DestroyWindow(dead_win);
+                    }
+                    g->dock.windows[src_win_idx].in_use = 0;
+                    g->dock.windows[src_win_idx].sdl_window = NULL;
+                }
+            }
+        }
+
+        g->dock.cmd_redock = 0;
+        g->dock.drag.phase = DRAG_IDLE;
+    }
+
+    // --- Window + dock layout (all windows) ---
+    int display_w, display_h;
+    {
+        int wi;
+        for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
+            if (!g->dock.windows[wi].in_use || !g->dock.windows[wi].sdl_window) continue;
+            {
+                int ww, wh;
+                SDL_GetWindowSizeInPixels((SDL_Window *)g->dock.windows[wi].sdl_window, &ww, &wh);
+                dock_layout(&g->dock, wi, ww, wh);
+            }
+        }
+    }
+    /* Main window dimensions (for ortho etc.) */
+    SDL_GetWindowSizeInPixels(window, &display_w, &display_h);
+    ensure_panel_textures(&g->dock);
+
+    /* Game panel size (used for ortho projection) — search all windows */
+    {
+        int game_win_idx;
+        int game_node = dock_find_leaf_for_panel_global(&g->dock, PANEL_GAME, &game_win_idx);
+        if (game_node >= 0) {
+            g->width = panel_tex_w[PANEL_GAME];
+            g->height = panel_tex_h[PANEL_GAME];
+        } else {
+            g->width = display_w;
+            g->height = display_h;
+        }
+    }
+
+    /* Editor panel rect (for coordinate transforms in editor.dll) — search all windows */
+    {
+        int ed_win_idx;
+        int ed_node = dock_find_leaf_for_panel_global(&g->dock, PANEL_EDITOR, &ed_win_idx);
+        if (ed_node >= 0) {
+            DockNode *en = &g->dock.nodes[ed_node];
+            g->editor.panel_x = en->x;
+            g->editor.panel_y = en->y + DOCK_HEADER_HEIGHT;
+            g->editor.panel_w = en->w;
+            g->editor.panel_h = en->h - DOCK_HEADER_HEIGHT;
+            /* Set editor's window to whichever dock window contains it */
+            g->editor.window = (ed_win_idx >= 0) ? g->dock.windows[ed_win_idx].sdl_window : window;
+        } else {
+            g->editor.panel_x = 0;
+            g->editor.panel_y = 0;
+            g->editor.panel_w = (float)display_w;
+            g->editor.panel_h = (float)display_h;
+            g->editor.window = window;
+        }
+    }
+
+    // --- Ortho projection (based on game panel size) ---
+    float w = (float)g->width;
+    float h = (float)g->height;
     float ortho[16] = {
         2.0f/w, 0,      0,     0,
         0,      2.0f/h, 0,     0,
@@ -2275,7 +2833,7 @@ EXPORT void update_externals(struct game *g) {
     ui_prepare_game(cmd_buf, g);
 
     // --- Prepare Clay UI: profiler window (layout + upload) ---
-    if (profiler_open && profiler_window) {
+    if (panel_color[PANEL_PROFILER]) {
         profiler_prepare(cmd_buf, g);
     }
 
@@ -2310,46 +2868,88 @@ EXPORT void update_externals(struct game *g) {
         SDL_ReleaseGPUTransferBuffer(gpu_device, ed_transfer);
     }
 
-    // ================================================================
-    // RENDER PASSES (all copy passes complete)
-    // ================================================================
+    // --- Pre-build composite quads PER WINDOW (copy pass BEFORE render) ---
+    // Each visible leaf produces: N tab header quads + 1 panel content quad.
+    CompWindowData comp_data[MAX_DOCK_WINDOWS];
+    {
+        int cwi;
+        for (cwi = 0; cwi < MAX_DOCK_WINDOWS; cwi++) {
+            comp_data[cwi].gpu_buf = NULL;
+            comp_data[cwi].quad_count = 0;
+        }
+    }
+    {
+        int cwi;
+        for (cwi = 0; cwi < MAX_DOCK_WINDOWS; cwi++) {
+            int total_quads_count, qcount;
+            Uint32 total_quads, comp_buf_size;
+            SDL_GPUTransferBufferCreateInfo comp_tbi;
+            SDL_GPUTransferBuffer *comp_transfer;
+            composite_vertex *comp_verts;
+            SDL_GPUBufferCreateInfo comp_bi;
+            SDL_GPUCopyPass *comp_copy;
+            SDL_GPUTransferBufferLocation comp_src;
+            SDL_GPUBufferRegion comp_dst;
+            int ww, wh;
 
-    // --- GAME WINDOW RENDER PASS ---
-    SDL_GPUTexture *swapchain_texture = NULL;
-    Uint32 sc_w, sc_h;
-    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swapchain_texture, &sc_w, &sc_h)) {
-        fprintf(stderr, "Failed to acquire swapchain texture: %s\n", SDL_GetError());
-        SDL_SubmitGPUCommandBuffer(cmd_buf);
-        TracyCZoneEnd(ctx_update);
-        return;
+            if (!g->dock.windows[cwi].in_use || !g->dock.windows[cwi].sdl_window) continue;
+
+            total_quads_count = count_tree_quads(&g->dock, g->dock.windows[cwi].root_node);
+            if (total_quads_count <= 0) continue;
+
+            SDL_GetWindowSizeInPixels((SDL_Window *)g->dock.windows[cwi].sdl_window, &ww, &wh);
+
+            total_quads = (Uint32)total_quads_count;
+            comp_buf_size = total_quads * 6 * (Uint32)sizeof(composite_vertex);
+
+            memset(&comp_tbi, 0, sizeof(comp_tbi));
+            comp_tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+            comp_tbi.size = comp_buf_size;
+            comp_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &comp_tbi);
+            comp_verts = (composite_vertex *)SDL_MapGPUTransferBuffer(gpu_device, comp_transfer, false);
+
+            qcount = 0;
+            build_tree_quads(&g->dock, g->dock.windows[cwi].root_node,
+                             comp_verts, 0, (float)ww, (float)wh,
+                             comp_data[cwi].quads, &qcount, MAX_COMP_QUADS);
+            comp_data[cwi].quad_count = qcount;
+
+            SDL_UnmapGPUTransferBuffer(gpu_device, comp_transfer);
+
+            memset(&comp_bi, 0, sizeof(comp_bi));
+            comp_bi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+            comp_bi.size = comp_buf_size;
+            comp_data[cwi].gpu_buf = SDL_CreateGPUBuffer(gpu_device, &comp_bi);
+
+            comp_copy = SDL_BeginGPUCopyPass(cmd_buf);
+            memset(&comp_src, 0, sizeof(comp_src));
+            comp_src.transfer_buffer = comp_transfer;
+            memset(&comp_dst, 0, sizeof(comp_dst));
+            comp_dst.buffer = comp_data[cwi].gpu_buf;
+            comp_dst.size = comp_buf_size;
+            SDL_UploadToGPUBuffer(comp_copy, &comp_src, &comp_dst, false);
+            SDL_EndGPUCopyPass(comp_copy);
+            SDL_ReleaseGPUTransferBuffer(gpu_device, comp_transfer);
+        }
     }
 
-    if (swapchain_texture) {
-        // Recreate depth texture if window was resized
-        if (sc_w != depth_w || sc_h != depth_h) {
-            if (depth_texture) SDL_ReleaseGPUTexture(gpu_device, depth_texture);
-            depth_w = sc_w;
-            depth_h = sc_h;
-            SDL_GPUTextureCreateInfo d_info = {0};
-            d_info.type = SDL_GPU_TEXTURETYPE_2D;
-            d_info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
-            d_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-            d_info.width = depth_w;
-            d_info.height = depth_h;
-            d_info.layer_count_or_depth = 1;
-            d_info.num_levels = 1;
-            d_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-            depth_texture = SDL_CreateGPUTexture(gpu_device, &d_info);
-        }
+    // ================================================================
+    // RENDER PASSES — each panel renders to its offscreen texture
+    // ================================================================
+
+    // --- GAME PANEL RENDER PASS (offscreen) ---
+    if (panel_color[PANEL_GAME] && panel_depth[PANEL_GAME]) {
+        Uint32 gw = (Uint32)panel_tex_w[PANEL_GAME];
+        Uint32 gh = (Uint32)panel_tex_h[PANEL_GAME];
 
         SDL_GPUColorTargetInfo color_target = {0};
-        color_target.texture = swapchain_texture;
+        color_target.texture = panel_color[PANEL_GAME];
         color_target.clear_color = (SDL_FColor){0.45f, 0.55f, 0.60f, 1.0f};
         color_target.load_op = SDL_GPU_LOADOP_CLEAR;
         color_target.store_op = SDL_GPU_STOREOP_STORE;
 
         SDL_GPUDepthStencilTargetInfo depth_target = {0};
-        depth_target.texture = depth_texture;
+        depth_target.texture = panel_depth[PANEL_GAME];
         depth_target.clear_depth = 1.0f;
         depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
         depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
@@ -2358,12 +2958,11 @@ EXPORT void update_externals(struct game *g) {
 
         SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target);
 
-        // --- 3D Mesh (camera + animation driven by engine via g->mesh3d) ---
+        // 3D Mesh
         if (g->mesh3d.visible && g->loaded_model.mesh.primitive_count > 0) {
             SDL_BindGPUGraphicsPipeline(render_pass, mesh_pipeline);
 
-            // Build perspective projection from engine's camera
-            float aspect = (float)sc_w / (float)sc_h;
+            float aspect = (float)gw / (float)gh;
             Mat4 proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, aspect, 0.1f, 100.0f);
             Mat4 view = mat4_look_at(g->mesh3d.camera_eye, g->mesh3d.camera_target, g->mesh3d.camera_up);
 
@@ -2373,7 +2972,6 @@ EXPORT void update_externals(struct game *g) {
             memcpy(mesh_uniforms.model, g->mesh3d.model_transform.m, sizeof(float) * 16);
             SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
 
-            // Bind bone storage buffer (vertex stage, slot 0)
             SDL_BindGPUVertexStorageBuffers(render_pass, 0, &bone_storage_buffer, 1);
 
             for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
@@ -2396,54 +2994,54 @@ EXPORT void update_externals(struct game *g) {
             }
         }
 
-        // --- 2D rendering ---
-        uniform_data uniforms;
-        memcpy(uniforms.projection, g->draw_list.ortho_projection, sizeof(float) * 16);
-        memcpy(uniforms.view, g->draw_list.view_matrix, sizeof(float) * 16);
+        // 2D sprites + lines
+        {
+            uniform_data uniforms;
+            memcpy(uniforms.projection, g->draw_list.ortho_projection, sizeof(float) * 16);
+            memcpy(uniforms.view, g->draw_list.view_matrix, sizeof(float) * 16);
 
-        // Sprites
-        if (sprite_count > 0 && sprite_gpu_buf) {
-            SDL_BindGPUGraphicsPipeline(render_pass, sprite_pipeline);
-            SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
+            if (sprite_count > 0 && sprite_gpu_buf) {
+                SDL_BindGPUGraphicsPipeline(render_pass, sprite_pipeline);
+                SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
 
-            SDL_GPUBufferBinding vbuf_binding = {0};
-            vbuf_binding.buffer = sprite_gpu_buf;
-            SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+                SDL_GPUBufferBinding vbuf_binding = {0};
+                vbuf_binding.buffer = sprite_gpu_buf;
+                SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
 
-            for (int tex_id = 0; tex_id < TEXTURE_COUNT; tex_id++) {
-                if (!gpu_textures[tex_id]) continue;
-                bool bound = false;
-                for (int i = 0; i < sprite_count; i++) {
-                    if (g->draw_list.sprites[i].texture_id == tex_id) {
-                        if (!bound) {
-                            SDL_GPUTextureSamplerBinding tex_binding = {0};
-                            tex_binding.texture = gpu_textures[tex_id];
-                            tex_binding.sampler = sprite_sampler;
-                            SDL_BindGPUFragmentSamplers(render_pass, 0, &tex_binding, 1);
-                            bound = true;
+                for (int tex_id = 0; tex_id < TEXTURE_COUNT; tex_id++) {
+                    if (!gpu_textures[tex_id]) continue;
+                    bool bound = false;
+                    for (int i = 0; i < sprite_count; i++) {
+                        if (g->draw_list.sprites[i].texture_id == tex_id) {
+                            if (!bound) {
+                                SDL_GPUTextureSamplerBinding tex_binding = {0};
+                                tex_binding.texture = gpu_textures[tex_id];
+                                tex_binding.sampler = sprite_sampler;
+                                SDL_BindGPUFragmentSamplers(render_pass, 0, &tex_binding, 1);
+                                bound = true;
+                            }
+                            SDL_DrawGPUPrimitives(render_pass, 6, 1, (Uint32)(i * 6), 0);
                         }
-                        SDL_DrawGPUPrimitives(render_pass, 6, 1, (Uint32)(i * 6), 0);
                     }
                 }
             }
-        }
 
-        // Lines
-        if (line_count > 0 && line_gpu_buf) {
-            SDL_BindGPUGraphicsPipeline(render_pass, line_pipeline);
-            SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
+            if (line_count > 0 && line_gpu_buf) {
+                SDL_BindGPUGraphicsPipeline(render_pass, line_pipeline);
+                SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
 
-            SDL_GPUBufferBinding vbuf_binding = {0};
-            vbuf_binding.buffer = line_gpu_buf;
-            SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
-            SDL_DrawGPUPrimitives(render_pass, (Uint32)line_vertex_count, 1, 0, 0);
+                SDL_GPUBufferBinding vbuf_binding = {0};
+                vbuf_binding.buffer = line_gpu_buf;
+                SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+                SDL_DrawGPUPrimitives(render_pass, (Uint32)line_vertex_count, 1, 0, 0);
+            }
         }
 
         // Game Clay UI overlay
         {
             uniform_data ui_uniforms;
-            float ui_w = (float)display_w;
-            float ui_h = (float)display_h;
+            float ui_w = (float)gw;
+            float ui_h = (float)gh;
             float ui_ortho[16] = {
                 2.0f/ui_w,  0,          0,     0,
                 0,         -2.0f/ui_h,  0,     0,
@@ -2453,147 +3051,189 @@ EXPORT void update_externals(struct game *g) {
             memcpy(ui_uniforms.projection, ui_ortho, sizeof(ui_ortho));
             float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
             memcpy(ui_uniforms.view, identity, sizeof(identity));
-
             ui_draw(render_pass, cmd_buf, &ui_uniforms, &ui_game);
         }
 
         SDL_EndGPURenderPass(render_pass);
     }
 
-    // --- PROFILER WINDOW RENDER PASS ---
-    if (profiler_open && profiler_window) {
-        SDL_GPUTexture *prof_swapchain = NULL;
-        Uint32 prof_w, prof_h;
-        if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, profiler_window, &prof_swapchain, &prof_w, &prof_h)
-            && prof_swapchain) {
+    // --- PROFILER PANEL RENDER PASS (offscreen) ---
+    if (panel_color[PANEL_PROFILER]) {
+        Uint32 pw = (Uint32)panel_tex_w[PANEL_PROFILER];
+        Uint32 ph = (Uint32)panel_tex_h[PANEL_PROFILER];
 
-            SDL_GPUColorTargetInfo prof_target = {0};
-            prof_target.texture = prof_swapchain;
-            prof_target.clear_color = (SDL_FColor){0.10f, 0.10f, 0.12f, 1.0f};
-            prof_target.load_op = SDL_GPU_LOADOP_CLEAR;
-            prof_target.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPUColorTargetInfo prof_ct = {0};
+        prof_ct.texture = panel_color[PANEL_PROFILER];
+        prof_ct.clear_color = (SDL_FColor){0.10f, 0.10f, 0.12f, 1.0f};
+        prof_ct.load_op = SDL_GPU_LOADOP_CLEAR;
+        prof_ct.store_op = SDL_GPU_STOREOP_STORE;
 
-            SDL_GPURenderPass *prof_pass = SDL_BeginGPURenderPass(cmd_buf, &prof_target, 1, NULL);
+        SDL_GPUDepthStencilTargetInfo prof_dt = {0};
+        prof_dt.texture = panel_depth[PANEL_PROFILER];
+        prof_dt.clear_depth = 1.0f;
+        prof_dt.load_op = SDL_GPU_LOADOP_CLEAR;
+        prof_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        prof_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        prof_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
 
-            // Profiler uses screen-space ortho
-            uniform_data prof_uniforms;
-            float pw = (float)prof_w;
-            float ph = (float)prof_h;
-            float prof_ortho[16] = {
-                2.0f/pw,  0,         0,     0,
-                0,       -2.0f/ph,   0,     0,
-                0,        0,        -1.0f,  0,
-               -1.0f,     1.0f,      0,     1.0f
-            };
-            memcpy(prof_uniforms.projection, prof_ortho, sizeof(prof_ortho));
-            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-            memcpy(prof_uniforms.view, identity, sizeof(identity));
+        SDL_GPURenderPass *prof_pass = SDL_BeginGPURenderPass(cmd_buf, &prof_ct, 1, &prof_dt);
 
-            ui_draw(prof_pass, cmd_buf, &prof_uniforms, &ui_profiler);
+        uniform_data prof_uniforms;
+        float prof_ortho[16] = {
+            2.0f/(float)pw,  0,               0,     0,
+            0,              -2.0f/(float)ph,   0,     0,
+            0,               0,              -1.0f,  0,
+           -1.0f,            1.0f,             0,     1.0f
+        };
+        memcpy(prof_uniforms.projection, prof_ortho, sizeof(prof_ortho));
+        float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        memcpy(prof_uniforms.view, identity, sizeof(identity));
 
-            SDL_EndGPURenderPass(prof_pass);
-        }
+        ui_draw(prof_pass, cmd_buf, &prof_uniforms, &ui_profiler);
+
+        SDL_EndGPURenderPass(prof_pass);
     }
 
-    // --- SCENE EDITOR RENDER PASS ---
-    if (g->editor.open && editor_window) {
-        SDL_GPUTexture *ed_swapchain = NULL;
-        Uint32 ew, eh;
-        if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, editor_window, &ed_swapchain, &ew, &eh)
-            && ed_swapchain) {
+    // --- EDITOR PANEL RENDER PASS (offscreen) ---
+    if (g->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
+        Uint32 ew = (Uint32)panel_tex_w[PANEL_EDITOR];
+        Uint32 eh = (Uint32)panel_tex_h[PANEL_EDITOR];
 
-            /* Recreate editor depth texture if resized */
-            if (ew != editor_depth_w || eh != editor_depth_h) {
-                if (editor_depth_texture) SDL_ReleaseGPUTexture(gpu_device, editor_depth_texture);
-                editor_depth_w = ew;
-                editor_depth_h = eh;
-                SDL_GPUTextureCreateInfo ed_d = {0};
-                ed_d.type = SDL_GPU_TEXTURETYPE_2D;
-                ed_d.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
-                ed_d.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-                ed_d.width = ew; ed_d.height = eh;
-                ed_d.layer_count_or_depth = 1;
-                ed_d.num_levels = 1;
-                ed_d.sample_count = SDL_GPU_SAMPLECOUNT_1;
-                editor_depth_texture = SDL_CreateGPUTexture(gpu_device, &ed_d);
+        SDL_GPUColorTargetInfo ed_ct = {0};
+        ed_ct.texture = panel_color[PANEL_EDITOR];
+        ed_ct.clear_color = (SDL_FColor){0.15f, 0.18f, 0.22f, 1.0f};
+        ed_ct.load_op = SDL_GPU_LOADOP_CLEAR;
+        ed_ct.store_op = SDL_GPU_STOREOP_STORE;
+
+        SDL_GPUDepthStencilTargetInfo ed_dt = {0};
+        ed_dt.texture = panel_depth[PANEL_EDITOR];
+        ed_dt.clear_depth = 1.0f;
+        ed_dt.load_op = SDL_GPU_LOADOP_CLEAR;
+        ed_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        ed_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        ed_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+
+        SDL_GPURenderPass *ed_pass = SDL_BeginGPURenderPass(cmd_buf, &ed_ct, 1, &ed_dt);
+
+        /* Editor camera matrices */
+        float ed_aspect = (float)ew / (float)eh;
+        Mat4 ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
+        float ed_cp = cosf(g->editor.cam_pitch);
+        Vec3 ed_fwd = VEC3(ed_cp * sinf(g->editor.cam_yaw),
+                           sinf(g->editor.cam_pitch),
+                           ed_cp * cosf(g->editor.cam_yaw));
+        Mat4 ed_view = mat4_look_at(g->editor.cam_pos,
+                                     vec3_add(g->editor.cam_pos, ed_fwd),
+                                     VEC3(0, 1, 0));
+
+        /* 1. 3D mesh (editor camera) */
+        if (g->mesh3d.visible && g->loaded_model.mesh.primitive_count > 0) {
+            SDL_BindGPUGraphicsPipeline(ed_pass, mesh_pipeline);
+
+            mesh_uniform_data ed_mesh_u;
+            memcpy(ed_mesh_u.projection, ed_proj.m, sizeof(float) * 16);
+            memcpy(ed_mesh_u.view, ed_view.m, sizeof(float) * 16);
+            memcpy(ed_mesh_u.model, g->mesh3d.model_transform.m, sizeof(float) * 16);
+            SDL_PushGPUVertexUniformData(cmd_buf, 0, &ed_mesh_u, sizeof(ed_mesh_u));
+
+            SDL_BindGPUVertexStorageBuffers(ed_pass, 0, &bone_storage_buffer, 1);
+
+            for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
+                GltfPrimitive *prim = &g->loaded_model.mesh.primitives[p];
+
+                SDL_GPUBufferBinding vb = {0};
+                vb.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
+                SDL_BindGPUVertexBuffers(ed_pass, 0, &vb, 1);
+
+                SDL_GPUBufferBinding ib = {0};
+                ib.buffer = (SDL_GPUBuffer *)prim->index_buffer;
+                SDL_BindGPUIndexBuffer(ed_pass, &ib, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+                SDL_GPUTextureSamplerBinding tb = {0};
+                tb.texture = prim->texture ? (SDL_GPUTexture *)prim->texture : white_texture;
+                tb.sampler = mesh_sampler;
+                SDL_BindGPUFragmentSamplers(ed_pass, 0, &tb, 1);
+
+                SDL_DrawGPUIndexedPrimitives(ed_pass, prim->index_count, 1, 0, 0, 0);
             }
+        }
 
-            SDL_GPUColorTargetInfo ed_ct = {0};
-            ed_ct.texture = ed_swapchain;
-            ed_ct.clear_color = (SDL_FColor){0.15f, 0.18f, 0.22f, 1.0f};
-            ed_ct.load_op = SDL_GPU_LOADOP_CLEAR;
-            ed_ct.store_op = SDL_GPU_STOREOP_STORE;
+        /* 2. Editor 3D lines (grid + gizmo) */
+        if (editor_vert_count > 0 && editor_line_gpu_buf) {
+            SDL_BindGPUGraphicsPipeline(ed_pass, editor_line_pipeline);
 
-            SDL_GPUDepthStencilTargetInfo ed_dt = {0};
-            ed_dt.texture = editor_depth_texture;
-            ed_dt.clear_depth = 1.0f;
-            ed_dt.load_op = SDL_GPU_LOADOP_CLEAR;
-            ed_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
-            ed_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-            ed_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+            uniform_data ed_line_u;
+            memcpy(ed_line_u.projection, ed_proj.m, sizeof(float) * 16);
+            memcpy(ed_line_u.view, ed_view.m, sizeof(float) * 16);
+            SDL_PushGPUVertexUniformData(cmd_buf, 0, &ed_line_u, sizeof(ed_line_u));
 
-            SDL_GPURenderPass *ed_pass = SDL_BeginGPURenderPass(cmd_buf, &ed_ct, 1, &ed_dt);
+            SDL_GPUBufferBinding ed_lb = {0};
+            ed_lb.buffer = editor_line_gpu_buf;
+            SDL_BindGPUVertexBuffers(ed_pass, 0, &ed_lb, 1);
 
-            /* Editor camera matrices (computed from editor_state in game struct) */
-            float ed_aspect = (float)ew / (float)eh;
-            Mat4 ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
-            float ed_cp = cosf(g->editor.cam_pitch);
-            Vec3 ed_fwd = VEC3(ed_cp * sinf(g->editor.cam_yaw),
-                               sinf(g->editor.cam_pitch),
-                               ed_cp * cosf(g->editor.cam_yaw));
-            Mat4 ed_view = mat4_look_at(g->editor.cam_pos,
-                                         vec3_add(g->editor.cam_pos, ed_fwd),
-                                         VEC3(0, 1, 0));
+            SDL_DrawGPUPrimitives(ed_pass, (Uint32)editor_vert_count, 1, 0, 0);
+        }
 
-            /* 1. Draw 3D mesh (same primitives, editor camera) */
-            if (g->mesh3d.visible && g->loaded_model.mesh.primitive_count > 0) {
-                SDL_BindGPUGraphicsPipeline(ed_pass, mesh_pipeline);
+        SDL_EndGPURenderPass(ed_pass);
+    }
 
-                mesh_uniform_data ed_mesh_u;
-                memcpy(ed_mesh_u.projection, ed_proj.m, sizeof(float) * 16);
-                memcpy(ed_mesh_u.view, ed_view.m, sizeof(float) * 16);
-                memcpy(ed_mesh_u.model, g->mesh3d.model_transform.m, sizeof(float) * 16);
-                SDL_PushGPUVertexUniformData(cmd_buf, 0, &ed_mesh_u, sizeof(ed_mesh_u));
+    // ================================================================
+    // COMPOSITE PASS — per-window: draw headers + panel textures into each swapchain
+    // ================================================================
+    {
+        int cwi;
+        for (cwi = 0; cwi < MAX_DOCK_WINDOWS; cwi++) {
+            SDL_GPUTexture *swapchain_texture = NULL;
+            Uint32 sc_w, sc_h;
+            SDL_Window *dw;
+            SDL_GPURenderPass *comp_pass;
+            SDL_GPUColorTargetInfo comp_ct;
 
-                SDL_BindGPUVertexStorageBuffers(ed_pass, 0, &bone_storage_buffer, 1);
+            if (!g->dock.windows[cwi].in_use || !g->dock.windows[cwi].sdl_window) continue;
+            if (comp_data[cwi].quad_count <= 0 || !comp_data[cwi].gpu_buf) continue;
 
-                for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
-                    GltfPrimitive *prim = &g->loaded_model.mesh.primitives[p];
+            dw = (SDL_Window *)g->dock.windows[cwi].sdl_window;
+            if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, dw, &swapchain_texture, &sc_w, &sc_h)
+                || !swapchain_texture) continue;
 
-                    SDL_GPUBufferBinding vb = {0};
-                    vb.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
-                    SDL_BindGPUVertexBuffers(ed_pass, 0, &vb, 1);
+            memset(&comp_ct, 0, sizeof(comp_ct));
+            comp_ct.texture = swapchain_texture;
+            comp_ct.clear_color = (SDL_FColor){0.08f, 0.08f, 0.10f, 1.0f};
+            comp_ct.load_op = SDL_GPU_LOADOP_CLEAR;
+            comp_ct.store_op = SDL_GPU_STOREOP_STORE;
 
-                    SDL_GPUBufferBinding ib = {0};
-                    ib.buffer = (SDL_GPUBuffer *)prim->index_buffer;
-                    SDL_BindGPUIndexBuffer(ed_pass, &ib, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+            comp_pass = SDL_BeginGPURenderPass(cmd_buf, &comp_ct, 1, NULL);
 
-                    SDL_GPUTextureSamplerBinding tb = {0};
-                    tb.texture = prim->texture ? (SDL_GPUTexture *)prim->texture : white_texture;
-                    tb.sampler = mesh_sampler;
-                    SDL_BindGPUFragmentSamplers(ed_pass, 0, &tb, 1);
+            if (composite_pipeline) {
+                int qi;
+                SDL_GPUBufferBinding comp_vb;
 
-                    SDL_DrawGPUIndexedPrimitives(ed_pass, prim->index_count, 1, 0, 0, 0);
+                SDL_BindGPUGraphicsPipeline(comp_pass, composite_pipeline);
+
+                memset(&comp_vb, 0, sizeof(comp_vb));
+                comp_vb.buffer = comp_data[cwi].gpu_buf;
+                SDL_BindGPUVertexBuffers(comp_pass, 0, &comp_vb, 1);
+
+                /* Draw quads: each quad has a type (header or panel) and a panel ID.
+                   Bind the appropriate texture per quad. */
+                for (qi = 0; qi < comp_data[cwi].quad_count; qi++) {
+                    CompQuadInfo *cq = &comp_data[cwi].quads[qi];
+                    SDL_GPUTextureSamplerBinding tex_bind = {0};
+
+                    if (cq->type == CQUAD_HEADER) {
+                        if (!header_textures[cq->panel]) continue;
+                        tex_bind.texture = header_textures[cq->panel];
+                    } else {
+                        if (!panel_color[cq->panel]) continue;
+                        tex_bind.texture = panel_color[cq->panel];
+                    }
+                    tex_bind.sampler = composite_sampler;
+                    SDL_BindGPUFragmentSamplers(comp_pass, 0, &tex_bind, 1);
+                    SDL_DrawGPUPrimitives(comp_pass, 6, 1, (Uint32)(qi * 6), 0);
                 }
             }
 
-            /* 2. Draw editor 3D lines (grid + frustum gizmo) */
-            if (editor_vert_count > 0 && editor_line_gpu_buf) {
-                SDL_BindGPUGraphicsPipeline(ed_pass, editor_line_pipeline);
-
-                uniform_data ed_line_u;
-                memcpy(ed_line_u.projection, ed_proj.m, sizeof(float) * 16);
-                memcpy(ed_line_u.view, ed_view.m, sizeof(float) * 16);
-                SDL_PushGPUVertexUniformData(cmd_buf, 0, &ed_line_u, sizeof(ed_line_u));
-
-                SDL_GPUBufferBinding ed_lb = {0};
-                ed_lb.buffer = editor_line_gpu_buf;
-                SDL_BindGPUVertexBuffers(ed_pass, 0, &ed_lb, 1);
-
-                SDL_DrawGPUPrimitives(ed_pass, (Uint32)editor_vert_count, 1, 0, 0);
-            }
-
-            SDL_EndGPURenderPass(ed_pass);
+            SDL_EndGPURenderPass(comp_pass);
         }
     }
 
@@ -2603,6 +3243,15 @@ EXPORT void update_externals(struct game *g) {
     if (sprite_gpu_buf) SDL_ReleaseGPUBuffer(gpu_device, sprite_gpu_buf);
     if (line_gpu_buf)   SDL_ReleaseGPUBuffer(gpu_device, line_gpu_buf);
     if (editor_line_gpu_buf) SDL_ReleaseGPUBuffer(gpu_device, editor_line_gpu_buf);
+    {
+        int cwi;
+        for (cwi = 0; cwi < MAX_DOCK_WINDOWS; cwi++) {
+            if (comp_data[cwi].gpu_buf) {
+                SDL_ReleaseGPUBuffer(gpu_device, comp_data[cwi].gpu_buf);
+                comp_data[cwi].gpu_buf = NULL;
+            }
+        }
+    }
     ui_release_buffers(&ui_game);
     ui_release_buffers(&ui_profiler);
 
@@ -2633,26 +3282,31 @@ EXPORT void end_externals(struct game *g) {
     clay_arena_game = NULL;
     clay_arena_prof = NULL;
 
-    // Profiler window cleanup
-    if (profiler_window) {
-        SDL_ReleaseWindowFromGPUDevice(gpu_device, profiler_window);
-        SDL_DestroyWindow(profiler_window);
-        profiler_window = NULL;
+    // Release editor mouse look if active
+    if (g->editor.cam_mouse_look && window) {
+        SDL_SetWindowRelativeMouseMode(window, false);
+        g->editor.cam_mouse_look = 0;
     }
 
-    // Editor window cleanup
-    if (editor_window) {
-        if (g->editor.cam_mouse_look) {
-            SDL_SetWindowRelativeMouseMode(editor_window, false);
-            g->editor.cam_mouse_look = 0;
+    // Panel offscreen textures
+    {
+        int i;
+        for (i = 0; i < PANEL_COUNT; i++) {
+            if (panel_color[i]) { SDL_ReleaseGPUTexture(gpu_device, panel_color[i]); panel_color[i] = NULL; }
+            if (panel_depth[i]) { SDL_ReleaseGPUTexture(gpu_device, panel_depth[i]); panel_depth[i] = NULL; }
+            panel_tex_w[i] = 0;
+            panel_tex_h[i] = 0;
         }
-        SDL_ReleaseWindowFromGPUDevice(gpu_device, editor_window);
-        SDL_DestroyWindow(editor_window);
-        editor_window = NULL;
     }
-    if (editor_depth_texture) {
-        SDL_ReleaseGPUTexture(gpu_device, editor_depth_texture);
-        editor_depth_texture = NULL;
+
+    // Composite pipeline + sampler + header textures
+    if (composite_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, composite_pipeline); composite_pipeline = NULL; }
+    if (composite_sampler)  { SDL_ReleaseGPUSampler(gpu_device, composite_sampler); composite_sampler = NULL; }
+    {
+        int i;
+        for (i = 0; i < PANEL_COUNT; i++) {
+            if (header_textures[i]) { SDL_ReleaseGPUTexture(gpu_device, header_textures[i]); header_textures[i] = NULL; }
+        }
     }
     if (editor_line_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(gpu_device, editor_line_pipeline);
@@ -2694,7 +3348,7 @@ EXPORT void end_externals(struct game *g) {
 
     // Release mesh-related GPU resources
     if (mesh_sampler) { SDL_ReleaseGPUSampler(gpu_device, mesh_sampler); mesh_sampler = NULL; }
-    if (depth_texture) { SDL_ReleaseGPUTexture(gpu_device, depth_texture); depth_texture = NULL; }
+    /* depth_texture replaced by panel_depth[] — already freed above */
     if (white_texture) { SDL_ReleaseGPUTexture(gpu_device, white_texture); white_texture = NULL; }
     if (bone_storage_buffer) { SDL_ReleaseGPUBuffer(gpu_device, bone_storage_buffer); bone_storage_buffer = NULL; }
 
@@ -2708,6 +3362,19 @@ EXPORT void end_externals(struct game *g) {
 
     // Shadercross
     SDL_ShaderCross_Quit();
+
+    // Destroy tear-off windows (indices 1+)
+    {
+        int i;
+        for (i = 1; i < MAX_DOCK_WINDOWS; i++) {
+            if (g->dock.windows[i].in_use && g->dock.windows[i].sdl_window) {
+                SDL_ReleaseWindowFromGPUDevice(gpu_device, (SDL_Window *)g->dock.windows[i].sdl_window);
+                SDL_DestroyWindow((SDL_Window *)g->dock.windows[i].sdl_window);
+                g->dock.windows[i].in_use = 0;
+                g->dock.windows[i].sdl_window = NULL;
+            }
+        }
+    }
 
     // Main window & device
     if (gpu_device) {

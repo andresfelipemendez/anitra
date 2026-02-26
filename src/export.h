@@ -23,7 +23,7 @@ struct game;
 typedef void (*init)(struct game *g);
 typedef void (*destroy)(struct game *g);
 typedef void (*update)(struct game *g);
-typedef void (*handle_event)(struct game *g, void *event);
+typedef int (*handle_event)(struct game *g, void *event);
 
 #define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
 #define HOTRELOAD_EDITOR_EVENT_NAME "Global\\ReloadEditorEvent"

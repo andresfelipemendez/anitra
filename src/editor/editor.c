@@ -1,6 +1,7 @@
 #include <game.h>
 #include <export.h>
 #include <math3d.h>
+#include <dock.h>
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdbool.h>
@@ -193,7 +194,7 @@ static void update_camera(game *g) {
 static void update_gizmo_hover(game *g) {
     editor_state *e = &g->editor;
     SDL_Window *mouse_win;
-    int ww, wh, i;
+    int i;
     float fw2, fh2, ed_aspect, mx, my;
     Mat4 ed_proj, ed_view, vp;
     Vec3 ed_fwd, giz, mouse, center_s;
@@ -212,8 +213,8 @@ static void update_gizmo_hover(game *g) {
         return;
     }
 
-    SDL_GetWindowSize((SDL_Window *)e->window, &ww, &wh);
-    fw2 = (float)ww; fh2 = (float)wh;
+    /* Use panel dimensions instead of full window size */
+    fw2 = e->panel_w; fh2 = e->panel_h;
     if (fw2 < 1 || fh2 < 1) return;
 
     ed_aspect = fw2 / fh2;
@@ -222,7 +223,10 @@ static void update_gizmo_hover(game *g) {
     ed_view = mat4_look_at(e->cam_pos, vec3_add(e->cam_pos, ed_fwd), VEC3(0, 1, 0));
     vp = mat4_mul(ed_proj, ed_view);
 
+    /* Transform mouse from window-space to panel-local space */
     SDL_GetMouseState(&mx, &my);
+    mx -= e->panel_x;
+    my -= e->panel_y;
     mouse = VEC3(mx, my, 0);
 
     giz = g->mesh3d.camera_eye;
@@ -278,12 +282,111 @@ EXPORT void destroy_editor(game *g) {
     (void)g;
 }
 
-EXPORT void editor_handle_event(game *g, void *event_ptr) {
+EXPORT int editor_handle_event(game *g, void *event_ptr) {
     editor_state *e = &g->editor;
     SDL_Event *ev = (SDL_Event *)event_ptr;
+    dock_state *d = &g->dock;
+    DragState *drag = &d->drag;
     SDL_Window *evwin;
 
-    if (!e->open || !e->window) return;
+    /* ── Dock: Left mouse button down — tab switch or drag start ── */
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        ev->button.button == SDL_BUTTON_LEFT &&
+        drag->phase == DRAG_IDLE) {
+        evwin = SDL_GetWindowFromEvent(ev);
+        {
+            int win_idx = dock_window_for_sdl(d, evwin);
+            if (win_idx >= 0) {
+                float mx = ev->button.x;
+                float my = ev->button.y;
+                int hit_node = -1;
+                PanelId hit_panel = PANEL_GAME;
+                int hit_tab_idx = -1;
+                if (header_hit_test_node(d, d->windows[win_idx].root_node,
+                                         mx, my, &hit_node, &hit_panel, &hit_tab_idx)) {
+                    DockNode *hn = &d->nodes[hit_node];
+                    if (hit_tab_idx >= 0 && hit_tab_idx != hn->active_tab) {
+                        /* Clicked an inactive tab — switch to it, no drag */
+                        hn->active_tab = hit_tab_idx;
+                        return 1;
+                    }
+                    /* Clicked the active tab — start drag */
+                    drag->phase = DRAG_PENDING;
+                    drag->panel = hit_panel;
+                    drag->source_node = hit_node;
+                    drag->source_window = win_idx;
+                    drag->grab_x = mx;
+                    drag->grab_y = my;
+                    return 1;
+                }
+            }
+        }
+    }
+
+    /* ── Dock: Mouse motion — threshold check, tear-off/redock detection ── */
+    if (ev->type == SDL_EVENT_MOUSE_MOTION && drag->phase != DRAG_IDLE) {
+        float mx = ev->motion.x;
+        float my = ev->motion.y;
+
+        if (drag->phase == DRAG_PENDING) {
+            float dx = mx - drag->grab_x;
+            float dy = my - drag->grab_y;
+            if (dx * dx + dy * dy > DOCK_DRAG_THRESHOLD * DOCK_DRAG_THRESHOLD) {
+                drag->phase = DRAG_ACTIVE;
+            }
+        }
+
+        if (drag->phase == DRAG_ACTIVE) {
+            SDL_Window *src_win = (SDL_Window *)d->windows[drag->source_window].sdl_window;
+            int ww, wh;
+            SDL_GetWindowSize(src_win, &ww, &wh);
+            if (mx < 0 || my < 0 || mx >= ww || my >= wh) {
+                /* Mouse left source window — check if over another dock window */
+                float gx, gy;
+                int found_other = -1;
+                int dwi;
+                SDL_GetGlobalMouseState(&gx, &gy);
+
+                for (dwi = 0; dwi < MAX_DOCK_WINDOWS; dwi++) {
+                    int owx, owy, oww, owh;
+                    SDL_Window *ow;
+                    if (dwi == drag->source_window) continue;
+                    if (!d->windows[dwi].in_use || !d->windows[dwi].sdl_window) continue;
+                    ow = (SDL_Window *)d->windows[dwi].sdl_window;
+                    SDL_GetWindowPosition(ow, &owx, &owy);
+                    SDL_GetWindowSize(ow, &oww, &owh);
+                    if (gx >= owx && gx < owx + oww && gy >= owy && gy < owy + owh) {
+                        found_other = dwi;
+                        break;
+                    }
+                }
+
+                if (found_other >= 0) {
+                    /* Over another dock window — request redock */
+                    d->cmd_redock = 1;
+                    d->cmd_redock_target = found_other;
+                } else {
+                    /* Outside all windows — request tear-off */
+                    d->cmd_tear_off = 1;
+                    d->cmd_screen_x = gx;
+                    d->cmd_screen_y = gy;
+                }
+                drag->phase = DRAG_IDLE;
+            }
+        }
+        return 1; /* consume motion events during drag */
+    }
+
+    /* ── Dock: Mouse button up — cancel drag ── */
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
+        ev->button.button == SDL_BUTTON_LEFT &&
+        drag->phase != DRAG_IDLE) {
+        drag->phase = DRAG_IDLE;
+        return 1;
+    }
+
+    /* ── Editor-specific events below (require open panel) ── */
+    if (!e->open || !e->window) return 0;
 
     /* Right-click mouse look toggle */
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
@@ -314,7 +417,6 @@ EXPORT void editor_handle_event(game *g, void *event_ptr) {
         ev->button.button == SDL_BUTTON_LEFT) {
         evwin = SDL_GetWindowFromEvent(ev);
         if (evwin == (SDL_Window *)e->window && e->gizmo_hovered != 0) {
-            int ww, wh;
             float fw2, fh2, ed_aspect, giz_dist, giz_len, sdx, sdy, slen;
             Mat4 ed_proj, ed_view, vp;
             Vec3 ed_fwd, giz, world_axis, center_s, tip_s;
@@ -324,8 +426,7 @@ EXPORT void editor_handle_event(game *g, void *event_ptr) {
             e->gizmo_drag_start_target = g->mesh3d.camera_target;
             e->gizmo_drag_accum = 0;
 
-            SDL_GetWindowSize((SDL_Window *)e->window, &ww, &wh);
-            fw2 = (float)ww; fh2 = (float)wh;
+            fw2 = e->panel_w; fh2 = e->panel_h;
             ed_aspect = fw2 / fh2;
             ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
             ed_fwd  = cam_forward(e);
@@ -374,4 +475,6 @@ EXPORT void editor_handle_event(game *g, void *event_ptr) {
         ev->button.button == SDL_BUTTON_LEFT) {
         e->gizmo_active = 0;
     }
+
+    return 0;
 }
