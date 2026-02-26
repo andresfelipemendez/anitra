@@ -5,7 +5,7 @@
  *           ./tcc -Blib/tcc-linux -o builder build.c      (Linux)
  * Usage:    builder [target]
  *
- * Targets:  all (default), run, tracy, sdl3, spirvcross, shadercross, shaders, externals, core, engine, exe, watch, clean
+ * Targets:  all (default), run, tracy, sdl3, spirvcross, shadercross, shaders, harfbuzz, externals, core, engine, editor, exe, watch, clean
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes the platform's native toolchain directly via system().
@@ -62,6 +62,7 @@
 #define OBJ_EXT_DIR     "build/obj/externals"
 #define OBJ_CORE_DIR    "build/obj/core"
 #define OBJ_ENGINE_DIR  "build/obj/engine"
+#define OBJ_EDITOR_DIR  "build/obj/editor"
 #define OBJ_EXE_DIR     "build/obj/exe"
 #define OBJ_SDL3_DIR        "build/obj/sdl3"
 #define OBJ_SPIRVCROSS_DIR  "build/obj/spirvcross"
@@ -70,7 +71,7 @@
 /* Common include paths used by externals, core, engine, and exe targets */
 #ifdef _WIN32
 #define COMMON_INCLUDES \
-    "/Isrc /Isrc/core /Isrc/engine /Isrc/externals /Iinclude " \
+    "/Isrc /Isrc/core /Isrc/engine /Isrc/editor /Isrc/externals /Iinclude " \
     "/Ilib/SDL3/include /Ilib/SDL_shadercross/include " \
     "/Ilib/SDL_shadercross/external/SPIRV-Cross " \
     "/Ilib/SDL_shadercross/external/prebuilt/inc " \
@@ -80,7 +81,7 @@
     "/Ilib/cgltf"
 #else
 #define COMMON_INCLUDES \
-    "-Isrc -Isrc/core -Isrc/engine -Isrc/externals -Iinclude " \
+    "-Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals -Iinclude " \
     "-Ilib/SDL3/include -Ilib/SDL_shadercross/include " \
     "-Ilib/SDL_shadercross/external/SPIRV-Cross " \
     "-Ilib/SDL_shadercross/external/prebuilt/inc " \
@@ -340,6 +341,7 @@ static int ensure_dirs(void)
     if (ensure_dir(OBJ_EXT_DIR))    return 1;
     if (ensure_dir(OBJ_CORE_DIR))   return 1;
     if (ensure_dir(OBJ_ENGINE_DIR)) return 1;
+    if (ensure_dir(OBJ_EDITOR_DIR)) return 1;
     if (ensure_dir(OBJ_EXE_DIR))    return 1;
     if (ensure_dir(OBJ_SDL3_DIR))       return 1;
     if (ensure_dir(OBJ_SPIRVCROSS_DIR)) return 1;
@@ -426,29 +428,14 @@ static int build_tracy(void)
     return 0;
 }
 
-/* ------- externals (DLL) ------------------------------------------------ */
-static int build_externals(void)
+/* ------- harfbuzz (compiled once, linked into externals) ----------------- */
+static int build_harfbuzz(void)
 {
-    static const char *sources[] = {
-        "src/externals/externals.cpp",
-        "src/externals/gltf_loader.cpp"
-    };
-    static const char *objs[] = {
-        OBJ_EXT_DIR "/externals" OBJ_EXT,
-        OBJ_EXT_DIR "/gltf_loader" OBJ_EXT
-    };
-    int count = sizeof(sources) / sizeof(sources[0]);
-    int i;
-    int any_rebuilt = 0;
     char cmd[CMD_MAX];
-    char obj_list[OBJ_MAX];
-    char pdb_suffix[9];
-    int pos;
 
-    printf("\n=== Building externals ===\n");
+    printf("\n=== Building harfbuzz ===\n");
     if (ensure_dirs() != 0) return 1;
 
-    /* Compile HarfBuzz amalgamated (C++) */
     if (needs_rebuild("lib/harfbuzz-src/src/harfbuzz.cc",
                        OBJ_EXT_DIR "/harfbuzz" OBJ_EXT)) {
 #ifdef _WIN32
@@ -470,8 +457,117 @@ static int build_externals(void)
             tool_cxx);
 #endif
         if (run_cmd(cmd) != 0) return 1;
-        any_rebuilt = 1;
+    } else {
+        printf("   harfbuzz is up to date.\n");
     }
+
+    return 0;
+}
+
+/* Generate a .def file from a DLL using dumpbin /exports.
+   TCC needs .def files to link against MSVC-built DLLs.
+   Uses _popen() to read dumpbin output directly (avoids cmd.exe quoting
+   issues with file redirection when paths contain spaces).
+   Returns 0 on success. */
+#ifdef _WIN32
+static int generate_def_from_dll(const char *dll_path, const char *def_path,
+                                 const char *library_name)
+{
+    char cmd[CMD_MAX];
+    FILE *pipe;
+    FILE *def_fp;
+    char line[2048];
+    int in_exports = 0;
+    int symbol_count = 0;
+
+    /* Use dumpbin from PATH (set by vcvarsall) to avoid spaces-in-path
+       quoting issues with _popen -> cmd.exe. */
+    snprintf(cmd, sizeof(cmd),
+        "dumpbin /nologo /exports \"%s\"",
+        dll_path);
+
+    pipe = _popen(cmd, "r");
+    if (!pipe) {
+        printf("!! dumpbin failed for %s\n", dll_path);
+        return 1;
+    }
+
+    def_fp = fopen(def_path, "w");
+    if (!def_fp) {
+        _pclose(pipe);
+        printf("!! cannot create %s\n", def_path);
+        return 1;
+    }
+
+    fprintf(def_fp, "LIBRARY %s\nEXPORTS\n", library_name);
+
+    /* dumpbin /exports output has lines like:
+       "   1234  0  00012340  SDL_FunctionName"
+       with columns: ordinal, hint, RVA, name.
+       We detect the header "ordinal hint RVA name" then parse each row. */
+    while (fgets(line, sizeof(line), pipe)) {
+        char *p;
+        if (!in_exports) {
+            if (strstr(line, "ordinal") && strstr(line, "hint") &&
+                strstr(line, "RVA") && strstr(line, "name")) {
+                in_exports = 1;
+            }
+            continue;
+        }
+        /* Skip empty lines */
+        p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '\n' || *p == '\r') {
+            /* Empty line after exports section means we're done */
+            if (symbol_count > 0) break;
+            continue;
+        }
+        /* Parse: skip ordinal, hint, RVA (3 tokens), take 4th */
+        {
+            int col;
+            char *tok = p;
+            for (col = 0; col < 3; col++) {
+                while (*tok && *tok != ' ' && *tok != '\t') tok++;
+                while (*tok == ' ' || *tok == '\t') tok++;
+            }
+            if (*tok && *tok != '\n' && *tok != '\r') {
+                /* Trim trailing whitespace/newline */
+                char *end = tok;
+                while (*end && *end != ' ' && *end != '\t' &&
+                       *end != '\n' && *end != '\r') end++;
+                *end = '\0';
+                fprintf(def_fp, "%s\n", tok);
+                symbol_count++;
+            }
+        }
+    }
+
+    _pclose(pipe);
+    fclose(def_fp);
+
+    printf("   Generated %s (%d exports)\n", def_path, symbol_count);
+    return 0;
+}
+#endif
+
+/* ------- externals (DLL) ------------------------------------------------ */
+static int build_externals(void)
+{
+    static const char *sources[] = {
+        "src/externals/externals.cpp"
+    };
+    static const char *objs[] = {
+        OBJ_EXT_DIR "/externals" OBJ_EXT
+    };
+    int count = sizeof(sources) / sizeof(sources[0]);
+    int i;
+    int any_rebuilt = 0;
+    char cmd[CMD_MAX];
+    char obj_list[OBJ_MAX];
+    char pdb_suffix[9];
+    int pos;
+
+    printf("\n=== Building externals ===\n");
 
     for (i = 0; i < count; i++) {
         if (needs_rebuild(sources[i], objs[i])) {
@@ -499,7 +595,9 @@ static int build_externals(void)
     }
 
     if (any_rebuilt ||
-        needs_rebuild(objs[0], DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT)) {
+        needs_rebuild(objs[0], DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT) ||
+        needs_rebuild(OBJ_EXT_DIR "/harfbuzz" OBJ_EXT,
+                      DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT)) {
         /* Build object list string */
         pos = 0;
         for (i = 0; i < count; i++) {
@@ -538,196 +636,151 @@ static int build_externals(void)
             tool_link, obj_list);
 #endif
         if (run_cmd(cmd) != 0) return 1;
+
+#ifdef _WIN32
+        /* Regenerate .def for TCC linking after rebuild */
+        generate_def_from_dll(DEBUG_DIR "/externals.dll",
+                              DEBUG_DIR "/externals.def", "externals.dll");
+#endif
     } else {
         printf("   externals is up to date.\n");
     }
 
+#ifdef _WIN32
+    /* Ensure .def file exists for TCC linking (core.dll needs it) */
+    {
+        FILE *chk = fopen(DEBUG_DIR "/externals.def", "r");
+        if (chk) {
+            fclose(chk);
+        } else {
+            generate_def_from_dll(DEBUG_DIR "/externals.dll",
+                                  DEBUG_DIR "/externals.def", "externals.dll");
+        }
+    }
+#endif
+
     return 0;
 }
+
+/* ------- TCC commands (used by build_core, build_engine, build_editor, watch) */
+
+#ifdef _WIN32
+#define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
+#define HOTRELOAD_EDITOR_EVENT_NAME "Global\\ReloadEditorEvent"
+#define HOTRELOAD_CORE_EVENT_NAME   "Global\\ReloadCoreEvent"
+
+#define TCC_COMPILE_CMD \
+    ".\\tcc.exe -Blib/tcc-windows -shared" \
+    " -o build/Debug/engine.dll" \
+    " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf" \
+    " src/engine/engine.c" \
+    " src/engine/renderer.c" \
+    " src/engine/physics.c" \
+    " src/engine/scene.c" \
+    " src/engine/debug_render.c" \
+    " src/engine/anim.c" \
+    " src/engine/gltf_loader.c" \
+    " build/Debug/SDL3.def"
+
+#define TCC_EDITOR_CMD \
+    ".\\tcc.exe -Blib/tcc-windows -shared" \
+    " -o build/Debug/editor.dll" \
+    " -Isrc -Isrc/editor -Isrc/engine" \
+    " -Ilib/SDL3/include" \
+    " src/editor/editor.c" \
+    " build/Debug/SDL3.def"
+
+#define TCC_CORE_CMD \
+    ".\\tcc.exe -Blib/tcc-windows -shared" \
+    " -o build/Debug/core.dll" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
+    " -Ilib/SDL3/include" \
+    " src/core/core.c" \
+    " src/core/loadlibrary_windows.c" \
+    " build/Debug/SDL3.def" \
+    " build/Debug/externals.def"
+
+#define TCC_EXE_CMD \
+    ".\\tcc.exe -Blib/tcc-windows" \
+    " -o build/Debug/AnitraEngine.exe" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
+    " -Ilib/SDL3/include" \
+    " src/main.c" \
+    " src/core/loadlibrary_windows.c"
+#else
+#define TCC_COMPILE_CMD \
+    "./tcc -Blib/tcc-linux -shared" \
+    " -o build/Debug/engine.so" \
+    " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf" \
+    " src/engine/*.c"
+
+#define TCC_EDITOR_CMD \
+    "./tcc -Blib/tcc-linux -shared" \
+    " -o build/Debug/editor.so" \
+    " -Isrc -Isrc/editor -Isrc/engine" \
+    " -Ilib/SDL3/include" \
+    " src/editor/editor.c"
+
+#define TCC_CORE_CMD \
+    "./tcc -Blib/tcc-linux -shared" \
+    " -o build/Debug/core.so" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
+    " -Ilib/SDL3/include" \
+    " src/core/core.c" \
+    " src/core/loadlibrary_linux.c"
+
+#define TCC_EXE_CMD \
+    "./tcc -Blib/tcc-linux" \
+    " -o build/Debug/AnitraEngine" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
+    " -Ilib/SDL3/include" \
+    " src/main.c" \
+    " src/core/loadlibrary_linux.c" \
+    " -ldl"
+#endif
 
 /* ------- core (DLL) ----------------------------------------------------- */
 static int build_core(void)
 {
-#ifdef _WIN32
-    static const char *sources[] = {
-        "src/core/core.cpp",
-        "src/core/loadlibrary_windows.cpp"
-    };
-    static const char *objs[] = {
-        OBJ_CORE_DIR "/core" OBJ_EXT,
-        OBJ_CORE_DIR "/loadlibrary_windows" OBJ_EXT
-    };
-#else
-    static const char *sources[] = {
-        "src/core/core.cpp",
-        "src/core/loadlibrary_linux.cpp"
-    };
-    static const char *objs[] = {
-        OBJ_CORE_DIR "/core" OBJ_EXT,
-        OBJ_CORE_DIR "/loadlibrary_linux" OBJ_EXT
-    };
-#endif
-    int count = sizeof(sources) / sizeof(sources[0]);
-    int i;
-    int any_rebuilt = 0;
-    char cmd[CMD_MAX];
-    char obj_list[OBJ_MAX];
-    int pos;
-
     printf("\n=== Building core ===\n");
     if (ensure_dirs() != 0) return 1;
-
-    for (i = 0; i < count; i++) {
-        if (needs_rebuild(sources[i], objs[i])) {
-#ifdef _WIN32
-            snprintf(cmd, sizeof(cmd),
-                "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-                COMMON_INCLUDES " "
-                "/Fo%s "
-                "/Fd" OBJ_CORE_DIR "/core.pdb "
-                "%s",
-                tool_cxx, objs[i], sources[i]);
-#else
-            snprintf(cmd, sizeof(cmd),
-                "%s -std=c++20 -fPIC -g -O0 -Wno-changes-meaning -c "
-                COMMON_INCLUDES " "
-                "-o %s "
-                "%s",
-                tool_cxx, objs[i], sources[i]);
-#endif
-            if (run_cmd(cmd) != 0) return 1;
-            any_rebuilt = 1;
-        }
+    printf(">> " TCC_CORE_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_CORE_CMD) != 0) {
+        printf("!! core build failed.\n");
+        return 1;
     }
+    return 0;
+}
 
-    if (any_rebuilt ||
-        needs_rebuild(objs[0], DEBUG_DIR "/" DLL_PREFIX "core" DLL_EXT)) {
-        pos = 0;
-        for (i = 0; i < count; i++) {
-            pos += snprintf(obj_list + pos, sizeof(obj_list) - pos,
-                            "%s ", objs[i]);
-            if (pos >= (int)sizeof(obj_list)) {
-                printf("!! object list too long\n");
-                return 1;
-            }
-        }
+/* ------- engine (DLL, built with TCC) ----------------------------------- */
+static int build_engine(void)
+{
+    printf("\n=== Building engine ===\n");
+    if (ensure_dirs() != 0) return 1;
 
-#ifdef _WIN32
-        snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /DLL /DEBUG "
-            "/OUT:" DEBUG_DIR "/" DLL_PREFIX "core" DLL_EXT " "
-            "/IMPLIB:" DEBUG_DIR "/core" LIB_EXT " "
-            "%s"
-            DEBUG_DIR "/externals" LIB_EXT " "
-            DEBUG_DIR "/SDL3" LIB_EXT " "
-            "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
-            tool_link, obj_list);
-#else
-        snprintf(cmd, sizeof(cmd),
-            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "core" DLL_EXT " "
-            "%s"
-            DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT " "
-            "-L" DEBUG_DIR " -lSDL3 "
-            "-lpthread -ldl",
-            tool_link, obj_list);
-#endif
-        if (run_cmd(cmd) != 0) return 1;
-    } else {
-        printf("   core is up to date.\n");
+    printf(">> " TCC_COMPILE_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_COMPILE_CMD) != 0) {
+        printf("!! engine build failed.\n");
+        return 1;
     }
 
     return 0;
 }
 
-/* ------- engine (DLL) --------------------------------------------------- */
-static int build_engine(void)
-{
-    static const char *sources[] = {
-        "src/engine/engine.c",
-        "src/engine/renderer.c",
-        "src/engine/physics.c",
-        "src/engine/scene.c",
-        "src/engine/debug_render.c",
-        "src/engine/anim.c"
-    };
-    static const char *objs[] = {
-        OBJ_ENGINE_DIR "/engine" OBJ_EXT,
-        OBJ_ENGINE_DIR "/renderer" OBJ_EXT,
-        OBJ_ENGINE_DIR "/physics" OBJ_EXT,
-        OBJ_ENGINE_DIR "/scene" OBJ_EXT,
-        OBJ_ENGINE_DIR "/debug_render" OBJ_EXT,
-        OBJ_ENGINE_DIR "/anim" OBJ_EXT
-    };
-    int count = sizeof(sources) / sizeof(sources[0]);
-    int i;
-    int any_rebuilt = 0;
-    char cmd[CMD_MAX];
-    char obj_list[OBJ_MAX];
-    char pdb_suffix[9];
-    int pos;
+/* ------- editor (DLL, built with TCC) ----------------------------------- */
 
-    printf("\n=== Building engine ===\n");
+static int build_editor(void)
+{
+    printf("\n=== Building editor ===\n");
     if (ensure_dirs() != 0) return 1;
 
-    for (i = 0; i < count; i++) {
-        if (needs_rebuild(sources[i], objs[i])) {
-#ifdef _WIN32
-            snprintf(cmd, sizeof(cmd),
-                "\"%s\" /TC /MD /Zi /Od /nologo /c "
-                COMMON_INCLUDES " "
-                "/Fo%s "
-                "/Fd" OBJ_ENGINE_DIR "/engine.pdb "
-                "%s",
-                tool_cc, objs[i], sources[i]);
-#else
-            snprintf(cmd, sizeof(cmd),
-                "%s -fPIC -g -O0 -c "
-                COMMON_INCLUDES " "
-                "-o %s "
-                "%s",
-                tool_cc, objs[i], sources[i]);
-#endif
-            if (run_cmd(cmd) != 0) return 1;
-            any_rebuilt = 1;
-        }
-    }
-
-    if (any_rebuilt ||
-        needs_rebuild(objs[0], DEBUG_DIR "/" DLL_PREFIX "engine" DLL_EXT)) {
-        pos = 0;
-        for (i = 0; i < count; i++) {
-            pos += snprintf(obj_list + pos, sizeof(obj_list) - pos,
-                            "%s ", objs[i]);
-            if (pos >= (int)sizeof(obj_list)) {
-                printf("!! object list too long\n");
-                return 1;
-            }
-        }
-
-#ifdef _WIN32
-        rand_hex(pdb_suffix, 8);
-
-        snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /DLL /DEBUG "
-            "/PDB:" DEBUG_DIR "/engine_%s.pdb "
-            "/OUT:" DEBUG_DIR "/" DLL_PREFIX "engine" DLL_EXT " "
-            "/IMPLIB:" DEBUG_DIR "/engine" LIB_EXT " "
-            "%s"
-            DEBUG_DIR "/externals" LIB_EXT " "
-            "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
-            tool_link, pdb_suffix, obj_list);
-#else
-        (void)pdb_suffix;
-        snprintf(cmd, sizeof(cmd),
-            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "engine" DLL_EXT " "
-            "%s"
-            DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT " "
-            "-lpthread -ldl",
-            tool_link, obj_list);
-#endif
-        if (run_cmd(cmd) != 0) return 1;
-    } else {
-        printf("   engine is up to date.\n");
+    printf(">> " TCC_EDITOR_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_EDITOR_CMD) != 0) {
+        printf("!! editor build failed.\n");
+        return 1;
     }
 
     return 0;
@@ -735,152 +788,195 @@ static int build_engine(void)
 
 /* ------- watch (forge) -------------------------------------------------- */
 
-#ifdef _WIN32
-#define HOTRELOAD_EVENT_NAME "Global\\ReloadEvent"
-
-#define TCC_COMPILE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -shared" \
-    " -o build/Debug/engine.dll" \
-    " -Isrc -Isrc/engine" \
-    " src/engine/engine.c" \
-    " src/engine/renderer.c" \
-    " src/engine/physics.c" \
-    " src/engine/scene.c" \
-    " src/engine/debug_render.c" \
-    " src/engine/anim.c"
-#else
-#define TCC_COMPILE_CMD \
-    "./tcc -Blib/tcc-linux -shared" \
-    " -o build/Debug/engine.so" \
-    " -Isrc -Isrc/engine" \
-    " src/engine/*.c"
-#endif
+static HANDLE g_engine_process = NULL;
 
 static int watch_and_rebuild(void)
 {
 #ifdef _WIN32
-    HANDLE hDir;
-    HANDLE hEvent;
-    char buffer[4096];
-    DWORD bytesReturned;
-    OVERLAPPED overlapped = {0};
-    char src_path[PATH_SIZE];
-    char dst_path[PATH_SIZE];
+    HANDLE hEngineDir, hEditorDir, hCoreDir;
+    HANDLE hEngineEvent, hEditorEvent, hCoreEvent;
+    char engine_buf[4096], editor_buf[4096], core_buf[4096];
+    OVERLAPPED engine_ov = {0}, editor_ov = {0}, core_ov = {0};
+    DWORD bytes;
 
-    printf("=== Forge: watching src/engine for changes ===\n");
+    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
     fflush(stdout);
 
-    /* Open directory handle for watching */
-    hDir = CreateFileA(
-        "src/engine",
-        FILE_LIST_DIRECTORY,
+    /* Open directory handles for watching */
+    hEngineDir = CreateFileA(
+        "src/engine", FILE_LIST_DIRECTORY,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-        NULL);
-    if (hDir == INVALID_HANDLE_VALUE) {
-        printf("!! Failed to open src/engine for watching (error %lu)\n",
-               GetLastError());
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
+    if (hEngineDir == INVALID_HANDLE_VALUE) {
+        printf("!! Failed to open src/engine for watching (error %lu)\n", GetLastError());
         return 1;
     }
 
-    overlapped.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
-    if (overlapped.hEvent == NULL) {
-        printf("!! CreateEvent failed (error %lu)\n", GetLastError());
-        CloseHandle(hDir);
+    hEditorDir = CreateFileA(
+        "src/editor", FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
+    if (hEditorDir == INVALID_HANDLE_VALUE) {
+        printf("!! Failed to open src/editor for watching (error %lu)\n", GetLastError());
+        CloseHandle(hEngineDir);
         return 1;
     }
 
-    /* Create/open the named event for signaling the engine */
-    hEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EVENT_NAME);
-    if (hEvent == NULL) {
-        printf("!! Failed to create reload event (error %lu)\n",
-               GetLastError());
-        CloseHandle(overlapped.hEvent);
-        CloseHandle(hDir);
+    hCoreDir = CreateFileA(
+        "src/core", FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
+    if (hCoreDir == INVALID_HANDLE_VALUE) {
+        printf("!! Failed to open src/core for watching (error %lu)\n", GetLastError());
+        CloseHandle(hEngineDir);
+        CloseHandle(hEditorDir);
         return 1;
     }
 
-    /* Build absolute paths for DLL copy */
-    {
-        char cwd[PATH_SIZE];
-        GetCurrentDirectoryA(PATH_SIZE, cwd);
-        snprintf(src_path, PATH_SIZE, "%s/build/Debug/engine.dll", cwd);
-        snprintf(dst_path, PATH_SIZE, "%s/build/Debug/engine_copy.dll", cwd);
+    engine_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+    editor_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+    core_ov.hEvent   = CreateEventA(NULL, TRUE, FALSE, NULL);
+
+    /* Named events for signaling the running application */
+    hEngineEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EVENT_NAME);
+    hEditorEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EDITOR_EVENT_NAME);
+    hCoreEvent   = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_CORE_EVENT_NAME);
+    if (!hEngineEvent || !hEditorEvent || !hCoreEvent) {
+        printf("!! Failed to create reload events (error %lu)\n", GetLastError());
+        return 1;
     }
 
-    /* Ensure build output directory exists */
     if (ensure_dirs() != 0) return 1;
 
-    /* Do an initial compile so engine_copy.dll exists on disk */
+    /* Initial compiles (app handles copying to _copy on load) */
     printf(">> " TCC_COMPILE_CMD "\n");
     fflush(stdout);
     if (system(TCC_COMPILE_CMD) == 0) {
-        CopyFileA(src_path, dst_path, FALSE);
-        printf("   Initial compile OK, engine_copy.dll ready.\n");
-        SetEvent(hEvent);
+        printf("   Initial engine compile OK.\n");
     } else {
-        printf("!! Initial compile failed. Waiting for changes...\n");
+        printf("!! Initial engine compile failed.\n");
     }
 
-    /* Watch loop */
+    printf(">> " TCC_EDITOR_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_EDITOR_CMD) == 0) {
+        printf("   Initial editor compile OK.\n");
+    } else {
+        printf("!! Initial editor compile failed.\n");
+    }
+
+    printf(">> " TCC_CORE_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_CORE_CMD) == 0) {
+        printf("   Initial core compile OK.\n");
+    } else {
+        printf("!! Initial core compile failed.\n");
+    }
+
+    /* Watch loop: wait on directory changes or engine process exit */
     while (1) {
-        if (!ReadDirectoryChangesW(
-                hDir, buffer, sizeof(buffer), TRUE,
-                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-                &bytesReturned, &overlapped, NULL)) {
-            printf("!! ReadDirectoryChangesW failed (error %lu)\n",
-                   GetLastError());
+        HANDLE waitHandles[4];
+        DWORD handleCount = 3;
+        DWORD waitResult;
+
+        ReadDirectoryChangesW(hEngineDir, engine_buf, sizeof(engine_buf), TRUE,
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+            &bytes, &engine_ov, NULL);
+        ReadDirectoryChangesW(hEditorDir, editor_buf, sizeof(editor_buf), TRUE,
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+            &bytes, &editor_ov, NULL);
+        ReadDirectoryChangesW(hCoreDir, core_buf, sizeof(core_buf), TRUE,
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+            &bytes, &core_ov, NULL);
+
+        waitHandles[0] = engine_ov.hEvent;
+        waitHandles[1] = editor_ov.hEvent;
+        waitHandles[2] = core_ov.hEvent;
+        if (g_engine_process) {
+            waitHandles[3] = g_engine_process;
+            handleCount = 4;
+        }
+        waitResult = WaitForMultipleObjects(handleCount, waitHandles, FALSE, INFINITE);
+
+        /* Engine process exited */
+        if (g_engine_process && waitResult == WAIT_OBJECT_0 + 3) {
+            printf("\n--- Engine exited, stopping watch. ---\n");
+            fflush(stdout);
             break;
         }
 
-        WaitForSingleObject(overlapped.hEvent, INFINITE);
-        ResetEvent(overlapped.hEvent);
-
-        /* Debounce: wait 50ms, drain any extra notifications */
+        /* Debounce */
         Sleep(50);
-        {
-            OVERLAPPED drain = {0};
-            DWORD drained;
-            drain.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
-            ReadDirectoryChangesW(hDir, buffer, sizeof(buffer), TRUE,
-                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-                &drained, &drain, NULL);
-            CancelIo(hDir);
-            CloseHandle(drain.hEvent);
-        }
+        CancelIo(hEngineDir);
+        CancelIo(hEditorDir);
+        CancelIo(hCoreDir);
+        ResetEvent(engine_ov.hEvent);
+        ResetEvent(editor_ov.hEvent);
+        ResetEvent(core_ov.hEvent);
 
-        printf("\n--- Change detected, recompiling... ---\n");
-        fflush(stdout);
-
-        printf(">> " TCC_COMPILE_CMD "\n");
-        fflush(stdout);
-
-        if (system(TCC_COMPILE_CMD) == 0) {
-            if (CopyFileA(src_path, dst_path, FALSE)) {
-                printf("   Compile OK. Signaling engine...\n");
-                SetEvent(hEvent);
-                ResetEvent(hEvent);
+        if (waitResult == WAIT_OBJECT_0) {
+            /* Engine directory changed */
+            printf("\n--- Engine change detected, recompiling... ---\n");
+            fflush(stdout);
+            printf(">> " TCC_COMPILE_CMD "\n");
+            fflush(stdout);
+            if (system(TCC_COMPILE_CMD) == 0) {
+                printf("   Compile OK. Signaling engine reload...\n");
+                SetEvent(hEngineEvent);
+                ResetEvent(hEngineEvent);
             } else {
-                printf("!! DLL copy failed (error %lu)\n", GetLastError());
+                printf("!! Engine compile failed.\n");
             }
-        } else {
-            printf("!! Compile failed. Engine keeps running old code.\n");
+        } else if (waitResult == WAIT_OBJECT_0 + 1) {
+            /* Editor directory changed */
+            printf("\n--- Editor change detected, recompiling... ---\n");
+            fflush(stdout);
+            printf(">> " TCC_EDITOR_CMD "\n");
+            fflush(stdout);
+            if (system(TCC_EDITOR_CMD) == 0) {
+                printf("   Compile OK. Signaling editor reload...\n");
+                SetEvent(hEditorEvent);
+                ResetEvent(hEditorEvent);
+            } else {
+                printf("!! Editor compile failed.\n");
+            }
+        } else if (waitResult == WAIT_OBJECT_0 + 2) {
+            /* Core directory changed */
+            printf("\n--- Core change detected, recompiling... ---\n");
+            fflush(stdout);
+            printf(">> " TCC_CORE_CMD "\n");
+            fflush(stdout);
+            if (system(TCC_CORE_CMD) == 0) {
+                printf("   Compile OK. Signaling core reload...\n");
+                SetEvent(hCoreEvent);
+                ResetEvent(hCoreEvent);
+            } else {
+                printf("!! Core compile failed.\n");
+            }
         }
         fflush(stdout);
     }
 
-    CloseHandle(hEvent);
-    CloseHandle(overlapped.hEvent);
-    CloseHandle(hDir);
+    CloseHandle(hEngineEvent);
+    CloseHandle(hEditorEvent);
+    CloseHandle(hCoreEvent);
+    CloseHandle(engine_ov.hEvent);
+    CloseHandle(editor_ov.hEvent);
+    CloseHandle(core_ov.hEvent);
+    CloseHandle(hEngineDir);
+    CloseHandle(hEditorDir);
+    CloseHandle(hCoreDir);
     return 0;
 
 #else /* Linux inotify */
-    int ifd, wfd;
+    int ifd, engine_wfd, editor_wfd, core_wfd;
     struct pollfd pfd;
     char buf[4096];
 
-    printf("=== Forge: watching src/engine for changes ===\n");
+    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
     fflush(stdout);
 
     ifd = inotify_init();
@@ -889,10 +985,26 @@ static int watch_and_rebuild(void)
         return 1;
     }
 
-    wfd = inotify_add_watch(ifd, "src/engine",
+    engine_wfd = inotify_add_watch(ifd, "src/engine",
         IN_MODIFY | IN_CREATE | IN_MOVED_TO);
-    if (wfd < 0) {
+    if (engine_wfd < 0) {
         printf("!! inotify_add_watch failed on src/engine\n");
+        close(ifd);
+        return 1;
+    }
+
+    editor_wfd = inotify_add_watch(ifd, "src/editor",
+        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
+    if (editor_wfd < 0) {
+        printf("!! inotify_add_watch failed on src/editor\n");
+        close(ifd);
+        return 1;
+    }
+
+    core_wfd = inotify_add_watch(ifd, "src/core",
+        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
+    if (core_wfd < 0) {
+        printf("!! inotify_add_watch failed on src/core\n");
         close(ifd);
         return 1;
     }
@@ -900,15 +1012,33 @@ static int watch_and_rebuild(void)
     /* Ensure build output directory exists */
     if (ensure_dirs() != 0) return 1;
 
-    /* Initial compile */
+    /* Initial compile — engine */
     printf(">> " TCC_COMPILE_CMD "\n");
     fflush(stdout);
     if (system(TCC_COMPILE_CMD) == 0) {
-        /* Touch reload signal file */
         fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
-        printf("   Initial compile OK, engine.so ready.\n");
+        printf("   Initial engine compile OK.\n");
     } else {
-        printf("!! Initial compile failed. Waiting for changes...\n");
+        printf("!! Initial engine compile failed. Waiting for changes...\n");
+    }
+
+    /* Initial compile — editor */
+    printf(">> " TCC_EDITOR_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_EDITOR_CMD) == 0) {
+        fclose(fopen(DEBUG_DIR "/.editor-reload-signal", "w"));
+        printf("   Initial editor compile OK.\n");
+    } else {
+        printf("!! Initial editor compile failed. Waiting for changes...\n");
+    }
+
+    /* Initial compile — core */
+    printf(">> " TCC_CORE_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_CORE_CMD) == 0) {
+        printf("   Initial core compile OK.\n");
+    } else {
+        printf("!! Initial core compile failed. Waiting for changes...\n");
     }
 
     /* Watch loop */
@@ -922,10 +1052,18 @@ static int watch_and_rebuild(void)
             break;
         }
 
-        /* Drain inotify events */
+        /* Drain inotify events — track which directories changed */
+        int engine_changed = 0, editor_changed = 0, core_changed = 0;
         {
             ssize_t n = read(ifd, buf, sizeof(buf));
-            (void)n;
+            ssize_t i = 0;
+            while (i < n) {
+                struct inotify_event *ev = (struct inotify_event *)(buf + i);
+                if (ev->wd == engine_wfd) engine_changed = 1;
+                if (ev->wd == editor_wfd) editor_changed = 1;
+                if (ev->wd == core_wfd)   core_changed = 1;
+                i += sizeof(struct inotify_event) + ev->len;
+            }
         }
 
         /* Debounce: wait 50ms and drain again */
@@ -936,22 +1074,54 @@ static int watch_and_rebuild(void)
             drain_pfd.events = POLLIN;
             while (poll(&drain_pfd, 1, 0) > 0) {
                 ssize_t n = read(ifd, buf, sizeof(buf));
-                (void)n;
+                ssize_t i = 0;
+                while (i < n) {
+                    struct inotify_event *ev = (struct inotify_event *)(buf + i);
+                    if (ev->wd == engine_wfd) engine_changed = 1;
+                    if (ev->wd == editor_wfd) editor_changed = 1;
+                    if (ev->wd == core_wfd)   core_changed = 1;
+                    i += sizeof(struct inotify_event) + ev->len;
+                }
             }
         }
 
-        printf("\n--- Change detected, recompiling... ---\n");
-        fflush(stdout);
+        if (engine_changed) {
+            printf("\n--- Engine change detected, recompiling... ---\n");
+            fflush(stdout);
+            printf(">> " TCC_COMPILE_CMD "\n");
+            fflush(stdout);
+            if (system(TCC_COMPILE_CMD) == 0) {
+                fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
+                printf("   Compile OK. Engine reload signal written.\n");
+            } else {
+                printf("!! Engine compile failed.\n");
+            }
+        }
 
-        printf(">> " TCC_COMPILE_CMD "\n");
-        fflush(stdout);
+        if (editor_changed) {
+            printf("\n--- Editor change detected, recompiling... ---\n");
+            fflush(stdout);
+            printf(">> " TCC_EDITOR_CMD "\n");
+            fflush(stdout);
+            if (system(TCC_EDITOR_CMD) == 0) {
+                fclose(fopen(DEBUG_DIR "/.editor-reload-signal", "w"));
+                printf("   Compile OK. Editor reload signal written.\n");
+            } else {
+                printf("!! Editor compile failed.\n");
+            }
+        }
 
-        if (system(TCC_COMPILE_CMD) == 0) {
-            /* Touch reload signal file */
-            fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
-            printf("   Compile OK. Reload signal written.\n");
-        } else {
-            printf("!! Compile failed. Engine keeps running old code.\n");
+        if (core_changed) {
+            printf("\n--- Core change detected, recompiling... ---\n");
+            fflush(stdout);
+            printf(">> " TCC_CORE_CMD "\n");
+            fflush(stdout);
+            if (system(TCC_CORE_CMD) == 0) {
+                fclose(fopen(DEBUG_DIR "/.core-reload-signal", "w"));
+                printf("   Compile OK. Core reload signal written.\n");
+            } else {
+                printf("!! Core compile failed.\n");
+            }
         }
         fflush(stdout);
     }
@@ -964,91 +1134,14 @@ static int watch_and_rebuild(void)
 /* ------- exe ------------------------------------------------------------ */
 static int build_exe(void)
 {
-#ifdef _WIN32
-    static const char *sources[] = {
-        "src/main.cpp",
-        "src/core/loadlibrary_windows.cpp"
-    };
-    static const char *objs[] = {
-        OBJ_EXE_DIR "/main" OBJ_EXT,
-        OBJ_EXE_DIR "/loadlibrary_windows" OBJ_EXT
-    };
-#else
-    static const char *sources[] = {
-        "src/main.cpp",
-        "src/core/loadlibrary_linux.cpp"
-    };
-    static const char *objs[] = {
-        OBJ_EXE_DIR "/main" OBJ_EXT,
-        OBJ_EXE_DIR "/loadlibrary_linux" OBJ_EXT
-    };
-#endif
-    int count = sizeof(sources) / sizeof(sources[0]);
-    int i;
-    int any_rebuilt = 0;
-    char cmd[CMD_MAX];
-    char obj_list[OBJ_MAX];
-    int pos;
-
     printf("\n=== Building exe ===\n");
     if (ensure_dirs() != 0) return 1;
-
-    for (i = 0; i < count; i++) {
-        if (needs_rebuild(sources[i], objs[i])) {
-#ifdef _WIN32
-            snprintf(cmd, sizeof(cmd),
-                "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-                COMMON_INCLUDES " "
-                "/Fo%s "
-                "/Fd" OBJ_EXE_DIR "/exe.pdb "
-                "%s",
-                tool_cxx, objs[i], sources[i]);
-#else
-            snprintf(cmd, sizeof(cmd),
-                "%s -std=c++20 -fPIC -g -O0 -c "
-                COMMON_INCLUDES " "
-                "-o %s "
-                "%s",
-                tool_cxx, objs[i], sources[i]);
-#endif
-            if (run_cmd(cmd) != 0) return 1;
-            any_rebuilt = 1;
-        }
+    printf(">> " TCC_EXE_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_EXE_CMD) != 0) {
+        printf("!! exe build failed.\n");
+        return 1;
     }
-
-    if (any_rebuilt ||
-        needs_rebuild(objs[0], DEBUG_DIR "/AnitraEngine" EXE_EXT)) {
-        pos = 0;
-        for (i = 0; i < count; i++) {
-            pos += snprintf(obj_list + pos, sizeof(obj_list) - pos,
-                            "%s ", objs[i]);
-            if (pos >= (int)sizeof(obj_list)) {
-                printf("!! object list too long\n");
-                return 1;
-            }
-        }
-
-#ifdef _WIN32
-        snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /DEBUG "
-            "/OUT:" DEBUG_DIR "/AnitraEngine" EXE_EXT " "
-            "%s"
-            DEBUG_DIR "/SDL3" LIB_EXT " "
-            "user32.lib",
-            tool_link, obj_list);
-#else
-        snprintf(cmd, sizeof(cmd),
-            "%s -o " DEBUG_DIR "/AnitraEngine" EXE_EXT " "
-            "%s"
-            "-L" DEBUG_DIR " -lSDL3 "
-            "-Wl,-rpath,'$ORIGIN'",
-            tool_link, obj_list);
-#endif
-        if (run_cmd(cmd) != 0) return 1;
-    } else {
-        printf("   exe is up to date.\n");
-    }
-
     return 0;
 }
 
@@ -1689,9 +1782,28 @@ static int build_sdl3(void)
             tool_link);
 #endif
         if (run_cmd(cmd) != 0) return 1;
+
+#ifdef _WIN32
+        /* Generate .def file for TCC linking */
+        generate_def_from_dll(DEBUG_DIR "/SDL3.dll",
+                              DEBUG_DIR "/SDL3.def", "SDL3.dll");
+#endif
     } else {
         printf("   SDL3 is up to date.\n");
     }
+
+#ifdef _WIN32
+    /* Ensure .def file exists even when SDL3 wasn't rebuilt (TCC needs it) */
+    {
+        FILE *chk = fopen(DEBUG_DIR "/SDL3.def", "r");
+        if (chk) {
+            fclose(chk);
+        } else {
+            generate_def_from_dll(DEBUG_DIR "/SDL3.dll",
+                                  DEBUG_DIR "/SDL3.def", "SDL3.dll");
+        }
+    }
+#endif
 
     return 0;
 }
@@ -1964,10 +2076,12 @@ static int build_all(void)
     if (build_shadercross() != 0) return 1;
     if (build_shaders() != 0) return 1;
     if (build_tracy() != 0) return 1;
+    if (build_harfbuzz() != 0) return 1;
     force_rebuild = 1;
     if (build_externals() != 0) return 1;
     if (build_core() != 0) return 1;
     if (build_engine() != 0) return 1;
+    if (build_editor() != 0) return 1;
     if (build_exe() != 0) return 1;
 
     printf("\n=== All targets built successfully. ===\n");
@@ -1983,60 +2097,8 @@ static int build_and_run(void)
     if (build_all() != 0) return 1;
     
     printf("\n=== Launching engine and starting watch mode ===\n");
-    
+
 #ifdef _WIN32
-    /* Try to launch Tracy Profiler if available */
-    {
-        STARTUPINFOA tracy_si = {0};
-        PROCESS_INFORMATION tracy_pi = {0};
-        const char *tracy_paths[] = {
-            "lib/tracy/tracy-profiler.exe",
-            "tracy-profiler.exe",
-            NULL
-        };
-        char tracy_full_path[PATH_SIZE];
-        int i;
-        int tracy_launched = 0;
-
-        tracy_si.cb = sizeof(tracy_si);
-
-        for (i = 0; tracy_paths[i]; i++) {
-            const char *path_to_use = NULL;
-
-            /* Check as a direct file path first, then search PATH */
-            if (GetFileAttributesA(tracy_paths[i]) != INVALID_FILE_ATTRIBUTES) {
-                path_to_use = tracy_paths[i];
-            }
-            else if (SearchPathA(NULL, tracy_paths[i], NULL, PATH_SIZE, tracy_full_path, NULL) != 0) {
-                path_to_use = tracy_full_path;
-            }
-
-            if (path_to_use) {
-                if (CreateProcessA(
-                        NULL,
-                        (char*)path_to_use,
-                        NULL,
-                        NULL,
-                        FALSE,
-                        0,
-                        NULL,
-                        NULL,
-                        &tracy_si,
-                        &tracy_pi)) {
-                    printf("   Tracy Profiler launched (PID: %lu)\n", (unsigned long)tracy_pi.dwProcessId);
-                    CloseHandle(tracy_pi.hThread);
-                    CloseHandle(tracy_pi.hProcess);
-                    tracy_launched = 1;
-                    break;
-                }
-            }
-        }
-        if (!tracy_launched) {
-            printf("   Tracy Profiler not found (optional)\n");
-            printf("   Download from: https://github.com/wolfpld/tracy/releases\n");
-        }
-    }
-    
     /* Launch the engine in a separate process */
     STARTUPINFOA si = {0};
     PROCESS_INFORMATION pi = {0};
@@ -2063,10 +2125,15 @@ static int build_and_run(void)
     
     printf("   Engine launched (PID: %lu)\n", (unsigned long)pi.dwProcessId);
     CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    
-    /* Now start watching for changes */
-    return watch_and_rebuild();
+    g_engine_process = pi.hProcess;
+
+    /* Now start watching for changes; exits when engine closes */
+    {
+        int rc = watch_and_rebuild();
+        CloseHandle(g_engine_process);
+        g_engine_process = NULL;
+        return rc;
+    }
 #else
     /* Fork and exec the engine on Linux */
     pid_t pid = fork();
@@ -2121,11 +2188,13 @@ static void print_usage(void)
     printf("  spirvcross   Build SPIRV-Cross shared library\n");
     printf("  shadercross  Build SDL_shadercross shared library\n");
     printf("  shaders      Compile GLSL shaders to SPIR-V\n");
+    printf("  harfbuzz     Build HarfBuzz object file\n");
     printf("  externals    Build externals shared library\n");
     printf("  core         Build core shared library\n");
     printf("  engine       Build engine shared library\n");
+    printf("  editor       Build editor shared library\n");
     printf("  exe          Build AnitraEngine executable\n");
-    printf("  watch        Watch src/engine and recompile on change (forge)\n");
+    printf("  watch        Watch src/engine + src/editor and recompile on change (forge)\n");
     printf("  clean        Delete build directory\n");
     printf("  help         Show this message\n");
 }
@@ -2157,12 +2226,16 @@ int main(int argc, char *argv[])
         rc = build_shadercross();
     } else if (strcmp(target, "shaders") == 0) {
         rc = build_shaders();
+    } else if (strcmp(target, "harfbuzz") == 0) {
+        rc = build_harfbuzz();
     } else if (strcmp(target, "externals") == 0) {
         rc = build_externals();
     } else if (strcmp(target, "core") == 0) {
         rc = build_core();
     } else if (strcmp(target, "engine") == 0) {
         rc = build_engine();
+    } else if (strcmp(target, "editor") == 0) {
+        rc = build_editor();
     } else if (strcmp(target, "exe") == 0) {
         rc = build_exe();
     } else if (strcmp(target, "watch") == 0) {

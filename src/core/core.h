@@ -2,9 +2,11 @@
 #define CORE_H
 
 #include <export.h>
+#include <game.h>
 
-DECLARE_FUNC_VOID(init_core)
+EXPORT int init_core();
+typedef int (*init_core_func)();
 
-void begin_game_loop(game &g);
+int begin_game_loop(game *g);
 
 #endif // CORE_H

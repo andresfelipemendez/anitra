@@ -25,16 +25,12 @@
 
 #include "gltf_types.h"
 
-// Forward declarations from gltf_loader.cpp
-extern GltfModel load_glb(const char *path, arena *a);
-extern void load_animations_glb(const char *path, GltfModel *model, arena *a);
-
 // ---------------------------------------------------------------------------
 // Static globals (replace GL state)
 // ---------------------------------------------------------------------------
 
 static SDL_Window *window = NULL;
-SDL_GPUDevice *gpu_device = NULL;  /* non-static: shared with gltf_loader.cpp */
+static SDL_GPUDevice *gpu_device = NULL;
 
 // Sprite pipeline
 static SDL_GPUGraphicsPipeline *sprite_pipeline = NULL;
@@ -56,9 +52,6 @@ static SDL_GPUTexture *depth_texture = NULL;
 static Uint32 depth_w = 0, depth_h = 0;
 static SDL_GPUBuffer *bone_storage_buffer = NULL;
 static SDL_GPUTexture *white_texture = NULL;
-
-// glTF model — GPU primitives kept here (not in game struct)
-static GltfModel loaded_model = {};
 
 #define MAX_BONES 128
 
@@ -83,45 +76,25 @@ static arena         *clay_arena_prof = NULL;    // sub-arena backing Clay profi
 static Clay_Context  *profiler_clay_context = NULL;
 static bool           profiler_open = true;
 
-// Scene editor window
+// Scene editor window (rendering stays here, logic in editor.dll)
 static SDL_Window              *editor_window = NULL;
 static SDL_GPUTexture          *editor_depth_texture = NULL;
 static Uint32                   editor_depth_w = 0, editor_depth_h = 0;
-static bool                     editor_open = true;
 static SDL_GPUGraphicsPipeline *editor_line_pipeline = NULL;
-
-struct EditorCamera {
-    Vec3  position;
-    float yaw;           // radians, 0 = looking along +Z
-    float pitch;         // radians, clamped ±89°
-    float move_speed;    // units/sec
-    float mouse_sens;    // radians/pixel
-    bool  mouse_look;    // true while right-mouse held
-};
-static EditorCamera editor_cam = {};
-
-struct editor_line_vertex { float x, y, z, r, g, b; };
-#define MAX_EDITOR_LINES 2048
-static editor_line_vertex editor_lines[MAX_EDITOR_LINES * 2];
-static int editor_line_count = 0;
-
-// Transform gizmo state
-enum GizmoAxis { GIZMO_NONE = 0, GIZMO_X, GIZMO_Y, GIZMO_Z };
-static GizmoAxis gizmo_hovered = GIZMO_NONE;
-static GizmoAxis gizmo_active  = GIZMO_NONE;
-static Vec3  gizmo_drag_start_eye    = {};
-static Vec3  gizmo_drag_start_target = {};
-static float gizmo_drag_accum        = 0;
-static Vec3  gizmo_screen_axis       = {};   // normalized screen-space axis dir
-static float gizmo_world_per_pixel   = 0;    // world units per screen pixel
 
 // Textures (one per TextureID enum)
 static SDL_GPUTexture *gpu_textures[TEXTURE_COUNT] = {NULL};
 
-// Callbacks
+// Engine callbacks (loaded by core.cpp)
 static init g_init = NULL;
 static destroy g_destroy = NULL;
 static update g_update = NULL;
+
+// Editor callbacks (loaded by core.cpp)
+static init g_editor_init = NULL;
+static destroy g_editor_destroy = NULL;
+static update g_editor_update = NULL;
+static handle_event g_editor_handle_event = NULL;
 
 // ---------------------------------------------------------------------------
 // Vertex structures
@@ -1296,6 +1269,9 @@ EXPORT int init_externals(game *g) {
         return -1;
     }
 
+    /* Expose GPU device to engine for asset loading */
+    g->gpu_device = gpu_device;
+
     // 5. Claim window
     if (!SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
         fprintf(stderr, "SDL_ClaimWindowForGPUDevice failed: %s\n", SDL_GetError());
@@ -1478,7 +1454,7 @@ EXPORT int init_externals(game *g) {
 
         SDL_GPUVertexBufferDescription vbuf_desc = {};
         vbuf_desc.slot = 0;
-        vbuf_desc.pitch = sizeof(editor_line_vertex); /* float3 pos + float3 color = 24 bytes */
+        vbuf_desc.pitch = sizeof(editor_line_vert); /* float3 pos + float3 color = 24 bytes */
         vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
         SDL_GPUVertexAttribute attrs[2] = {};
@@ -1930,14 +1906,8 @@ EXPORT int init_externals(game *g) {
         fprintf(stderr, "Failed to claim editor window: %s\n", SDL_GetError());
         return -1;
     }
-    editor_open = true;
-
-    editor_cam.position   = VEC3(0.0f, 3.0f, 8.0f);
-    editor_cam.yaw        = 3.14159265f; /* face -Z toward origin */
-    editor_cam.pitch      = -0.3f;
-    editor_cam.move_speed = 5.0f;
-    editor_cam.mouse_sens = 0.003f;
-    editor_cam.mouse_look = false;
+    g->editor.open = 1;
+    g->editor.window = editor_window;
 
     // Allocate rendering sub-arena (draw_commands, debug_lines, debug_vertices)
     {
@@ -2008,51 +1978,6 @@ EXPORT int init_externals(game *g) {
         }
     }
 
-    // Load glTF model (Knight) — populate g->mesh3d for engine to animate
-    {
-        arena *model_arena = arena_alloc_subarena(&g->arena, 2 * 1024 * 1024, 16, "gltf_models");
-        if (model_arena) {
-            loaded_model = load_glb(
-                "C:/Users/andres/Downloads/KayKit_Adventurers_2.0_FREE/Characters/gltf/Knight.glb",
-                model_arena);
-
-            if (loaded_model.mesh.primitive_count > 0) {
-                // Try loading animations from separate file
-                if (loaded_model.clip_count == 0) {
-                    load_animations_glb(
-                        "C:/Users/andres/Downloads/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb",
-                        &loaded_model, model_arena);
-                }
-
-                // Populate g->mesh3d so engine.c can drive animation
-                uint32_t jc = loaded_model.skeleton.joint_count;
-                g->mesh3d.skeleton        = loaded_model.skeleton;
-                g->mesh3d.clips           = loaded_model.clips;
-                g->mesh3d.clip_count      = loaded_model.clip_count;
-                g->mesh3d.primitive_count  = loaded_model.mesh.primitive_count;
-
-                g->mesh3d.pose_trans  = (Vec3*)arena_alloc(model_arena, jc * sizeof(Vec3), 16, "pose_trans");
-                g->mesh3d.pose_rot    = (Quat*)arena_alloc(model_arena, jc * sizeof(Quat), 16, "pose_rot");
-                g->mesh3d.pose_scale  = (Vec3*)arena_alloc(model_arena, jc * sizeof(Vec3), 16, "pose_scale");
-                g->mesh3d.world_mats  = (Mat4*)arena_alloc(model_arena, jc * sizeof(Mat4), 16, "world_mats");
-                g->mesh3d.skin_mats   = (Mat4*)arena_alloc(model_arena, jc * sizeof(Mat4), 16, "skin_mats");
-
-                // Engine will set these in init_engine / update_engine
-                g->mesh3d.visible = 1;
-                g->mesh3d.active_clip = loaded_model.clip_count > 6 ? 6 : 0;
-                g->mesh3d.anim_time = 0.0f;
-                g->mesh3d.camera_eye    = VEC3(0.0f, 1.0f, 3.0f);
-                g->mesh3d.camera_target = VEC3(0.0f, 0.5f, 0.0f);
-                g->mesh3d.camera_up     = VEC3(0.0f, 1.0f, 0.0f);
-                g->mesh3d.model_transform = loaded_model.armature_transform;
-            } else {
-                fprintf(stderr, "Warning: Knight.glb loaded but has no primitives\n");
-            }
-        } else {
-            fprintf(stderr, "Warning: Failed to allocate gltf_models sub-arena\n");
-        }
-    }
-
     // Init game timing
     g->_t_prev = (double)SDL_GetTicks() / 1000.0;
     g->dt = 0.0f;
@@ -2062,217 +1987,6 @@ EXPORT int init_externals(game *g) {
     return 1;
 }
 
-// ---------------------------------------------------------------------------
-// Scene editor helpers
-// ---------------------------------------------------------------------------
-
-static Vec3 editor_cam_forward() {
-    return VEC3(
-        cosf(editor_cam.pitch) * sinf(editor_cam.yaw),
-        sinf(editor_cam.pitch),
-        cosf(editor_cam.pitch) * cosf(editor_cam.yaw)
-    );
-}
-
-static Vec3 editor_world_to_screen(Vec3 pos, Mat4 vp, float w, float h) {
-    float cx = vp.m[0]*pos.x + vp.m[4]*pos.y + vp.m[8]*pos.z  + vp.m[12];
-    float cy = vp.m[1]*pos.x + vp.m[5]*pos.y + vp.m[9]*pos.z  + vp.m[13];
-    float cw = vp.m[3]*pos.x + vp.m[7]*pos.y + vp.m[11]*pos.z + vp.m[15];
-    if (cw < 0.001f) return VEC3(-9999, -9999, 0);
-    float ndx = cx / cw, ndy = cy / cw;
-    return VEC3((ndx * 0.5f + 0.5f) * w, (1.0f - (ndy * 0.5f + 0.5f)) * h, 0);
-}
-
-static float point_seg_dist_sq(Vec3 p, Vec3 a, Vec3 b) {
-    float dx = b.x - a.x, dy = b.y - a.y;
-    float len_sq = dx*dx + dy*dy;
-    if (len_sq < 0.001f) { float ex = p.x-a.x, ey = p.y-a.y; return ex*ex+ey*ey; }
-    float t = ((p.x-a.x)*dx + (p.y-a.y)*dy) / len_sq;
-    t = t < 0 ? 0 : (t > 1 ? 1 : t);
-    float qx = a.x + t*dx - p.x, qy = a.y + t*dy - p.y;
-    return qx*qx + qy*qy;
-}
-
-static void editor_add_line(Vec3 a, Vec3 b, float r, float g, float bl) {
-    if (editor_line_count >= MAX_EDITOR_LINES) return;
-    int i = editor_line_count * 2;
-    editor_lines[i + 0] = { a.x, a.y, a.z, r, g, bl };
-    editor_lines[i + 1] = { b.x, b.y, b.z, r, g, bl };
-    editor_line_count++;
-}
-
-static void editor_build_lines(game *g) {
-    editor_line_count = 0;
-
-    /* Ground grid: 21x21 on XZ plane at Y=0, spacing 1.0 */
-    float gc = 0.3f; /* grid color (grey) */
-    for (int i = -10; i <= 10; i++) {
-        float fi = (float)i;
-        editor_add_line(VEC3(fi, 0, -10), VEC3(fi, 0, 10), gc, gc, gc);
-        editor_add_line(VEC3(-10, 0, fi), VEC3(10, 0, fi), gc, gc, gc);
-    }
-    /* Axis highlights */
-    editor_add_line(VEC3(-10, 0, 0), VEC3(10, 0, 0), 0.8f, 0.2f, 0.2f); /* X red */
-    editor_add_line(VEC3(0, 0, -10), VEC3(0, 0, 10), 0.2f, 0.2f, 0.8f); /* Z blue */
-    editor_add_line(VEC3(0, 0, 0),   VEC3(0, 2, 0),  0.2f, 0.8f, 0.2f); /* Y green */
-
-    /* Game camera frustum gizmo */
-    if (g->mesh3d.visible) {
-        Vec3 eye    = g->mesh3d.camera_eye;
-        Vec3 target = g->mesh3d.camera_target;
-        Vec3 cam_up = g->mesh3d.camera_up;
-        Vec3 fwd    = vec3_normalize(vec3_sub(target, eye));
-        Vec3 right  = vec3_normalize(vec3_cross(fwd, cam_up));
-        Vec3 up     = vec3_cross(right, fwd);
-
-        float fov    = 60.0f * 3.14159265f / 180.0f;
-        float aspect = (g->width > 0 && g->height > 0)
-                       ? (float)g->width / (float)g->height : 4.0f / 3.0f;
-        float near_d = 0.3f;
-        float vis_d  = 3.0f; /* visual depth for the gizmo */
-
-        float nh = tanf(fov * 0.5f) * near_d;
-        float nw = nh * aspect;
-        float fh = tanf(fov * 0.5f) * vis_d;
-        float fw = fh * aspect;
-
-        Vec3 nc = vec3_add(eye, vec3_scale(fwd, near_d));
-        Vec3 fc = vec3_add(eye, vec3_scale(fwd, vis_d));
-
-        Vec3 n[4], f[4];
-        n[0] = vec3_add(vec3_add(nc, vec3_scale(right,  nw)), vec3_scale(up,  nh));
-        n[1] = vec3_add(vec3_add(nc, vec3_scale(right, -nw)), vec3_scale(up,  nh));
-        n[2] = vec3_add(vec3_add(nc, vec3_scale(right, -nw)), vec3_scale(up, -nh));
-        n[3] = vec3_add(vec3_add(nc, vec3_scale(right,  nw)), vec3_scale(up, -nh));
-
-        f[0] = vec3_add(vec3_add(fc, vec3_scale(right,  fw)), vec3_scale(up,  fh));
-        f[1] = vec3_add(vec3_add(fc, vec3_scale(right, -fw)), vec3_scale(up,  fh));
-        f[2] = vec3_add(vec3_add(fc, vec3_scale(right, -fw)), vec3_scale(up, -fh));
-        f[3] = vec3_add(vec3_add(fc, vec3_scale(right,  fw)), vec3_scale(up, -fh));
-
-        float cr = 1.0f, cg = 1.0f, cb = 0.2f; /* yellow */
-        /* edges from eye to far corners */
-        for (int i = 0; i < 4; i++) editor_add_line(eye, f[i], cr, cg, cb);
-        /* near rectangle */
-        for (int i = 0; i < 4; i++) editor_add_line(n[i], n[(i+1)%4], cr, cg, cb);
-        /* far rectangle */
-        for (int i = 0; i < 4; i++) editor_add_line(f[i], f[(i+1)%4], cr, cg, cb);
-        /* up indicator */
-        editor_add_line(eye, vec3_add(eye, vec3_scale(up, 0.3f)), 0.2f, 1.0f, 0.2f);
-
-        /* Translate gizmo at game camera eye */
-        Vec3 giz = eye;
-        float giz_dist = vec3_len(vec3_sub(giz, editor_cam.position));
-        float giz_len  = giz_dist * 0.08f;
-        if (giz_len < 0.1f) giz_len = 0.1f;
-
-        Vec3 axis_dirs[3] = { VEC3(1,0,0), VEC3(0,1,0), VEC3(0,0,1) };
-        float colors[3][3] = { {1.0f,0.2f,0.2f}, {0.2f,1.0f,0.2f}, {0.2f,0.2f,1.0f} };
-
-        for (int i = 0; i < 3; i++) {
-            GizmoAxis ax = (GizmoAxis)(i + 1);
-            bool hl = (gizmo_active == ax || (gizmo_active == GIZMO_NONE && gizmo_hovered == ax));
-            float cr2 = hl ? 1.0f : colors[i][0];
-            float cg2 = hl ? 1.0f : colors[i][1];
-            float cb2 = hl ? 0.2f : colors[i][2];
-
-            Vec3 tip = vec3_add(giz, vec3_scale(axis_dirs[i], giz_len));
-            editor_add_line(giz, tip, cr2, cg2, cb2);
-
-            /* Arrowhead: 2 short perpendicular lines at the tip */
-            float ah = giz_len * 0.15f;
-            int a1 = (i + 1) % 3, a2 = (i + 2) % 3;
-            Vec3 perp1 = axis_dirs[a1], perp2 = axis_dirs[a2];
-            Vec3 back = vec3_sub(tip, vec3_scale(axis_dirs[i], ah));
-            editor_add_line(tip, vec3_add(back, vec3_scale(perp1,  ah * 0.5f)), cr2, cg2, cb2);
-            editor_add_line(tip, vec3_add(back, vec3_scale(perp1, -ah * 0.5f)), cr2, cg2, cb2);
-            editor_add_line(tip, vec3_add(back, vec3_scale(perp2,  ah * 0.5f)), cr2, cg2, cb2);
-            editor_add_line(tip, vec3_add(back, vec3_scale(perp2, -ah * 0.5f)), cr2, cg2, cb2);
-        }
-    }
-}
-
-static void update_editor_input(game *g) {
-    if (!editor_open || !editor_window) return;
-
-    SDL_Window *focused = SDL_GetKeyboardFocus();
-    if (focused != editor_window) return;
-
-    const bool *keys = SDL_GetKeyboardState(NULL);
-    float dt = g->dt;
-
-    Vec3 fwd   = editor_cam_forward();
-    Vec3 right = vec3_normalize(vec3_cross(fwd, VEC3(0, 1, 0)));
-    Vec3 up    = VEC3(0, 1, 0);
-    float spd  = editor_cam.move_speed * dt;
-
-    if (keys[SDL_SCANCODE_W]) editor_cam.position = vec3_add(editor_cam.position, vec3_scale(fwd,   spd));
-    if (keys[SDL_SCANCODE_S]) editor_cam.position = vec3_sub(editor_cam.position, vec3_scale(fwd,   spd));
-    if (keys[SDL_SCANCODE_A]) editor_cam.position = vec3_sub(editor_cam.position, vec3_scale(right, spd));
-    if (keys[SDL_SCANCODE_D]) editor_cam.position = vec3_add(editor_cam.position, vec3_scale(right, spd));
-    if (keys[SDL_SCANCODE_E]) editor_cam.position = vec3_add(editor_cam.position, vec3_scale(up,    spd));
-    if (keys[SDL_SCANCODE_Q]) editor_cam.position = vec3_sub(editor_cam.position, vec3_scale(up,    spd));
-
-    if (editor_cam.mouse_look) {
-        float dx, dy;
-        SDL_GetRelativeMouseState(&dx, &dy);
-        editor_cam.yaw   -= dx * editor_cam.mouse_sens;
-        editor_cam.pitch -= dy * editor_cam.mouse_sens;
-        if (editor_cam.pitch >  1.55f) editor_cam.pitch =  1.55f;
-        if (editor_cam.pitch < -1.55f) editor_cam.pitch = -1.55f;
-    }
-}
-
-static void update_editor_gizmo(game *g) {
-    if (!editor_open || !editor_window || !g->mesh3d.visible) {
-        gizmo_hovered = GIZMO_NONE;
-        return;
-    }
-    if (gizmo_active != GIZMO_NONE) return;  /* don't change hover during drag */
-
-    /* Only hover-test when mouse is in the editor window */
-    SDL_Window *mouse_win = SDL_GetMouseFocus();
-    if (mouse_win != editor_window) {
-        gizmo_hovered = GIZMO_NONE;
-        return;
-    }
-
-    int ww, wh;
-    SDL_GetWindowSize(editor_window, &ww, &wh);
-    float fw = (float)ww, fh = (float)wh;
-    if (fw < 1 || fh < 1) return;
-
-    float ed_aspect = fw / fh;
-    Mat4 ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
-    Vec3 ed_fwd  = editor_cam_forward();
-    Mat4 ed_view = mat4_look_at(editor_cam.position,
-                                 vec3_add(editor_cam.position, ed_fwd), VEC3(0, 1, 0));
-    Mat4 vp = mat4_mul(ed_proj, ed_view);
-
-    float mx, my;
-    SDL_GetMouseState(&mx, &my);
-    Vec3 mouse = VEC3(mx, my, 0);
-
-    Vec3 giz = g->mesh3d.camera_eye;
-    float giz_dist = vec3_len(vec3_sub(giz, editor_cam.position));
-    float giz_len  = giz_dist * 0.08f;
-    if (giz_len < 0.1f) giz_len = 0.1f;
-
-    Vec3 center_s = editor_world_to_screen(giz, vp, fw, fh);
-    Vec3 axis_dirs[3] = { VEC3(giz_len,0,0), VEC3(0,giz_len,0), VEC3(0,0,giz_len) };
-
-    gizmo_hovered = GIZMO_NONE;
-    float best_dist = 12.0f * 12.0f;  /* 12-pixel pick threshold */
-
-    for (int i = 0; i < 3; i++) {
-        Vec3 tip_s = editor_world_to_screen(vec3_add(giz, axis_dirs[i]), vp, fw, fh);
-        float d = point_seg_dist_sq(mouse, center_s, tip_s);
-        if (d < best_dist) {
-            best_dist = d;
-            gizmo_hovered = (GizmoAxis)(i + 1);
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Input handling
@@ -2385,98 +2099,14 @@ EXPORT void update_externals(game *g) {
                 g->play = false;
                 return;
             }
-            /* Editor mouse look: right-click drag */
-            if (editor_open && editor_window) {
-                if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-                    event.button.button == SDL_BUTTON_RIGHT) {
-                    SDL_Window *evwin = SDL_GetWindowFromEvent(&event);
-                    if (evwin == editor_window) {
-                        editor_cam.mouse_look = true;
-                        SDL_SetWindowRelativeMouseMode(editor_window, true);
-                    }
-                }
-                if (event.type == SDL_EVENT_MOUSE_BUTTON_UP &&
-                    event.button.button == SDL_BUTTON_RIGHT) {
-                    if (editor_cam.mouse_look) {
-                        editor_cam.mouse_look = false;
-                        SDL_SetWindowRelativeMouseMode(editor_window, false);
-                    }
-                }
-                if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
-                    SDL_Window *evwin = SDL_GetWindowFromEvent(&event);
-                    if (evwin == editor_window && editor_cam.mouse_look) {
-                        editor_cam.mouse_look = false;
-                        SDL_SetWindowRelativeMouseMode(editor_window, false);
-                    }
-                }
-
-                /* Gizmo: left-click to start drag */
-                if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-                    event.button.button == SDL_BUTTON_LEFT) {
-                    SDL_Window *evwin = SDL_GetWindowFromEvent(&event);
-                    if (evwin == editor_window && gizmo_hovered != GIZMO_NONE) {
-                        gizmo_active = gizmo_hovered;
-                        gizmo_drag_start_eye    = g->mesh3d.camera_eye;
-                        gizmo_drag_start_target = g->mesh3d.camera_target;
-                        gizmo_drag_accum = 0;
-
-                        /* Cache screen-space axis direction for the drag */
-                        int ww, wh;
-                        SDL_GetWindowSize(editor_window, &ww, &wh);
-                        float fw = (float)ww, fh = (float)wh;
-                        float ed_aspect = fw / fh;
-                        Mat4 ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
-                        Vec3 ed_fwd  = editor_cam_forward();
-                        Mat4 ed_view = mat4_look_at(editor_cam.position,
-                                                     vec3_add(editor_cam.position, ed_fwd), VEC3(0, 1, 0));
-                        Mat4 vp = mat4_mul(ed_proj, ed_view);
-
-                        Vec3 giz = g->mesh3d.camera_eye;
-                        float giz_dist = vec3_len(vec3_sub(giz, editor_cam.position));
-                        float giz_len  = giz_dist * 0.08f;
-                        if (giz_len < 0.1f) giz_len = 0.1f;
-
-                        Vec3 world_axis = (gizmo_active == GIZMO_X) ? VEC3(1, 0, 0) :
-                                          (gizmo_active == GIZMO_Y) ? VEC3(0, 1, 0) : VEC3(0, 0, 1);
-
-                        Vec3 center_s = editor_world_to_screen(giz, vp, fw, fh);
-                        Vec3 tip_s    = editor_world_to_screen(vec3_add(giz, vec3_scale(world_axis, giz_len)), vp, fw, fh);
-                        float sdx = tip_s.x - center_s.x;
-                        float sdy = tip_s.y - center_s.y;
-                        float slen = sqrtf(sdx * sdx + sdy * sdy);
-                        if (slen > 0.001f) {
-                            gizmo_screen_axis = VEC3(sdx / slen, sdy / slen, 0);
-                            gizmo_world_per_pixel = giz_len / slen;
-                        } else {
-                            gizmo_screen_axis = VEC3(1, 0, 0);
-                            gizmo_world_per_pixel = 0.01f;
-                        }
-                    }
-                }
-                /* Gizmo: mouse motion during drag */
-                if (event.type == SDL_EVENT_MOUSE_MOTION && gizmo_active != GIZMO_NONE) {
-                    float dot = event.motion.xrel * gizmo_screen_axis.x
-                              + event.motion.yrel * gizmo_screen_axis.y;
-                    gizmo_drag_accum += dot;
-
-                    Vec3 world_axis = (gizmo_active == GIZMO_X) ? VEC3(1, 0, 0) :
-                                      (gizmo_active == GIZMO_Y) ? VEC3(0, 1, 0) : VEC3(0, 0, 1);
-                    Vec3 delta = vec3_scale(world_axis, gizmo_drag_accum * gizmo_world_per_pixel);
-                    g->mesh3d.camera_eye    = vec3_add(gizmo_drag_start_eye, delta);
-                    g->mesh3d.camera_target = vec3_add(gizmo_drag_start_target, delta);
-                }
-                /* Gizmo: left-button up ends drag */
-                if (event.type == SDL_EVENT_MOUSE_BUTTON_UP &&
-                    event.button.button == SDL_BUTTON_LEFT) {
-                    gizmo_active = GIZMO_NONE;
-                }
+            /* Dispatch editor events (mouse look, gizmo drag) to editor.dll */
+            if (g->editor.open && editor_window && g_editor_handle_event) {
+                g_editor_handle_event(g, &event);
             }
         }
     }
 
     // --- Input ---
-    update_editor_input(g);
-    update_editor_gizmo(g);
     update_input(g);
 
     // --- Window size ---
@@ -2503,8 +2133,8 @@ EXPORT void update_externals(game *g) {
     // --- Call engine update (fills draw_list + updates mesh3d animation) ---
     g_update(g);
 
-    // --- Build editor 3D lines (grid, gizmos) ---
-    if (editor_open) editor_build_lines(g);
+    // --- Update editor (camera, gizmo, line building — runs in editor.dll) ---
+    if (g->editor.open && g_editor_update) g_editor_update(g);
 
     // --- Render ---
     SDL_GPUCommandBuffer *cmd_buf = SDL_AcquireGPUCommandBuffer(gpu_device);
@@ -2647,11 +2277,11 @@ EXPORT void update_externals(game *g) {
         profiler_prepare(cmd_buf, g);
     }
 
-    // --- Upload editor 3D lines ---
+    // --- Upload editor 3D lines (populated by editor.dll) ---
     SDL_GPUBuffer *editor_line_gpu_buf = NULL;
-    int editor_vert_count = editor_line_count * 2;
-    if (editor_open && editor_vert_count > 0) {
-        Uint32 ed_buf_size = (Uint32)(editor_vert_count * sizeof(editor_line_vertex));
+    int editor_vert_count = g->editor.line_count * 2;
+    if (g->editor.open && editor_vert_count > 0) {
+        Uint32 ed_buf_size = (Uint32)(editor_vert_count * sizeof(editor_line_vert));
 
         SDL_GPUTransferBufferCreateInfo ed_tbuf_info = {};
         ed_tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
@@ -2659,7 +2289,7 @@ EXPORT void update_externals(game *g) {
 
         SDL_GPUTransferBuffer *ed_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &ed_tbuf_info);
         void *ed_mapped = SDL_MapGPUTransferBuffer(gpu_device, ed_transfer, false);
-        memcpy(ed_mapped, editor_lines, ed_buf_size);
+        memcpy(ed_mapped, g->editor.lines, ed_buf_size);
         SDL_UnmapGPUTransferBuffer(gpu_device, ed_transfer);
 
         SDL_GPUBufferCreateInfo ed_gpu_info = {};
@@ -2726,7 +2356,7 @@ EXPORT void update_externals(game *g) {
         SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target);
 
         // --- 3D Mesh (camera + animation driven by engine via g->mesh3d) ---
-        if (g->mesh3d.visible && loaded_model.mesh.primitive_count > 0) {
+        if (g->mesh3d.visible && g->loaded_model.mesh.primitive_count > 0) {
             SDL_BindGPUGraphicsPipeline(render_pass, mesh_pipeline);
 
             // Build perspective projection from engine's camera
@@ -2743,8 +2373,8 @@ EXPORT void update_externals(game *g) {
             // Bind bone storage buffer (vertex stage, slot 0)
             SDL_BindGPUVertexStorageBuffers(render_pass, 0, &bone_storage_buffer, 1);
 
-            for (uint32_t p = 0; p < loaded_model.mesh.primitive_count; p++) {
-                GltfPrimitive *prim = &loaded_model.mesh.primitives[p];
+            for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
+                GltfPrimitive *prim = &g->loaded_model.mesh.primitives[p];
 
                 SDL_GPUBufferBinding vbuf_binding = {};
                 vbuf_binding.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
@@ -2863,7 +2493,7 @@ EXPORT void update_externals(game *g) {
     }
 
     // --- SCENE EDITOR RENDER PASS ---
-    if (editor_open && editor_window) {
+    if (g->editor.open && editor_window) {
         SDL_GPUTexture *ed_swapchain = NULL;
         Uint32 ew, eh;
         if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, editor_window, &ed_swapchain, &ew, &eh)
@@ -2901,16 +2531,19 @@ EXPORT void update_externals(game *g) {
 
             SDL_GPURenderPass *ed_pass = SDL_BeginGPURenderPass(cmd_buf, &ed_ct, 1, &ed_dt);
 
-            /* Editor camera matrices */
+            /* Editor camera matrices (computed from editor_state in game struct) */
             float ed_aspect = (float)ew / (float)eh;
             Mat4 ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
-            Vec3 ed_fwd  = editor_cam_forward();
-            Mat4 ed_view = mat4_look_at(editor_cam.position,
-                                         vec3_add(editor_cam.position, ed_fwd),
+            float ed_cp = cosf(g->editor.cam_pitch);
+            Vec3 ed_fwd = VEC3(ed_cp * sinf(g->editor.cam_yaw),
+                               sinf(g->editor.cam_pitch),
+                               ed_cp * cosf(g->editor.cam_yaw));
+            Mat4 ed_view = mat4_look_at(g->editor.cam_pos,
+                                         vec3_add(g->editor.cam_pos, ed_fwd),
                                          VEC3(0, 1, 0));
 
             /* 1. Draw 3D mesh (same primitives, editor camera) */
-            if (g->mesh3d.visible && loaded_model.mesh.primitive_count > 0) {
+            if (g->mesh3d.visible && g->loaded_model.mesh.primitive_count > 0) {
                 SDL_BindGPUGraphicsPipeline(ed_pass, mesh_pipeline);
 
                 mesh_uniform_data ed_mesh_u;
@@ -2921,8 +2554,8 @@ EXPORT void update_externals(game *g) {
 
                 SDL_BindGPUVertexStorageBuffers(ed_pass, 0, &bone_storage_buffer, 1);
 
-                for (uint32_t p = 0; p < loaded_model.mesh.primitive_count; p++) {
-                    GltfPrimitive *prim = &loaded_model.mesh.primitives[p];
+                for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
+                    GltfPrimitive *prim = &g->loaded_model.mesh.primitives[p];
 
                     SDL_GPUBufferBinding vb = {};
                     vb.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
@@ -3005,9 +2638,9 @@ EXPORT void end_externals(game *g) {
 
     // Editor window cleanup
     if (editor_window) {
-        if (editor_cam.mouse_look) {
+        if (g->editor.cam_mouse_look) {
             SDL_SetWindowRelativeMouseMode(editor_window, false);
-            editor_cam.mouse_look = false;
+            g->editor.cam_mouse_look = 0;
         }
         SDL_ReleaseWindowFromGPUDevice(gpu_device, editor_window);
         SDL_DestroyWindow(editor_window);
@@ -3062,8 +2695,8 @@ EXPORT void end_externals(game *g) {
     if (bone_storage_buffer) { SDL_ReleaseGPUBuffer(gpu_device, bone_storage_buffer); bone_storage_buffer = NULL; }
 
     // Release glTF model GPU resources
-    for (uint32_t p = 0; p < loaded_model.mesh.primitive_count; p++) {
-        GltfPrimitive *prim = &loaded_model.mesh.primitives[p];
+    for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
+        GltfPrimitive *prim = &g->loaded_model.mesh.primitives[p];
         if (prim->vertex_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->vertex_buffer);
         if (prim->index_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->index_buffer);
         if (prim->texture) SDL_ReleaseGPUTexture(gpu_device, (SDL_GPUTexture *)prim->texture);
@@ -3113,4 +2746,32 @@ EXPORT void assign_destroy(destroy func) {
 
 EXPORT void assign_update(update func) {
     g_update = func;
+}
+
+// ---------------------------------------------------------------------------
+// Editor callbacks
+// ---------------------------------------------------------------------------
+
+EXPORT void init_editor(game *g) {
+    if (g_editor_init) g_editor_init(g);
+}
+
+EXPORT void destroy_editor(game *g) {
+    if (g_editor_destroy) g_editor_destroy(g);
+}
+
+EXPORT void assign_editor_init(init func) {
+    g_editor_init = func;
+}
+
+EXPORT void assign_editor_destroy(destroy func) {
+    g_editor_destroy = func;
+}
+
+EXPORT void assign_editor_update(update func) {
+    g_editor_update = func;
+}
+
+EXPORT void assign_editor_handle_event(handle_event func) {
+    g_editor_handle_event = func;
 }

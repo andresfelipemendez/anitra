@@ -16,6 +16,11 @@ void compute_world_transforms(Skeleton *skel,
                                Mat4 *out_world);
 void compute_skinning_matrices(Skeleton *skel, Mat4 *world, Mat4 *out_skinning);
 
+/* Asset loading (from gltf_loader.c, same DLL) */
+GltfModel load_glb(const char *path, arena *a);
+void load_animations_glb(const char *path, GltfModel *model, arena *a);
+void gltf_set_gpu_device(void *dev);
+
 void update_input(game* g) {
     entity* player;
     const float move_speed = 200.0f;
@@ -55,6 +60,51 @@ EXPORT void init_engine(game *g) {
             (uint32_t)(scene.entity_capacity * sizeof(entity)), 16, "entities");
     }
     scene_init();
+
+    /* Load 3D model assets.
+       Only runs on first init when no model is loaded yet. */
+    if (g->loaded_model.mesh.primitive_count == 0 && g->gpu_device) {
+        arena *model_arena = arena_alloc_subarena(&g->arena, 2 * 1024 * 1024, 16, "gltf_models");
+        if (model_arena) {
+            uint32_t jc;
+            gltf_set_gpu_device(g->gpu_device);
+
+            g->loaded_model = load_glb(
+                "C:/Users/andres/Downloads/KayKit_Adventurers_2.0_FREE/Characters/gltf/Knight.glb",
+                model_arena);
+
+            if (g->loaded_model.mesh.primitive_count > 0) {
+                if (g->loaded_model.clip_count == 0) {
+                    load_animations_glb(
+                        "C:/Users/andres/Downloads/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb",
+                        &g->loaded_model, model_arena);
+                }
+
+                /* Populate g->mesh3d so engine can drive animation, externals can render */
+                jc = g->loaded_model.skeleton.joint_count;
+                g->mesh3d.skeleton        = g->loaded_model.skeleton;
+                g->mesh3d.clips           = g->loaded_model.clips;
+                g->mesh3d.clip_count      = g->loaded_model.clip_count;
+                g->mesh3d.primitive_count  = g->loaded_model.mesh.primitive_count;
+
+                g->mesh3d.pose_trans  = (Vec3*)arena_alloc(model_arena, jc * sizeof(Vec3), 16, "pose_trans");
+                g->mesh3d.pose_rot    = (Quat*)arena_alloc(model_arena, jc * sizeof(Quat), 16, "pose_rot");
+                g->mesh3d.pose_scale  = (Vec3*)arena_alloc(model_arena, jc * sizeof(Vec3), 16, "pose_scale");
+                g->mesh3d.world_mats  = (Mat4*)arena_alloc(model_arena, jc * sizeof(Mat4), 16, "world_mats");
+                g->mesh3d.skin_mats   = (Mat4*)arena_alloc(model_arena, jc * sizeof(Mat4), 16, "skin_mats");
+
+                g->mesh3d.visible = 1;
+                g->mesh3d.active_clip = g->loaded_model.clip_count > 6 ? 6 : 0;
+                g->mesh3d.anim_time = 0.0f;
+                g->mesh3d.camera_eye    = VEC3(0.0f, 1.0f, 3.0f);
+                g->mesh3d.camera_target = VEC3(0.0f, 0.5f, 0.0f);
+                g->mesh3d.camera_up     = VEC3(0.0f, 1.0f, 0.0f);
+                g->mesh3d.model_transform = g->loaded_model.armature_transform;
+            } else {
+                fprintf(stderr, "Warning: Knight.glb loaded but has no primitives\n");
+            }
+        }
+    }
 
     /* Compute initial bind-pose skinning matrices so the mesh renders correctly
        even before the first animation frame */

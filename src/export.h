@@ -18,8 +18,11 @@
 typedef void (*init)(struct game *g);
 typedef void (*destroy)(struct game *g);
 typedef void (*update)(struct game *g);
+typedef void (*handle_event)(struct game *g, void *event);
 
-#define HOTRELOAD_EVENT_NAME "Global\\ReloadEvent"
+#define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
+#define HOTRELOAD_EDITOR_EVENT_NAME "Global\\ReloadEditorEvent"
+#define HOTRELOAD_CORE_EVENT_NAME   "Global\\ReloadCoreEvent"
 
 #define DECLARE_FUNC_VOID(func)                                                \
   EXPORT void func();                                                          \
@@ -48,5 +51,9 @@ typedef void (*update)(struct game *g);
 #define DECLARE_FUNC_VOID_pUPDATE(func)                       \
   EXPORT void func(update g);                                 \
   typedef void (*func##_func)(update g);
+
+#define DECLARE_FUNC_VOID_pHANDLE_EVENT(func)                 \
+  EXPORT void func(handle_event g);                           \
+  typedef void (*func##_func)(handle_event g);
 
 #endif /* EXPORT_H */

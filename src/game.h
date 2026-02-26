@@ -5,6 +5,7 @@
 #include "debug_render.h"
 #include "draw_list.h"
 #include "gltf_types.h"
+#include "editor.h"
 
 #ifndef __cplusplus
 #include <stdbool.h>
@@ -150,6 +151,15 @@ typedef struct game {
   float dt;
 
   mesh3d_state mesh3d;
+
+  /* GPU device handle — set by externals, used by engine for asset loading */
+  void *gpu_device;
+
+  /* Loaded 3D model — populated by engine init, read by externals for rendering */
+  GltfModel loaded_model;
+
+  /* Editor state — populated by editor.dll, read by externals for rendering */
+  editor_state editor;
 } game;
 
 #endif
