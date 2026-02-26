@@ -9,12 +9,6 @@
 #include <Windows.h>
 #endif
 
-#if defined ( __clang__ ) || defined ( __GNUC__ )
-#define TracyFunction __PRETTY_FUNCTION__
-#elif defined ( _MSC_VER )
-#define TracyFunction __FUNCSIG__
-#endif
-#include <tracy/Tracy.hpp>
 
 static volatile int reloadFlag = 0;
 static void *engine_lib = NULL;
@@ -80,6 +74,5 @@ void begin_game_loop(game &g) {
     }
 #endif
     update_externals(&g);
-    FrameMark;
   }
 }

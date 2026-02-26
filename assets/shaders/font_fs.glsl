@@ -97,7 +97,13 @@ void main() {
                           glyph.bbox_max_y - in_uv.y * bbox_size.y);
 
     vec2 fw = fwidth(local_pos);
-    vec2 inverseDiameter = 1.0 / fw;
+
+    // Stem darkening: tighten AA window so thin strokes appear bolder at small sizes.
+    // At small px sizes fw is large (wide AA band) → scale up inverseDiameter to compensate.
+    // The darkening factor ramps from 1.8x at tiny sizes down to 1.0x at large sizes.
+    float avg_fw = 0.5 * (fw.x + fw.y);
+    float darken = mix(1.8, 1.0, smoothstep(0.0, 0.02, avg_fw));
+    vec2 inverseDiameter = darken / fw;
 
     float alpha = 0.0;
 
@@ -114,6 +120,9 @@ void main() {
 
     alpha *= 0.5;
     alpha = clamp(alpha, 0.0, 1.0);
+
+    // Gamma correction: push mid-range alpha higher for perceptually bolder strokes
+    alpha = pow(alpha, 0.6);
 
     if (alpha < 0.001)
         discard;

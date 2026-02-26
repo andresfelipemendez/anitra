@@ -12,7 +12,6 @@ void update_input(game* g) {
     int attack_pressed;
     const float camera_speed = 300.0f;
     const float zoom_speed = 2.0f;
-
     if (!g || scene.entity_count == 0) return;
 
     player = &scene.entities[0];
@@ -39,6 +38,12 @@ void update_input(game* g) {
 }
 
 EXPORT void init_engine(game *g) {
+    /* Allocate entity storage from the gameplay sub-arena (only on first init, survives hot reload) */
+    if (!scene.entities) {
+        scene.entity_capacity = 64;
+        scene.entities = (entity *)arena_alloc(g->gameplay,
+            (uint32_t)(scene.entity_capacity * sizeof(entity)), 16, "entities");
+    }
     scene_init();
     printf("hi from init engine\n");
 }
@@ -63,7 +68,7 @@ EXPORT void update_engine(game *g) {
     for (i = 0; i < g->debug_renderer.current_line_count; i++) {
         int idx;
         debug_line_command* line;
-        if (g->draw_list.line_count >= MAX_DEBUG_LINES) break;
+        if (g->draw_list.line_count >= g->draw_list.line_capacity) break;
         idx = i * 10;
         line = &g->draw_list.lines[g->draw_list.line_count++];
         line->x1 = g->debug_renderer.vertex_buffer[idx];

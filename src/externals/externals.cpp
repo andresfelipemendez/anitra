@@ -9,6 +9,8 @@
 #include <SDL3/SDL_gpu.h>
 #include <SDL3_shadercross/SDL_shadercross.h>
 
+#include <tracy/Tracy.hpp>
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -52,9 +54,15 @@ static hb_font_t *hb_editor_font = NULL;
 static hb_blob_t *hb_editor_blob = NULL;
 static hb_face_t *hb_editor_face = NULL;
 
-// Clay UI
-static uint8_t *clay_memory = NULL;
-static Clay_Context *clay_context = NULL;
+// Clay UI — game window
+static arena         *clay_arena_game = NULL;    // sub-arena backing Clay game context
+static Clay_Context  *clay_context = NULL;
+
+// Profiler window
+static SDL_Window    *profiler_window = NULL;
+static arena         *clay_arena_prof = NULL;    // sub-arena backing Clay profiler context
+static Clay_Context  *profiler_clay_context = NULL;
+static bool           profiler_open = true;
 
 // Textures (one per TextureID enum)
 static SDL_GPUTexture *gpu_textures[TEXTURE_COUNT] = {NULL};
@@ -568,8 +576,9 @@ static float font_measure_width(FontData *font, const char *text, uint32_t len, 
 static Clay_Dimensions clay_measure_text(Clay_StringSlice text, Clay_TextElementConfig *config, void *userData) {
     (void)userData;
     float width = font_measure_width(&editor_font, text.chars, text.length, (float)config->fontSize);
-    float height = (float)config->fontSize * (editor_font.ascent - editor_font.descent + editor_font.line_gap);
-    return Clay_Dimensions{width, height};
+    // Ceil to account for pixel snapping in the renderer (prevents glyph clipping)
+    float height = ceilf((float)config->fontSize * (editor_font.ascent - editor_font.descent + editor_font.line_gap));
+    return Clay_Dimensions{ceilf(width + 1.0f), height};
 }
 
 // ---------------------------------------------------------------------------
@@ -579,44 +588,54 @@ static Clay_Dimensions clay_measure_text(Clay_StringSlice text, Clay_TextElement
 #define MAX_UI_RECT_VERTICES  (4096 * 6)
 #define MAX_FONT_VERTICES     (4096 * 6)
 
-// UI render state: populated by ui_prepare, consumed by ui_draw
-static ui_rect_vertex ui_rect_verts[MAX_UI_RECT_VERTICES];
-static font_vertex    ui_font_verts[MAX_FONT_VERTICES];
-static int            ui_rect_vert_count = 0;
-static int            ui_font_vert_count = 0;
-static SDL_GPUBuffer *ui_rect_gpu_buf = NULL;
-static SDL_GPUBuffer *ui_font_gpu_buf = NULL;
+// Per-window UI render state
+struct UIRenderState {
+    ui_rect_vertex rect_verts[MAX_UI_RECT_VERTICES];
+    font_vertex    font_verts[MAX_FONT_VERTICES];
+    int            rect_vert_count;
+    int            font_vert_count;
+    SDL_GPUBuffer *rect_gpu_buf;
+    SDL_GPUBuffer *font_gpu_buf;
+};
 
-// Phase 1: Run Clay layout, build vertices, upload via copy pass (before render pass)
-static void ui_prepare(SDL_GPUCommandBuffer *cmd_buf) {
-    int win_w, win_h;
-    SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
-    Clay_SetLayoutDimensions(Clay_Dimensions{(float)win_w, (float)win_h});
+static UIRenderState ui_game = {};
+static UIRenderState ui_profiler = {};
 
-    Clay_BeginLayout();
+// ---------------------------------------------------------------------------
+// Memory profiler colors (one per allocation slot)
+// ---------------------------------------------------------------------------
+static const Clay_Color profiler_colors[] = {
+    {100, 160, 220, 255},  // blue
+    {220, 140,  80, 255},  // orange
+    {100, 200, 120, 255},  // green
+    {200, 100, 180, 255},  // pink
+    {180, 180, 100, 255},  // yellow
+    {130, 120, 220, 255},  // purple
+    {100, 200, 200, 255},  // teal
+    {220, 110, 110, 255},  // red
+};
+static const int profiler_color_count = sizeof(profiler_colors) / sizeof(profiler_colors[0]);
 
-    // Test panel
-    CLAY(CLAY_ID("TestPanel"), {
-        .layout = {
-            .sizing = { CLAY_SIZING_FIXED(600), CLAY_SIZING_FIXED(200) },
-            .padding = CLAY_PADDING_ALL(16),
-            .childGap = 8,
-            .layoutDirection = CLAY_TOP_TO_BOTTOM
-        },
-        .backgroundColor = {40, 40, 40, 220},
-        .cornerRadius = CLAY_CORNER_RADIUS(4)
-    }) {
-        CLAY_TEXT(CLAY_STRING("Hello from Clay!"),
-            CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = 48}));
-        CLAY_TEXT(CLAY_STRING("GPU vector fonts"),
-            CLAY_TEXT_CONFIG({.textColor = {180, 180, 255, 255}, .fontSize = 36}));
-    }
+// Format bytes as human-readable string (rotating static buffers)
+static const char *format_bytes(uint32_t bytes) {
+    static char bufs[4][32];
+    static int idx = 0;
+    char *buf = bufs[idx++ & 3];
+    if (bytes >= 1024 * 1024)
+        snprintf(buf, 32, "%.2f MB", bytes / (1024.0 * 1024.0));
+    else if (bytes >= 1024)
+        snprintf(buf, 32, "%.1f KB", bytes / 1024.0);
+    else
+        snprintf(buf, 32, "%u B", bytes);
+    return buf;
+}
 
-    Clay_RenderCommandArray commands = Clay_EndLayout();
-
-    // Build vertex arrays from Clay commands
-    ui_rect_vert_count = 0;
-    ui_font_vert_count = 0;
+// ---------------------------------------------------------------------------
+// Build Clay render commands → vertex arrays (window-agnostic)
+// ---------------------------------------------------------------------------
+static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray commands) {
+    ui->rect_vert_count = 0;
+    ui->font_vert_count = 0;
 
     for (int32_t i = 0; i < commands.length; i++) {
         Clay_RenderCommand *cmd = Clay_RenderCommandArray_Get(&commands, i);
@@ -633,15 +652,15 @@ static void ui_prepare(SDL_GPUCommandBuffer *cmd_buf) {
             float x0 = box.x, y0 = box.y;
             float x1 = box.x + box.width, y1 = box.y + box.height;
 
-            if (ui_rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
-                ui_rect_vertex *v = &ui_rect_verts[ui_rect_vert_count];
+            if (ui->rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
+                ui_rect_vertex *v = &ui->rect_verts[ui->rect_vert_count];
                 v[0] = {x0, y0, r, g, b, a};
                 v[1] = {x1, y0, r, g, b, a};
                 v[2] = {x1, y1, r, g, b, a};
                 v[3] = {x0, y0, r, g, b, a};
                 v[4] = {x1, y1, r, g, b, a};
                 v[5] = {x0, y1, r, g, b, a};
-                ui_rect_vert_count += 6;
+                ui->rect_vert_count += 6;
             }
             break;
         }
@@ -665,9 +684,8 @@ static void ui_prepare(SDL_GPUCommandBuffer *cmd_buf) {
             hb_glyph_info_t *glyph_infos = hb_buffer_get_glyph_infos(hb_buf, &glyph_count);
             hb_glyph_position_t *glyph_positions = hb_buffer_get_glyph_positions(hb_buf, &glyph_count);
 
-
-            float cursor_x = box.x;
-            float baseline_y = box.y + font_size * editor_font.ascent;
+            float cursor_x = floorf(box.x);
+            float baseline_y = floorf(box.y + font_size * editor_font.ascent);
             float scale = font_size / (float)hb_scale;
 
             for (unsigned int gi = 0; gi < glyph_count; gi++) {
@@ -687,18 +705,22 @@ static void ui_prepare(SDL_GPUCommandBuffer *cmd_buf) {
                     float glyph_w = (info->bbox_max_x - info->bbox_min_x) * font_size;
                     float glyph_h = (info->bbox_max_y - info->bbox_min_y) * font_size;
 
-                    float gx = cursor_x + info->bbox_min_x * font_size + glyph_positions[gi].x_offset * scale;
+                    // Snap X to pixel grid for consistent spacing; leave Y exact
+                    // so all glyphs share the same snapped baseline.
+                    float gx = floorf(cursor_x + info->bbox_min_x * font_size + glyph_positions[gi].x_offset * scale);
                     float gy = baseline_y - info->bbox_max_y * font_size + glyph_positions[gi].y_offset * scale;
+                    float gw = glyph_w;
+                    float gh = glyph_h;
 
-                    if (ui_font_vert_count + 6 <= MAX_FONT_VERTICES) {
-                        font_vertex *v = &ui_font_verts[ui_font_vert_count];
-                        v[0] = {gx,           gy,           0, 0, r, g, b, a, cp};
-                        v[1] = {gx + glyph_w, gy,           1, 0, r, g, b, a, cp};
-                        v[2] = {gx + glyph_w, gy + glyph_h, 1, 1, r, g, b, a, cp};
-                        v[3] = {gx,           gy,           0, 0, r, g, b, a, cp};
-                        v[4] = {gx + glyph_w, gy + glyph_h, 1, 1, r, g, b, a, cp};
-                        v[5] = {gx,           gy + glyph_h, 0, 1, r, g, b, a, cp};
-                        ui_font_vert_count += 6;
+                    if (ui->font_vert_count + 6 <= MAX_FONT_VERTICES) {
+                        font_vertex *v = &ui->font_verts[ui->font_vert_count];
+                        v[0] = {gx,      gy,      0, 0, r, g, b, a, cp};
+                        v[1] = {gx + gw, gy,      1, 0, r, g, b, a, cp};
+                        v[2] = {gx + gw, gy + gh, 1, 1, r, g, b, a, cp};
+                        v[3] = {gx,      gy,      0, 0, r, g, b, a, cp};
+                        v[4] = {gx + gw, gy + gh, 1, 1, r, g, b, a, cp};
+                        v[5] = {gx,      gy + gh, 0, 1, r, g, b, a, cp};
+                        ui->font_vert_count += 6;
                     }
                 }
 
@@ -711,57 +733,58 @@ static void ui_prepare(SDL_GPUCommandBuffer *cmd_buf) {
             break;
         }
     }
+}
 
-    // Upload rect vertices
-    if (ui_rect_vert_count > 0) {
-        Uint32 buf_size = (Uint32)(ui_rect_vert_count * sizeof(ui_rect_vertex));
+// Upload a UIRenderState's vertex arrays to GPU via copy pass
+static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
+    if (ui->rect_vert_count > 0) {
+        Uint32 buf_size = (Uint32)(ui->rect_vert_count * sizeof(ui_rect_vertex));
 
         SDL_GPUTransferBufferCreateInfo tbuf_info = {};
         tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         tbuf_info.size = buf_size;
         SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
         void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-        memcpy(mapped, ui_rect_verts, buf_size);
+        memcpy(mapped, ui->rect_verts, buf_size);
         SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
 
         SDL_GPUBufferCreateInfo gbuf_info = {};
         gbuf_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
         gbuf_info.size = buf_size;
-        ui_rect_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &gbuf_info);
+        ui->rect_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &gbuf_info);
 
         SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd_buf);
         SDL_GPUTransferBufferLocation src = {};
         src.transfer_buffer = xfer;
         SDL_GPUBufferRegion dst = {};
-        dst.buffer = ui_rect_gpu_buf;
+        dst.buffer = ui->rect_gpu_buf;
         dst.size = buf_size;
         SDL_UploadToGPUBuffer(copy, &src, &dst, false);
         SDL_EndGPUCopyPass(copy);
         SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
     }
 
-    // Upload font vertices
-    if (ui_font_vert_count > 0) {
-        Uint32 buf_size = (Uint32)(ui_font_vert_count * sizeof(font_vertex));
+    if (ui->font_vert_count > 0) {
+        Uint32 buf_size = (Uint32)(ui->font_vert_count * sizeof(font_vertex));
 
         SDL_GPUTransferBufferCreateInfo tbuf_info = {};
         tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         tbuf_info.size = buf_size;
         SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
         void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-        memcpy(mapped, ui_font_verts, buf_size);
+        memcpy(mapped, ui->font_verts, buf_size);
         SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
 
         SDL_GPUBufferCreateInfo gbuf_info = {};
         gbuf_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
         gbuf_info.size = buf_size;
-        ui_font_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &gbuf_info);
+        ui->font_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &gbuf_info);
 
         SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd_buf);
         SDL_GPUTransferBufferLocation src = {};
         src.transfer_buffer = xfer;
         SDL_GPUBufferRegion dst = {};
-        dst.buffer = ui_font_gpu_buf;
+        dst.buffer = ui->font_gpu_buf;
         dst.size = buf_size;
         SDL_UploadToGPUBuffer(copy, &src, &dst, false);
         SDL_EndGPUCopyPass(copy);
@@ -769,19 +792,394 @@ static void ui_prepare(SDL_GPUCommandBuffer *cmd_buf) {
     }
 }
 
-// Phase 2: Draw UI during render pass (after sprites/lines)
-static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_buf, uniform_data *uniforms) {
-    if (ui_rect_vert_count > 0 && ui_rect_gpu_buf) {
+// Game window: run Clay layout for game UI overlay, build + upload vertices
+static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, game *g) {
+    Clay_SetCurrentContext(clay_context);
+
+    int win_w, win_h;
+    SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
+    Clay_SetLayoutDimensions(Clay_Dimensions{(float)win_w, (float)win_h});
+
+    Clay_BeginLayout();
+    /* (game HUD elements will go here later) */
+    Clay_RenderCommandArray commands = Clay_EndLayout();
+
+    ui_build_vertices(&ui_game, commands);
+    ui_upload(cmd_buf, &ui_game);
+}
+
+// ---------------------------------------------------------------------------
+// Profiler UI layout helpers
+// ---------------------------------------------------------------------------
+
+// Recursive: emit tree rows for an arena and its children
+static void profiler_tree_arena(arena *a, int depth, int *row_id) {
+    for (uint32_t i = 0; i < a->record_count; i++) {
+        arena_record *r = &a->records[i];
+        Clay_Color color = profiler_colors[(*row_id) % profiler_color_count];
+
+        // Build size string
+        static char size_bufs[256][32];
+        int idx = (*row_id) % 256;
+        if (r->child) {
+            float child_pct = (r->child->capacity > 0)
+                ? (100.0f * r->child->used / r->child->capacity) : 0.0f;
+            snprintf(size_bufs[idx], sizeof(size_bufs[idx]), "%s (%.0f%%)",
+                format_bytes(r->child->capacity), (double)child_pct);
+        } else {
+            snprintf(size_bufs[idx], sizeof(size_bufs[idx]), "%s", format_bytes(r->size));
+        }
+
+        CLAY(CLAY_IDI("TreeRow", (int32_t)*row_id), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_FIT({}) },
+                .padding = { .left = (uint16_t)(4 + depth * 12), .right = 4, .top = 2, .bottom = 2 },
+                .childGap = 6,
+                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                .layoutDirection = CLAY_LEFT_TO_RIGHT
+            }
+        }) {
+            // Color swatch
+            CLAY(CLAY_IDI("TSwatch", (int32_t)*row_id), {
+                .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
+                .backgroundColor = color,
+                .cornerRadius = CLAY_CORNER_RADIUS(2)
+            }) {}
+
+            // Tag name (grows to fill)
+            {
+                Clay_String tag_s = {false, (int32_t)strlen(r->tag), r->tag};
+                CLAY_TEXT(tag_s, CLAY_TEXT_CONFIG({.textColor = {200, 200, 200, 255}, .fontSize = 16}));
+            }
+
+            // Size (right side, dimmer)
+            {
+                Clay_String sz_s = {false, (int32_t)strlen(size_bufs[idx]), size_bufs[idx]};
+                CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 16}));
+            }
+        }
+
+        (*row_id)++;
+
+        if (r->child) {
+            profiler_tree_arena(r->child, depth + 1, row_id);
+        }
+    }
+}
+
+// Collect all leaf records (flattened) for block + grid views
+struct FlatRecord {
+    const char *tag;
+    uint32_t    offset;  /* absolute offset within root arena */
+    uint32_t    size;
+    int         color_idx;
+};
+#define MAX_FLAT_RECORDS 256
+
+static int profiler_flatten_arena(arena *a, uint32_t base_offset,
+                                  FlatRecord *out, int count, int *color_id) {
+    for (uint32_t i = 0; i < a->record_count && count < MAX_FLAT_RECORDS; i++) {
+        arena_record *r = &a->records[i];
+        if (r->child && r->child->record_count > 0) {
+            // Sub-arena with its own records — recurse into children
+            count = profiler_flatten_arena(r->child, base_offset + r->offset + (uint32_t)sizeof(arena),
+                                           out, count, color_id);
+        } else if (r->child) {
+            // Sub-arena with no internal records (e.g. Clay) — show as leaf using its used size
+            out[count].tag = r->tag;
+            out[count].offset = base_offset + r->offset;
+            out[count].size = r->child->used > 0 ? r->child->used : r->size;
+            out[count].color_idx = (*color_id)++;
+            count++;
+        } else {
+            out[count].tag = r->tag;
+            out[count].offset = base_offset + r->offset;
+            out[count].size = r->size;
+            out[count].color_idx = (*color_id)++;
+            count++;
+        }
+    }
+    return count;
+}
+
+// Profiler window: run Clay layout for profiler panels, build + upload vertices
+static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, game *g) {
+    // Sync Clay's peak frame usage into our sub-arenas for profiler display.
+    // nextAllocation = current bump offset (peak after EndLayout).
+    if (clay_arena_game && clay_context)
+        clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
+    if (clay_arena_prof && profiler_clay_context)
+        clay_arena_prof->used = (uint32_t)profiler_clay_context->internalArena.nextAllocation;
+
+    Clay_SetCurrentContext(profiler_clay_context);
+
+    int win_w, win_h;
+    SDL_GetWindowSizeInPixels(profiler_window, &win_w, &win_h);
+    Clay_SetLayoutDimensions(Clay_Dimensions{(float)win_w, (float)win_h});
+
+    Clay_BeginLayout();
+
+    arena *a = &g->arena;
+    float used_pct = (a->capacity > 0) ? (100.0f * a->used / a->capacity) : 0.0f;
+
+    static char title_buf[128];
+    snprintf(title_buf, sizeof(title_buf), "Memory Profiler    %s / %s  (%.1f%%)",
+        format_bytes(a->used), format_bytes(a->capacity), (double)used_pct);
+
+    // Flatten records for block+grid
+    static FlatRecord flat[MAX_FLAT_RECORDS];
+    int flat_color = 0;
+    int flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
+
+    // Root container — fills entire window
+    CLAY(CLAY_ID("PRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_GROW({}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 0,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {25, 25, 30, 255}
+    }) {
+        // Title bar
+        CLAY(CLAY_ID("PTitleBar"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_FIT({}) },
+                .padding = { .left = 8, .right = 8, .top = 6, .bottom = 10 }
+            }
+        }) {
+            Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
+            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+        }
+
+        // Three-panel row
+        CLAY(CLAY_ID("PPanels"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_GROW({}) },
+                .childGap = 8,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT
+            }
+        }) {
+            // ===== TREE PANEL (left, 35%) =====
+            CLAY(CLAY_ID("PTree"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_PERCENT(0.35f), CLAY_SIZING_GROW({}) },
+                    .padding = CLAY_PADDING_ALL(8),
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {35, 35, 40, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                {
+                    Clay_String hdr = CLAY_STRING("Tree View");
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
+                }
+
+                // Arena root row
+                {
+                    static char root_buf[64];
+                    snprintf(root_buf, sizeof(root_buf), "Arena  %s", format_bytes(a->capacity));
+                    Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
+
+                    CLAY(CLAY_ID("TRootRow"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_FIT({}) },
+                            .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                        }
+                    }) {
+                        CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+                    }
+                }
+
+                int row_id = 0;
+                profiler_tree_arena(a, 1, &row_id);
+            }
+
+            // ===== BLOCK PANEL (center, 20%) =====
+            CLAY(CLAY_ID("PBlock"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_PERCENT(0.20f), CLAY_SIZING_GROW({}) },
+                    .padding = CLAY_PADDING_ALL(8),
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {35, 35, 40, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                {
+                    Clay_String hdr = CLAY_STRING("Block View");
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
+                }
+
+                // Column of proportional blocks
+                float block_total_h = (float)(win_h - 80);  // approximate available height
+                if (block_total_h < 100) block_total_h = 100;
+
+                for (int i = 0; i < flat_count; i++) {
+                    float frac = (float)flat[i].size / (float)a->capacity;
+                    float h = frac * block_total_h;
+                    if (h < 2.0f) h = 2.0f;
+                    Clay_Color color = profiler_colors[flat[i].color_idx % profiler_color_count];
+
+                    static char block_bufs[MAX_FLAT_RECORDS][48];
+                    snprintf(block_bufs[i], sizeof(block_bufs[i]), "%s", flat[i].tag);
+
+                    CLAY(CLAY_IDI("BlkEntry", (int32_t)i), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_FIXED(h) },
+                            .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
+                            .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
+                        },
+                        .backgroundColor = color,
+                        .cornerRadius = CLAY_CORNER_RADIUS(2)
+                    }) {
+                        if (h > 14) {
+                            Clay_String bs = {false, (int32_t)strlen(block_bufs[i]), block_bufs[i]};
+                            CLAY_TEXT(bs, CLAY_TEXT_CONFIG({.textColor = {0, 0, 0, 200}, .fontSize = 16}));
+                        }
+                    }
+                }
+
+                // Free space block
+                {
+                    uint32_t free_bytes = a->capacity - a->used;
+                    float frac = (float)free_bytes / (float)a->capacity;
+                    float h = frac * block_total_h;
+                    if (h < 2.0f) h = 2.0f;
+
+                    static char free_buf[32];
+                    snprintf(free_buf, sizeof(free_buf), "FREE %s", format_bytes(free_bytes));
+
+                    CLAY(CLAY_ID("BlkFree"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_FIXED(h) },
+                            .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
+                            .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
+                        },
+                        .backgroundColor = {50, 50, 55, 255},
+                        .cornerRadius = CLAY_CORNER_RADIUS(2)
+                    }) {
+                        if (h > 14) {
+                            Clay_String fs = {false, (int32_t)strlen(free_buf), free_buf};
+                            CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {120, 120, 120, 255}, .fontSize = 16}));
+                        }
+                    }
+                }
+            }
+
+            // ===== GRID PANEL (right) =====
+            CLAY(CLAY_ID("PGrid"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_GROW({}) },
+                    .padding = CLAY_PADDING_ALL(8),
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {35, 35, 40, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                {
+                    Clay_String hdr = CLAY_STRING("Grid View");
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
+                }
+
+                // Grid: each cell = 64KB of arena space
+                uint32_t cell_size = 64 * 1024;  // 64 KB per cell
+                uint32_t total_cells = (a->capacity + cell_size - 1) / cell_size;
+                int grid_cols = 16;
+                int grid_rows = ((int)total_cells + grid_cols - 1) / grid_cols;
+
+                for (int row = 0; row < grid_rows; row++) {
+                    CLAY(CLAY_IDI("GRow", (int32_t)row), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_FIT({}) },
+                            .childGap = 2,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT
+                        }
+                    }) {
+                        for (int col = 0; col < grid_cols; col++) {
+                            uint32_t cell_idx = (uint32_t)(row * grid_cols + col);
+                            if (cell_idx >= total_cells) break;
+
+                            uint32_t cell_start = cell_idx * cell_size;
+                            uint32_t cell_end = cell_start + cell_size;
+                            if (cell_end > a->capacity) cell_end = a->capacity;
+
+                            // Find which record owns this cell
+                            Clay_Color cell_color = {50, 50, 55, 255};  // free/dark
+                            for (int fi = 0; fi < flat_count; fi++) {
+                                uint32_t rec_start = flat[fi].offset;
+                                uint32_t rec_end = flat[fi].offset + flat[fi].size;
+                                if (rec_start < cell_end && rec_end > cell_start) {
+                                    cell_color = profiler_colors[flat[fi].color_idx % profiler_color_count];
+                                    break;
+                                }
+                            }
+
+                            int32_t cell_id = (int32_t)(row * grid_cols + col);
+                            CLAY(CLAY_IDI("GCell", cell_id), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) }
+                                },
+                                .backgroundColor = cell_color,
+                                .cornerRadius = CLAY_CORNER_RADIUS(2)
+                            }) {}
+                        }
+                    }
+                }
+
+                // Legend
+                CLAY(CLAY_ID("GLegend"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({}), CLAY_SIZING_FIT({}) },
+                        .padding = { .left = 0, .right = 0, .top = 8, .bottom = 0 },
+                        .childGap = 12,
+                        .layoutDirection = CLAY_LEFT_TO_RIGHT
+                    }
+                }) {
+                    CLAY(CLAY_ID("GLAllocBox"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
+                        .backgroundColor = profiler_colors[0],
+                        .cornerRadius = CLAY_CORNER_RADIUS(1)
+                    }) {}
+                    {
+                        Clay_String ls = CLAY_STRING("= allocated");
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
+                    }
+                    CLAY(CLAY_ID("GLFreeBox"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
+                        .backgroundColor = {50, 50, 55, 255},
+                        .cornerRadius = CLAY_CORNER_RADIUS(1)
+                    }) {}
+                    {
+                        Clay_String ls = CLAY_STRING("= free");
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
+                    }
+                }
+            }
+        }
+    }
+
+    Clay_RenderCommandArray commands = Clay_EndLayout();
+    ui_build_vertices(&ui_profiler, commands);
+    ui_upload(cmd_buf, &ui_profiler);
+}
+
+// Draw UI during render pass (works for any UIRenderState)
+static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_buf,
+                    uniform_data *uniforms, UIRenderState *ui) {
+    if (ui->rect_vert_count > 0 && ui->rect_gpu_buf) {
         SDL_BindGPUGraphicsPipeline(render_pass, ui_rect_pipeline);
         SDL_PushGPUVertexUniformData(cmd_buf, 0, uniforms, sizeof(*uniforms));
 
         SDL_GPUBufferBinding vbuf_binding = {};
-        vbuf_binding.buffer = ui_rect_gpu_buf;
+        vbuf_binding.buffer = ui->rect_gpu_buf;
         SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
-        SDL_DrawGPUPrimitives(render_pass, (Uint32)ui_rect_vert_count, 1, 0, 0);
+        SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->rect_vert_count, 1, 0, 0);
     }
 
-    if (ui_font_vert_count > 0 && ui_font_gpu_buf) {
+    if (ui->font_vert_count > 0 && ui->font_gpu_buf) {
         SDL_BindGPUGraphicsPipeline(render_pass, font_pipeline);
         SDL_PushGPUVertexUniformData(cmd_buf, 0, uniforms, sizeof(*uniforms));
 
@@ -792,16 +1190,16 @@ static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_bu
         SDL_BindGPUFragmentStorageBuffers(render_pass, 0, storage_bufs, 4);
 
         SDL_GPUBufferBinding vbuf_binding = {};
-        vbuf_binding.buffer = ui_font_gpu_buf;
+        vbuf_binding.buffer = ui->font_gpu_buf;
         SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
-        SDL_DrawGPUPrimitives(render_pass, (Uint32)ui_font_vert_count, 1, 0, 0);
+        SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->font_vert_count, 1, 0, 0);
     }
 }
 
-// Cleanup per-frame UI GPU buffers
-static void ui_release_buffers() {
-    if (ui_rect_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui_rect_gpu_buf); ui_rect_gpu_buf = NULL; }
-    if (ui_font_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui_font_gpu_buf); ui_font_gpu_buf = NULL; }
+// Cleanup per-frame UI GPU buffers for one window
+static void ui_release_buffers(UIRenderState *ui) {
+    if (ui->rect_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->rect_gpu_buf); ui->rect_gpu_buf = NULL; }
+    if (ui->font_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->font_gpu_buf); ui->font_gpu_buf = NULL; }
 }
 
 // ---------------------------------------------------------------------------
@@ -809,6 +1207,8 @@ static void ui_release_buffers() {
 // ---------------------------------------------------------------------------
 
 EXPORT int init_externals(game *g) {
+    ZoneScopedN("init_externals");
+
     // 1. Init SDL
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -1191,11 +1591,20 @@ EXPORT int init_externals(game *g) {
         return -1;
     }
 
-    // Initialize Clay UI
+    // Initialize arena (single allocation for all engine memory)
+    {
+        uint32_t arena_size = 16 * 1024 * 1024; // 16 MB
+        void *arena_mem = malloc(arena_size);
+        arena_init(&g->arena, arena_mem, arena_size);
+        printf("Arena initialized (%u bytes)\n", arena_size);
+    }
+
+    // Initialize Clay UI — game window (sub-arena so profiler can track usage)
     {
         uint64_t clay_mem_size = Clay_MinMemorySize();
-        clay_memory = (uint8_t*)malloc(clay_mem_size);
-        Clay_Arena clay_arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem_size, clay_memory);
+        clay_arena_game = arena_alloc_subarena(&g->arena, (uint32_t)clay_mem_size, 16, "clay_ui");
+
+        Clay_Arena clay_arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem_size, clay_arena_game->base);
 
         int window_w, window_h;
         SDL_GetWindowSize(window, &window_w, &window_h);
@@ -1203,20 +1612,61 @@ EXPORT int init_externals(game *g) {
         Clay_ErrorHandler err_handler = {};
         clay_context = Clay_Initialize(clay_arena, Clay_Dimensions{(float)window_w, (float)window_h}, err_handler);
         Clay_SetMeasureTextFunction(clay_measure_text, NULL);
-        printf("Clay initialized (%llu bytes arena)\n", (unsigned long long)clay_mem_size);
+        printf("Clay game context initialized (%llu bytes from arena)\n", (unsigned long long)clay_mem_size);
     }
 
-    // 12. Init game timing and debug renderer
+    // Initialize Clay UI — profiler window (sub-arena so profiler can track usage)
+    {
+        uint64_t clay_mem_size = Clay_MinMemorySize();
+        clay_arena_prof = arena_alloc_subarena(&g->arena, (uint32_t)clay_mem_size, 16, "clay_profiler");
+
+        Clay_Arena clay_arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem_size, clay_arena_prof->base);
+        Clay_ErrorHandler err_handler = {};
+        profiler_clay_context = Clay_Initialize(clay_arena, Clay_Dimensions{800, 600}, err_handler);
+        Clay_SetCurrentContext(profiler_clay_context);
+        Clay_SetMeasureTextFunction(clay_measure_text, NULL);
+        Clay_SetCurrentContext(clay_context);  // restore game context
+        printf("Clay profiler context initialized (%llu bytes from arena)\n", (unsigned long long)clay_mem_size);
+    }
+
+    // Create profiler window
+    profiler_window = SDL_CreateWindow("Memory Profiler", 900, 600, SDL_WINDOW_RESIZABLE);
+    if (!profiler_window) {
+        fprintf(stderr, "Failed to create profiler window: %s\n", SDL_GetError());
+        return -1;
+    }
+    if (!SDL_ClaimWindowForGPUDevice(gpu_device, profiler_window)) {
+        fprintf(stderr, "Failed to claim profiler window: %s\n", SDL_GetError());
+        return -1;
+    }
+    profiler_open = true;
+
+    // Allocate rendering sub-arena (draw_commands, debug_lines, debug_vertices)
+    {
+        arena *rendering = arena_alloc_subarena(&g->arena, 256 * 1024, 16, "rendering");
+
+        g->draw_list.sprite_capacity = MAX_DRAW_COMMANDS;
+        g->draw_list.sprites = (draw_command*)arena_alloc(rendering,
+            (uint32_t)(MAX_DRAW_COMMANDS * sizeof(draw_command)), 16, "draw_commands");
+        g->draw_list.line_capacity = MAX_DEBUG_LINES;
+        g->draw_list.lines = (debug_line_command*)arena_alloc(rendering,
+            (uint32_t)(MAX_DEBUG_LINES * sizeof(debug_line_command)), 16, "debug_lines");
+
+        g->debug_renderer.max_lines = 1000;
+        g->debug_renderer.vertex_buffer = (float*)arena_alloc(rendering,
+            (uint32_t)(g->debug_renderer.max_lines * 10 * sizeof(float)), 16, "debug_vertices");
+        g->debug_renderer.current_line_count = 0;
+    }
+
+    // Allocate gameplay sub-arena (entities, etc.)
+    g->gameplay = arena_alloc_subarena(&g->arena, 256 * 1024, 16, "gameplay");
+
+    // Init game timing
     g->_t_prev = (double)SDL_GetTicks() / 1000.0;
     g->dt = 0.0f;
     g->play = true;
 
-    // Init debug renderer vertex buffer
-    g->debug_renderer.max_lines = 1000;
-    g->debug_renderer.vertex_buffer = (float*)malloc(g->debug_renderer.max_lines * 10 * sizeof(float));
-    g->debug_renderer.current_line_count = 0;
-
-    printf("Externals initialized (SDL3 GPU)\n");
+    printf("Externals initialized (SDL3 GPU, 2 windows)\n");
     return 1;
 }
 
@@ -1304,6 +1754,7 @@ static void update_input(game *g) {
 // ---------------------------------------------------------------------------
 
 EXPORT void update_externals(game *g) {
+    ZoneScopedN("update_externals");
     // --- Timing ---
     double now = (double)SDL_GetTicks() / 1000.0;
     double dtd = now - g->_t_prev;
@@ -1313,11 +1764,26 @@ EXPORT void update_externals(game *g) {
     g->dt = (float)dtd;
 
     // --- Events ---
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_EVENT_QUIT) {
-            g->play = false;
-            return;
+    {
+        ZoneScopedN("SDL_PollEvents");
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) {
+                g->play = false;
+                return;
+            }
+            if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+                SDL_Window *evwin = SDL_GetWindowFromEvent(&event);
+                if (evwin == profiler_window) {
+                    SDL_ReleaseWindowFromGPUDevice(gpu_device, profiler_window);
+                    SDL_DestroyWindow(profiler_window);
+                    profiler_window = NULL;
+                    profiler_open = false;
+                } else if (evwin == window) {
+                    g->play = false;
+                    return;
+                }
+            }
         }
     }
 
@@ -1355,27 +1821,17 @@ EXPORT void update_externals(game *g) {
         return;
     }
 
-    SDL_GPUTexture *swapchain_texture = NULL;
-    Uint32 sc_w, sc_h;
-    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swapchain_texture, &sc_w, &sc_h)) {
-        fprintf(stderr, "Failed to acquire swapchain texture: %s\n", SDL_GetError());
-        SDL_SubmitGPUCommandBuffer(cmd_buf);
-        return;
-    }
-
-    if (!swapchain_texture) {
-        SDL_SubmitGPUCommandBuffer(cmd_buf);
-        return;
-    }
+    // ================================================================
+    // ALL COPY PASSES FIRST (both windows) — no render passes yet
+    // ================================================================
 
     // --- Build sprite vertex data ---
     int sprite_count = g->draw_list.sprite_count;
-    int sprite_vertex_count = sprite_count * 6; // 6 vertices per sprite (2 triangles)
+    int sprite_vertex_count = sprite_count * 6;
     Uint32 sprite_buf_size = (Uint32)(sprite_vertex_count * sizeof(sprite_vertex));
 
     SDL_GPUBuffer *sprite_gpu_buf = NULL;
     if (sprite_count > 0 && sprite_buf_size > 0) {
-        // Create transfer buffer for sprite vertices
         SDL_GPUTransferBufferCreateInfo tbuf_info = {};
         tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         tbuf_info.size = sprite_buf_size;
@@ -1402,43 +1858,30 @@ EXPORT void update_externals(game *g) {
             float r = cmd.tint_r, gr = cmd.tint_g, b = cmd.tint_b, a = cmd.tint_a;
 
             sprite_vertex *v = &verts[i * 6];
-
-            // Triangle 1: top-left, top-right, bottom-right
-            v[0] = {x0, y1, u0, v0, r, gr, b, a}; // top-left
-            v[1] = {x1, y1, u1, v0, r, gr, b, a}; // top-right
-            v[2] = {x1, y0, u1, v1, r, gr, b, a}; // bottom-right
-
-            // Triangle 2: top-left, bottom-right, bottom-left
-            v[3] = {x0, y1, u0, v0, r, gr, b, a}; // top-left
-            v[4] = {x1, y0, u1, v1, r, gr, b, a}; // bottom-right
-            v[5] = {x0, y0, u0, v1, r, gr, b, a}; // bottom-left
+            v[0] = {x0, y1, u0, v0, r, gr, b, a};
+            v[1] = {x1, y1, u1, v0, r, gr, b, a};
+            v[2] = {x1, y0, u1, v1, r, gr, b, a};
+            v[3] = {x0, y1, u0, v0, r, gr, b, a};
+            v[4] = {x1, y0, u1, v1, r, gr, b, a};
+            v[5] = {x0, y0, u0, v1, r, gr, b, a};
         }
 
         SDL_UnmapGPUTransferBuffer(gpu_device, sprite_transfer);
 
-        // Create GPU vertex buffer
         SDL_GPUBufferCreateInfo buf_info = {};
         buf_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
         buf_info.size = sprite_buf_size;
         buf_info.props = 0;
-
         sprite_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &buf_info);
 
-        // Copy pass: transfer -> GPU buffer
         SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(cmd_buf);
-
         SDL_GPUTransferBufferLocation src_loc = {};
         src_loc.transfer_buffer = sprite_transfer;
-        src_loc.offset = 0;
-
         SDL_GPUBufferRegion dst_region = {};
         dst_region.buffer = sprite_gpu_buf;
-        dst_region.offset = 0;
         dst_region.size = sprite_buf_size;
-
         SDL_UploadToGPUBuffer(copy_pass, &src_loc, &dst_region, false);
         SDL_EndGPUCopyPass(copy_pass);
-
         SDL_ReleaseGPUTransferBuffer(gpu_device, sprite_transfer);
     }
 
@@ -1469,134 +1912,156 @@ EXPORT void update_externals(game *g) {
         buf_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
         buf_info.size = line_buf_size;
         buf_info.props = 0;
-
         line_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &buf_info);
 
         SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(cmd_buf);
-
         SDL_GPUTransferBufferLocation src_loc = {};
         src_loc.transfer_buffer = line_transfer;
-        src_loc.offset = 0;
-
         SDL_GPUBufferRegion dst_region = {};
         dst_region.buffer = line_gpu_buf;
-        dst_region.offset = 0;
         dst_region.size = line_buf_size;
-
         SDL_UploadToGPUBuffer(copy_pass, &src_loc, &dst_region, false);
         SDL_EndGPUCopyPass(copy_pass);
-
         SDL_ReleaseGPUTransferBuffer(gpu_device, line_transfer);
     }
 
-    // --- Prepare Clay UI (layout + upload before render pass) ---
-    ui_prepare(cmd_buf);
+    // --- Prepare Clay UI: game window (layout + upload) ---
+    ui_prepare_game(cmd_buf, g);
 
-    // --- Begin render pass ---
-    SDL_GPUColorTargetInfo color_target = {};
-    color_target.texture = swapchain_texture;
-    color_target.clear_color = {0.45f, 0.55f, 0.60f, 1.0f};
-    color_target.load_op = SDL_GPU_LOADOP_CLEAR;
-    color_target.store_op = SDL_GPU_STOREOP_STORE;
+    // --- Prepare Clay UI: profiler window (layout + upload) ---
+    if (profiler_open && profiler_window) {
+        profiler_prepare(cmd_buf, g);
+    }
 
-    SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, NULL);
+    // ================================================================
+    // RENDER PASSES (all copy passes complete)
+    // ================================================================
 
-    // --- Uniforms ---
-    uniform_data uniforms;
-    memcpy(uniforms.projection, g->draw_list.ortho_projection, sizeof(float) * 16);
-    memcpy(uniforms.view, g->draw_list.view_matrix, sizeof(float) * 16);
+    // --- GAME WINDOW RENDER PASS ---
+    SDL_GPUTexture *swapchain_texture = NULL;
+    Uint32 sc_w, sc_h;
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swapchain_texture, &sc_w, &sc_h)) {
+        fprintf(stderr, "Failed to acquire swapchain texture: %s\n", SDL_GetError());
+        SDL_SubmitGPUCommandBuffer(cmd_buf);
+        return;
+    }
 
-    // --- Sprite pass ---
-    if (sprite_count > 0 && sprite_gpu_buf) {
-        SDL_BindGPUGraphicsPipeline(render_pass, sprite_pipeline);
+    if (swapchain_texture) {
+        SDL_GPUColorTargetInfo color_target = {};
+        color_target.texture = swapchain_texture;
+        color_target.clear_color = {0.45f, 0.55f, 0.60f, 1.0f};
+        color_target.load_op = SDL_GPU_LOADOP_CLEAR;
+        color_target.store_op = SDL_GPU_STOREOP_STORE;
 
-        SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
+        SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, NULL);
 
-        SDL_GPUBufferBinding vbuf_binding = {};
-        vbuf_binding.buffer = sprite_gpu_buf;
-        vbuf_binding.offset = 0;
-        SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+        uniform_data uniforms;
+        memcpy(uniforms.projection, g->draw_list.ortho_projection, sizeof(float) * 16);
+        memcpy(uniforms.view, g->draw_list.view_matrix, sizeof(float) * 16);
 
-        // Sort/batch by texture_id for fewer bind calls
-        // Simple approach: iterate textures, draw matching sprites
-        for (int tex_id = 0; tex_id < TEXTURE_COUNT; tex_id++) {
-            if (!gpu_textures[tex_id]) continue;
+        // Sprites
+        if (sprite_count > 0 && sprite_gpu_buf) {
+            SDL_BindGPUGraphicsPipeline(render_pass, sprite_pipeline);
+            SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
 
-            // Count sprites with this texture
-            int first_vertex = -1;
-            int count = 0;
-            // Since sprites might be interleaved, we draw per-sprite ranges
-            // But for simplicity, just draw each sprite batch individually
-            for (int i = 0; i < sprite_count; i++) {
-                if (g->draw_list.sprites[i].texture_id == tex_id) {
-                    if (first_vertex < 0) {
-                        // Bind texture for this batch
-                        SDL_GPUTextureSamplerBinding tex_binding = {};
-                        tex_binding.texture = gpu_textures[tex_id];
-                        tex_binding.sampler = sprite_sampler;
-                        SDL_BindGPUFragmentSamplers(render_pass, 0, &tex_binding, 1);
-                        first_vertex = i * 6;
-                    }
-                    count++;
-                }
-            }
+            SDL_GPUBufferBinding vbuf_binding = {};
+            vbuf_binding.buffer = sprite_gpu_buf;
+            SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
 
-            if (count > 0) {
-                // Draw all sprites with this texture
-                // Since sprites are interleaved, draw each individually
+            for (int tex_id = 0; tex_id < TEXTURE_COUNT; tex_id++) {
+                if (!gpu_textures[tex_id]) continue;
+                bool bound = false;
                 for (int i = 0; i < sprite_count; i++) {
                     if (g->draw_list.sprites[i].texture_id == tex_id) {
+                        if (!bound) {
+                            SDL_GPUTextureSamplerBinding tex_binding = {};
+                            tex_binding.texture = gpu_textures[tex_id];
+                            tex_binding.sampler = sprite_sampler;
+                            SDL_BindGPUFragmentSamplers(render_pass, 0, &tex_binding, 1);
+                            bound = true;
+                        }
                         SDL_DrawGPUPrimitives(render_pass, 6, 1, (Uint32)(i * 6), 0);
                     }
                 }
             }
         }
+
+        // Lines
+        if (line_count > 0 && line_gpu_buf) {
+            SDL_BindGPUGraphicsPipeline(render_pass, line_pipeline);
+            SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
+
+            SDL_GPUBufferBinding vbuf_binding = {};
+            vbuf_binding.buffer = line_gpu_buf;
+            SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+            SDL_DrawGPUPrimitives(render_pass, (Uint32)line_vertex_count, 1, 0, 0);
+        }
+
+        // Game Clay UI overlay
+        {
+            uniform_data ui_uniforms;
+            float ui_w = (float)display_w;
+            float ui_h = (float)display_h;
+            float ui_ortho[16] = {
+                2.0f/ui_w,  0,          0,     0,
+                0,         -2.0f/ui_h,  0,     0,
+                0,          0,         -1.0f,  0,
+               -1.0f,       1.0f,       0,     1.0f
+            };
+            memcpy(ui_uniforms.projection, ui_ortho, sizeof(ui_ortho));
+            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            memcpy(ui_uniforms.view, identity, sizeof(identity));
+
+            ui_draw(render_pass, cmd_buf, &ui_uniforms, &ui_game);
+        }
+
+        SDL_EndGPURenderPass(render_pass);
     }
 
-    // --- Line pass ---
-    if (line_count > 0 && line_gpu_buf) {
-        SDL_BindGPUGraphicsPipeline(render_pass, line_pipeline);
+    // --- PROFILER WINDOW RENDER PASS ---
+    if (profiler_open && profiler_window) {
+        SDL_GPUTexture *prof_swapchain = NULL;
+        Uint32 prof_w, prof_h;
+        if (SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, profiler_window, &prof_swapchain, &prof_w, &prof_h)
+            && prof_swapchain) {
 
-        SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
+            SDL_GPUColorTargetInfo prof_target = {};
+            prof_target.texture = prof_swapchain;
+            prof_target.clear_color = {0.10f, 0.10f, 0.12f, 1.0f};
+            prof_target.load_op = SDL_GPU_LOADOP_CLEAR;
+            prof_target.store_op = SDL_GPU_STOREOP_STORE;
 
-        SDL_GPUBufferBinding vbuf_binding = {};
-        vbuf_binding.buffer = line_gpu_buf;
-        vbuf_binding.offset = 0;
-        SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+            SDL_GPURenderPass *prof_pass = SDL_BeginGPURenderPass(cmd_buf, &prof_target, 1, NULL);
 
-        SDL_DrawGPUPrimitives(render_pass, (Uint32)(line_vertex_count), 1, 0, 0);
+            // Profiler uses screen-space ortho
+            uniform_data prof_uniforms;
+            float pw = (float)prof_w;
+            float ph = (float)prof_h;
+            float prof_ortho[16] = {
+                2.0f/pw,  0,         0,     0,
+                0,       -2.0f/ph,   0,     0,
+                0,        0,        -1.0f,  0,
+               -1.0f,     1.0f,      0,     1.0f
+            };
+            memcpy(prof_uniforms.projection, prof_ortho, sizeof(prof_ortho));
+            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            memcpy(prof_uniforms.view, identity, sizeof(identity));
+
+            ui_draw(prof_pass, cmd_buf, &prof_uniforms, &ui_profiler);
+
+            SDL_EndGPURenderPass(prof_pass);
+        }
     }
 
-    // --- Clay UI draw ---
-    {
-        uniform_data ui_uniforms;
-        float ui_w = (float)display_w;
-        float ui_h = (float)display_h;
-        float ui_ortho[16] = {
-            2.0f/ui_w,  0,          0,     0,
-            0,         -2.0f/ui_h,  0,     0,
-            0,          0,         -1.0f,  0,
-           -1.0f,       1.0f,       0,     1.0f
-        };
-        memcpy(ui_uniforms.projection, ui_ortho, sizeof(ui_ortho));
-        float identity[16] = {
-            1, 0, 0, 0,
-            0, 1, 0, 0,
-            0, 0, 1, 0,
-            0, 0, 0, 1
-        };
-        memcpy(ui_uniforms.view, identity, sizeof(identity));
-
-        ui_draw(render_pass, cmd_buf, &ui_uniforms);
-    }
-
-    SDL_EndGPURenderPass(render_pass);
     SDL_SubmitGPUCommandBuffer(cmd_buf);
 
     // Release per-frame GPU buffers
     if (sprite_gpu_buf) SDL_ReleaseGPUBuffer(gpu_device, sprite_gpu_buf);
     if (line_gpu_buf)   SDL_ReleaseGPUBuffer(gpu_device, line_gpu_buf);
-    ui_release_buffers();
+    ui_release_buffers(&ui_game);
+    ui_release_buffers(&ui_profiler);
+
+    FrameMark;
 }
 
 // ---------------------------------------------------------------------------
@@ -1618,8 +2083,16 @@ EXPORT void end_externals(game *g) {
         sprite_sampler = NULL;
     }
 
-    // Release Clay
-    if (clay_memory) { free(clay_memory); clay_memory = NULL; }
+    // Clay memory is inside sub-arenas — no separate free needed
+    clay_arena_game = NULL;
+    clay_arena_prof = NULL;
+
+    // Profiler window cleanup
+    if (profiler_window) {
+        SDL_ReleaseWindowFromGPUDevice(gpu_device, profiler_window);
+        SDL_DestroyWindow(profiler_window);
+        profiler_window = NULL;
+    }
 
     // Release HarfBuzz
     if (hb_editor_font) { hb_font_destroy(hb_editor_font); hb_editor_font = NULL; }
@@ -1663,10 +2136,10 @@ EXPORT void end_externals(game *g) {
         window = NULL;
     }
 
-    // Free debug renderer
-    if (g->debug_renderer.vertex_buffer) {
-        free(g->debug_renderer.vertex_buffer);
-        g->debug_renderer.vertex_buffer = NULL;
+    // Free arena (single free for all engine memory)
+    if (g->arena.base) {
+        free(g->arena.base);
+        g->arena.base = NULL;
     }
 
     SDL_Quit();

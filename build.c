@@ -369,7 +369,7 @@ static void rand_hex(char *buf, int len)
 /* Build targets                                                              */
 /* ========================================================================= */
 
-/* ------- tracy (static library) ----------------------------------------- */
+/* ------- tracy (static library, linked only into externals) -------------- */
 static int build_tracy(void)
 {
     char cmd[CMD_MAX];
@@ -474,7 +474,7 @@ static int build_externals(void)
 #ifdef _WIN32
             snprintf(cmd, sizeof(cmd),
                 "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-                "/DTRACY_ENABLE "
+                "/DTRACY_ENABLE /DTRACY_ON_DEMAND "
                 COMMON_INCLUDES " "
                 "/Fo%s "
                 "/Fd" OBJ_EXT_DIR "/externals.pdb "
@@ -483,7 +483,7 @@ static int build_externals(void)
 #else
             snprintf(cmd, sizeof(cmd),
                 "%s -std=c++20 -fPIC -g -O0 -Wno-changes-meaning -c "
-                "-DTRACY_ENABLE "
+                "-DTRACY_ENABLE -DTRACY_ON_DEMAND "
                 COMMON_INCLUDES " "
                 "-o %s "
                 "%s",
@@ -578,7 +578,6 @@ static int build_core(void)
 #ifdef _WIN32
             snprintf(cmd, sizeof(cmd),
                 "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-                "/DTRACY_ENABLE "
                 COMMON_INCLUDES " "
                 "/Fo%s "
                 "/Fd" OBJ_CORE_DIR "/core.pdb "
@@ -587,7 +586,6 @@ static int build_core(void)
 #else
             snprintf(cmd, sizeof(cmd),
                 "%s -std=c++20 -fPIC -g -O0 -Wno-changes-meaning -c "
-                "-DTRACY_ENABLE "
                 COMMON_INCLUDES " "
                 "-o %s "
                 "%s",
@@ -617,7 +615,6 @@ static int build_core(void)
             "/IMPLIB:" DEBUG_DIR "/core" LIB_EXT " "
             "%s"
             DEBUG_DIR "/externals" LIB_EXT " "
-            DEBUG_DIR "/TracyClient" LIB_EXT " "
             DEBUG_DIR "/SDL3" LIB_EXT " "
             "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
             tool_link, obj_list);
@@ -626,7 +623,6 @@ static int build_core(void)
             "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "core" DLL_EXT " "
             "%s"
             DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT " "
-            DEBUG_DIR "/TracyClient" LIB_EXT " "
             "-L" DEBUG_DIR " -lSDL3 "
             "-lpthread -ldl",
             tool_link, obj_list);
@@ -712,7 +708,6 @@ static int build_engine(void)
             "/IMPLIB:" DEBUG_DIR "/engine" LIB_EXT " "
             "%s"
             DEBUG_DIR "/externals" LIB_EXT " "
-            DEBUG_DIR "/TracyClient" LIB_EXT " "
             "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
             tool_link, pdb_suffix, obj_list);
 #else
@@ -721,7 +716,6 @@ static int build_engine(void)
             "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "engine" DLL_EXT " "
             "%s"
             DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT " "
-            DEBUG_DIR "/TracyClient" LIB_EXT " "
             "-lpthread -ldl",
             tool_link, obj_list);
 #endif
@@ -1981,6 +1975,58 @@ static int build_and_run(void)
     printf("\n=== Launching engine and starting watch mode ===\n");
     
 #ifdef _WIN32
+    /* Try to launch Tracy Profiler if available */
+    {
+        STARTUPINFOA tracy_si = {0};
+        PROCESS_INFORMATION tracy_pi = {0};
+        const char *tracy_paths[] = {
+            "lib/tracy/tracy-profiler.exe",
+            "tracy-profiler.exe",
+            NULL
+        };
+        char tracy_full_path[PATH_SIZE];
+        int i;
+        int tracy_launched = 0;
+
+        tracy_si.cb = sizeof(tracy_si);
+
+        for (i = 0; tracy_paths[i]; i++) {
+            const char *path_to_use = NULL;
+
+            /* Check as a direct file path first, then search PATH */
+            if (GetFileAttributesA(tracy_paths[i]) != INVALID_FILE_ATTRIBUTES) {
+                path_to_use = tracy_paths[i];
+            }
+            else if (SearchPathA(NULL, tracy_paths[i], NULL, PATH_SIZE, tracy_full_path, NULL) != 0) {
+                path_to_use = tracy_full_path;
+            }
+
+            if (path_to_use) {
+                if (CreateProcessA(
+                        NULL,
+                        (char*)path_to_use,
+                        NULL,
+                        NULL,
+                        FALSE,
+                        0,
+                        NULL,
+                        NULL,
+                        &tracy_si,
+                        &tracy_pi)) {
+                    printf("   Tracy Profiler launched (PID: %lu)\n", (unsigned long)tracy_pi.dwProcessId);
+                    CloseHandle(tracy_pi.hThread);
+                    CloseHandle(tracy_pi.hProcess);
+                    tracy_launched = 1;
+                    break;
+                }
+            }
+        }
+        if (!tracy_launched) {
+            printf("   Tracy Profiler not found (optional)\n");
+            printf("   Download from: https://github.com/wolfpld/tracy/releases\n");
+        }
+    }
+    
     /* Launch the engine in a separate process */
     STARTUPINFOA si = {0};
     PROCESS_INFORMATION pi = {0};
@@ -2058,8 +2104,8 @@ static void print_usage(void)
 #endif
     printf("\n");
     printf("Targets:\n");
-    printf("  all          Build everything (default)\n");
-    printf("  run          Build everything, launch engine, and watch for changes\n");
+    printf("  run          Build everything, launch engine, and watch for changes (default)\n");
+    printf("  all          Build everything\n");
     printf("  tracy        Build TracyClient static library\n");
     printf("  sdl3         Build SDL3 shared library\n");
     printf("  spirvcross   Build SPIRV-Cross shared library\n");
@@ -2082,7 +2128,7 @@ int main(int argc, char *argv[])
     if (find_tools() != 0) return 1;
 
     if (argc < 2) {
-        target = "all";
+        target = "run";
     } else {
         target = argv[1];
     }

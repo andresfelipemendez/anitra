@@ -1,6 +1,7 @@
 #ifndef GAME_H
 #define GAME_H
 
+#include "arena.h"
 #include "debug_render.h"
 #include "draw_list.h"
 
@@ -101,10 +102,12 @@ typedef struct camera {
 } camera;
 
 typedef struct game {
+  struct arena arena;
+  struct arena *gameplay;    /* sub-arena for engine/gameplay allocations */
+
   double _t_prev;
 
   debug_renderer debug_renderer;
-  entity entities[8];
   draw_list draw_list;
 
   camera camera;

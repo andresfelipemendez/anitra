@@ -28,7 +28,7 @@ static void push_sprite(draw_list* dl, int texture_id, float x, float y,
                         float uv_w, float uv_h,
                         float r, float g, float b, float a) {
     draw_command* cmd;
-    if (dl->sprite_count >= MAX_DRAW_COMMANDS) return;
+    if (dl->sprite_count >= dl->sprite_capacity) return;
     cmd = &dl->sprites[dl->sprite_count++];
     cmd->texture_id = texture_id;
     cmd->x = x; cmd->y = y;
@@ -88,7 +88,6 @@ void render_tiles(game* g) {
     int rows = sizeof(level) / sizeof(level[0]);
     int cols = sizeof(level[0]) / sizeof(level[0][0]);
     int y, x;
-
     for (y = 0; y < rows; y++) {
         for (x = 0; x < cols; x++) {
             int tile = level[rows - 1 - y][cols - 1 - x];

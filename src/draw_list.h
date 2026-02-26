@@ -19,10 +19,12 @@ typedef struct debug_line_command {
 } debug_line_command;
 
 typedef struct draw_list {
-    draw_command sprites[MAX_DRAW_COMMANDS];
+    draw_command *sprites;
     int sprite_count;
-    debug_line_command lines[MAX_DEBUG_LINES];
+    int sprite_capacity;
+    debug_line_command *lines;
     int line_count;
+    int line_capacity;
     float view_matrix[16];
     float ortho_projection[16];
 } draw_list;

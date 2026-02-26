@@ -11,7 +11,8 @@ extern const animation_clip player_attack_anim;
 
 typedef struct Scene {
     int entity_count;
-    entity entities[8];
+    int entity_capacity;
+    entity *entities;
 } Scene;
 
 extern Scene scene;
