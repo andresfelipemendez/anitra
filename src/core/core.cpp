@@ -4,6 +4,7 @@
 #include <externals.h>
 #include <game.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -55,6 +56,9 @@ EXPORT void init_core() {
 #endif
 
   begin_game_loop(g);
+  destroy_engine(&g);
+  end_externals(&g);
+  exit(0);
 }
 
 void begin_game_loop(game &g) {
