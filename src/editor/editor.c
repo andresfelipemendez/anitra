@@ -297,8 +297,9 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
         {
             int win_idx = dock_window_for_sdl(d, evwin);
             if (win_idx >= 0) {
-                float mx = ev->button.x;
-                float my = ev->button.y;
+                float density = SDL_GetWindowPixelDensity(evwin);
+                float mx = ev->button.x * density;  /* logical → pixel */
+                float my = ev->button.y * density;
                 int hit_node = -1;
                 PanelId hit_panel = PANEL_GAME;
                 int hit_tab_idx = -1;
@@ -310,13 +311,15 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
                         hn->active_tab = hit_tab_idx;
                         return 1;
                     }
-                    /* Clicked the active tab — start drag */
+                    /* Clicked the active tab — start drag.
+                       Store grab position in logical coords (mx/my are pixel here,
+                       so divide back) for consistent threshold check. */
                     drag->phase = DRAG_PENDING;
                     drag->panel = hit_panel;
                     drag->source_node = hit_node;
                     drag->source_window = win_idx;
-                    drag->grab_x = mx;
-                    drag->grab_y = my;
+                    drag->grab_x = ev->button.x;
+                    drag->grab_y = ev->button.y;
                     return 1;
                 }
             }
@@ -339,7 +342,7 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
         if (drag->phase == DRAG_ACTIVE) {
             SDL_Window *src_win = (SDL_Window *)d->windows[drag->source_window].sdl_window;
             int ww, wh;
-            SDL_GetWindowSize(src_win, &ww, &wh);
+            SDL_GetWindowSize(src_win, &ww, &wh); /* logical coords for bounds check */
             if (mx < 0 || my < 0 || mx >= ww || my >= wh) {
                 /* Mouse left source window — tear-off or redock as tab */
                 float gx, gy;
@@ -373,12 +376,17 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
                 drag->hover_zone = DROP_NONE;
                 drag->phase = DRAG_IDLE;
             } else {
-                /* Mouse inside source window — track hover for drop zones */
+                /* Mouse inside source window — track hover for drop zones.
+                   Convert logical mouse coords to pixel space to match
+                   dock_layout which uses SDL_GetWindowSizeInPixels. */
+                float density = SDL_GetWindowPixelDensity(src_win);
+                float pmx = mx * density;
+                float pmy = my * density;
                 int root = d->windows[drag->source_window].root_node;
-                int hover = dock_node_at_point(d, root, mx, my);
+                int hover = dock_node_at_point(d, root, pmx, pmy);
                 if (hover >= 0) {
                     DockNode *hn = &d->nodes[hover];
-                    DropZone zone = dock_drop_zone(hn, mx, my);
+                    DropZone zone = dock_drop_zone(hn, pmx, pmy);
                     drag->hover_node = hover;
                     drag->hover_window = drag->source_window;
                     drag->hover_zone = zone;

@@ -166,7 +166,7 @@ static void build_composite_quad(composite_vertex *out, float px, float py,
 
 /* ── Per-window composite data (used in multi-window composite pass) ──── */
 #define MAX_COMP_QUADS 64  /* max quads per window (tabs + panels) */
-typedef enum { CQUAD_HEADER, CQUAD_PANEL } CompQuadType;
+typedef enum { CQUAD_HEADER, CQUAD_PANEL, CQUAD_DROP_ZONE } CompQuadType;
 typedef struct {
     CompQuadType type;
     PanelId panel;  /* which panel's texture to bind */
@@ -258,6 +258,46 @@ static int build_tree_quads(dock_state *d, int node_idx,
 
     qi = build_tree_quads(d, n->children[0], verts, qi, win_w, win_h, quads_out, qcount, max_quads);
     qi = build_tree_quads(d, n->children[1], verts, qi, win_w, win_h, quads_out, qcount, max_quads);
+    return qi;
+}
+
+/* Build a drop zone overlay quad for visual drag feedback.
+   Returns updated qi, or original qi if no drag is active on this window. */
+static int build_drop_zone_quad(dock_state *d, int win_idx,
+                                 composite_vertex *verts, int qi,
+                                 float win_w, float win_h,
+                                 CompQuadInfo *quads_out, int *qcount, int max_quads)
+{
+    DragState *drag = &d->drag;
+    DockNode *hn;
+    float zx, zy, zw, zh;
+
+    if (drag->phase != DRAG_ACTIVE) return qi;
+    if (drag->hover_window != win_idx) return qi;
+    if (drag->hover_node < 0 || drag->hover_zone == DROP_NONE) return qi;
+    hn = &d->nodes[drag->hover_node];
+    if (!hn->in_use) return qi;
+
+    /* Compute the highlighted zone rect */
+    zx = hn->x; zy = hn->y; zw = hn->w; zh = hn->h;
+    switch (drag->hover_zone) {
+        case DROP_LEFT:   zw = hn->w * 0.3f; break;
+        case DROP_RIGHT:  zx = hn->x + hn->w * 0.7f; zw = hn->w * 0.3f; break;
+        case DROP_TOP:    zh = hn->h * 0.3f; break;
+        case DROP_BOTTOM: zy = hn->y + hn->h * 0.7f; zh = hn->h * 0.3f; break;
+        case DROP_CENTER: break; /* full node */
+        default: return qi;
+    }
+
+    build_composite_quad(&verts[qi * 6], zx, zy, zw, zh,
+                         win_w, win_h, 0.0f, 0.0f, 1.0f, 1.0f,
+                         0.3f, 0.5f, 1.0f, 0.5f); /* semi-transparent blue overlay */
+    if (*qcount < max_quads) {
+        quads_out[*qcount].type = CQUAD_DROP_ZONE;
+        quads_out[*qcount].panel = PANEL_GAME; /* unused, just needs a value */
+        (*qcount)++;
+    }
+    qi++;
     return qi;
 }
 
@@ -2196,6 +2236,13 @@ EXPORT int init_externals(struct memory *g) {
 
         SDL_GPUColorTargetDescription ct = {0};
         ct.format = offscreen_format;
+        ct.blend_state.enable_blend = true;
+        ct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        ct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
         pipe_info.vertex_shader = comp_vs;
@@ -2926,6 +2973,10 @@ EXPORT void update_externals(struct memory *g) {
             if (!dock->windows[cwi].in_use || !dock->windows[cwi].sdl_window) continue;
 
             total_quads_count = count_tree_quads(dock, dock->windows[cwi].root_node);
+            /* Reserve +1 quad for drop zone overlay if drag active on this window */
+            if (dock->drag.phase == DRAG_ACTIVE && dock->drag.hover_window == cwi &&
+                dock->drag.hover_node >= 0 && dock->drag.hover_zone != DROP_NONE)
+                total_quads_count++;
             if (total_quads_count <= 0) continue;
 
             SDL_GetWindowSizeInPixels((SDL_Window *)dock->windows[cwi].sdl_window, &ww, &wh);
@@ -2940,9 +2991,23 @@ EXPORT void update_externals(struct memory *g) {
             comp_verts = (composite_vertex *)SDL_MapGPUTransferBuffer(gpu_device, comp_transfer, false);
 
             qcount = 0;
-            build_tree_quads(dock, dock->windows[cwi].root_node,
-                             comp_verts, 0, (float)ww, (float)wh,
-                             comp_data[cwi].quads, &qcount, MAX_COMP_QUADS);
+            {
+                int vi = 0;
+                int qcount_before;
+                vi = build_tree_quads(dock, dock->windows[cwi].root_node,
+                                      comp_verts, vi, (float)ww, (float)wh,
+                                      comp_data[cwi].quads, &qcount, MAX_COMP_QUADS);
+                qcount_before = qcount;
+                vi = build_drop_zone_quad(dock, cwi,
+                                          comp_verts, vi, (float)ww, (float)wh,
+                                          comp_data[cwi].quads, &qcount, MAX_COMP_QUADS);
+                if (qcount > qcount_before) {
+                    DockNode *dzn = &dock->nodes[dock->drag.hover_node];
+                    printf("[drop_zone] win=%d node=%d zone=%d rect=(%.0f,%.0f,%.0f,%.0f)\n",
+                           cwi, dock->drag.hover_node, dock->drag.hover_zone,
+                           dzn->x, dzn->y, dzn->w, dzn->h);
+                }
+            }
             comp_data[cwi].quad_count = qcount;
 
             SDL_UnmapGPUTransferBuffer(gpu_device, comp_transfer);
@@ -3254,6 +3319,9 @@ EXPORT void update_externals(struct memory *g) {
                     if (cq->type == CQUAD_HEADER) {
                         if (!header_textures[cq->panel]) continue;
                         tex_bind.texture = header_textures[cq->panel];
+                    } else if (cq->type == CQUAD_DROP_ZONE) {
+                        if (!white_texture) continue;
+                        tex_bind.texture = white_texture;
                     } else {
                         if (!panel_color[cq->panel]) continue;
                         tex_bind.texture = panel_color[cq->panel];

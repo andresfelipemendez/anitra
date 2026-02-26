@@ -5,7 +5,7 @@
  *           ./tcc -Blib/tcc-linux -o builder build.c      (Linux)
  * Usage:    builder [target]
  *
- * Targets:  all (default), run, tracy, sdl3, spirvcross, shadercross, shaders, harfbuzz, externals, core, engine, editor, exe, watch, clean
+ * Targets:  all (default), run, tracy, sdl3, spirvcross, shadercross, shaders, harfbuzz, externals, core, engine, editor, test, exe, watch, clean
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes the platform's native toolchain directly via system().
@@ -737,6 +737,12 @@ static int build_externals(void)
     " -Ilib/SDL3/include" \
     " src/main.c" \
     " src/core/loadlibrary_windows.c"
+
+#define TCC_TEST_CMD \
+    ".\\tcc.exe -Blib/tcc-windows" \
+    " -o build/Debug/test_dock.exe" \
+    " -Isrc/editor" \
+    " tests/test_dock.c"
 #else
 #define TCC_COMPILE_CMD \
     "./tcc -Blib/tcc-linux -shared" \
@@ -767,6 +773,12 @@ static int build_externals(void)
     " src/main.c" \
     " src/core/loadlibrary_linux.c" \
     " -ldl"
+
+#define TCC_TEST_CMD \
+    "./tcc -Blib/tcc-linux" \
+    " -o build/Debug/test_dock" \
+    " -Isrc/editor" \
+    " tests/test_dock.c"
 #endif
 
 /* ------- core (DLL) ----------------------------------------------------- */
@@ -810,6 +822,34 @@ static int build_editor(void)
     fflush(stdout);
     if (system(TCC_EDITOR_CMD) != 0) {
         printf("!! editor build failed.\n");
+        return 1;
+    }
+
+    return 0;
+}
+
+/* ------- test (compile and run unit tests) ------------------------------- */
+
+static int build_test(void)
+{
+    printf("\n=== Building tests ===\n");
+    if (ensure_dirs() != 0) return 1;
+
+    printf(">> " TCC_TEST_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_CMD) != 0) {
+        printf("!! test build failed.\n");
+        return 1;
+    }
+
+    printf("\n=== Running tests ===\n");
+    fflush(stdout);
+#ifdef _WIN32
+    if (system("build\\Debug\\test_dock.exe") != 0) {
+#else
+    if (system("build/Debug/test_dock") != 0) {
+#endif
+        printf("!! tests failed.\n");
         return 1;
     }
 
@@ -2251,6 +2291,7 @@ static void print_usage(void)
     printf("  core         Build core shared library\n");
     printf("  engine       Build engine shared library\n");
     printf("  editor       Build editor shared library\n");
+    printf("  test         Build and run unit tests\n");
     printf("  exe          Build AnitraEngine executable\n");
     printf("  watch        Watch src/engine + src/editor and recompile on change (forge)\n");
     printf("  clean        Delete build directory\n");
@@ -2294,6 +2335,8 @@ int main(int argc, char *argv[])
         rc = build_engine();
     } else if (strcmp(target, "editor") == 0) {
         rc = build_editor();
+    } else if (strcmp(target, "test") == 0) {
+        rc = build_test();
     } else if (strcmp(target, "exe") == 0) {
         rc = build_exe();
     } else if (strcmp(target, "watch") == 0) {
