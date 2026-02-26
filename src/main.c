@@ -19,10 +19,19 @@ int main() {
     }
 
     int result = init();
+
+    if (result == 0) {
+      /* Normal exit — do NOT FreeLibrary(core_copy.dll).
+         All subsystems are already torn down inside init_core().
+         FreeLibrary would cascade through the import chain
+         (core → externals → tracy) and tracy.dll's C++ static
+         destructors deadlock in DllMain (loader lock vs thread exit).
+         The OS will reclaim everything when the process terminates. */
+      return 0;
+    }
+
+    /* Core hot-reload requested — must unload so we can load the new copy */
     unloadlibrary(lib);
-
-    if (result == 0) break; /* normal exit */
-
     printf("Core reload — restarting...\n");
   }
 

@@ -15,6 +15,11 @@
 #endif
 #endif
 
+/* Forward-declare so all prototypes share the file-scope tag.
+   Without this, TCC creates a separate prototype-scope 'struct game'
+   for each function declaration parameter list.                      */
+struct game;
+
 typedef void (*init)(struct game *g);
 typedef void (*destroy)(struct game *g);
 typedef void (*update)(struct game *g);

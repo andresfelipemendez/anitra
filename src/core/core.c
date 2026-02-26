@@ -102,18 +102,9 @@ EXPORT int init_core() {
 
     reload = begin_game_loop(&g);
 
-    /* Teardown */
-    destroy_editor(&g);
-    destroy_engine(&g);
-    end_externals(&g);
-
-    unloadlibrary(engine_lib);
-    unloadlibrary(editor_lib);
-    engine_lib = NULL;
-    editor_lib = NULL;
-
 #ifdef _WIN32
-    /* Stop reload threads before returning (core.dll will be unloaded) */
+    /* Stop reload threads FIRST — they run code from this DLL,
+       so they must exit before we unload anything. */
     shutdownRequested = 1;
     if (hEngineThread) {
       WaitForSingleObject(hEngineThread, 500);
@@ -130,6 +121,16 @@ EXPORT int init_core() {
     if (hEngineEvent) CloseHandle(hEngineEvent);
     if (hEditorEvent) CloseHandle(hEditorEvent);
 #endif
+
+    /* Teardown */
+    destroy_editor(&g);
+    destroy_engine(&g);
+    end_externals(&g);
+
+    unloadlibrary(engine_lib);
+    unloadlibrary(editor_lib);
+    engine_lib = NULL;
+    editor_lib = NULL;
 
     return reload;
   }

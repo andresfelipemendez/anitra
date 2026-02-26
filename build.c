@@ -97,6 +97,7 @@ static char tool_cc[PATH_SIZE];
 static char tool_cxx[PATH_SIZE];
 static char tool_link[PATH_SIZE];
 static char tool_ar[PATH_SIZE];
+static int msvc_tools_ready = 0;
 #else
 static const char *tool_cc  = "cc";
 static const char *tool_cxx = "c++";
@@ -109,7 +110,7 @@ static const char *tool_ar  = "ar";
 /* ========================================================================= */
 
 #ifdef _WIN32
-static int find_tools(void)
+static int find_msvc_tools(void)
 {
     /*
      * Strategy:
@@ -250,6 +251,22 @@ static int find_tools(void)
 
     return 0;
 }
+
+/* Lazy init: only run vcvarsall when an MSVC target actually needs recompiling */
+static int ensure_msvc_tools(void)
+{
+    if (msvc_tools_ready) return 0;
+    if (find_msvc_tools() != 0) return 1;
+    msvc_tools_ready = 1;
+    return 0;
+}
+
+static int find_tools(void)
+{
+    /* On Windows, MSVC tools are set up lazily by ensure_msvc_tools().
+       This is a no-op so main() can call it unconditionally. */
+    return 0;
+}
 #else
 static int find_tools(void)
 {
@@ -373,7 +390,12 @@ static void rand_hex(char *buf, int len)
 /* Build targets                                                              */
 /* ========================================================================= */
 
-/* ------- tracy (static library, linked only into externals) -------------- */
+#ifdef _WIN32
+static int generate_def_from_dll(const char *dll_path, const char *def_path,
+                                 const char *library_name);
+#endif
+
+/* ------- tracy (DLL — only C++ target, exports C API for externals) ------ */
 static int build_tracy(void)
 {
     char cmd[CMD_MAX];
@@ -385,9 +407,10 @@ static int build_tracy(void)
     if (needs_rebuild("lib/tracy/public/TracyClient.cpp",
                       OBJ_TRACY_DIR "/TracyClient" OBJ_EXT)) {
 #ifdef _WIN32
+        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
             "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-            "/DTRACY_ENABLE /DTRACY_ON_DEMAND "
+            "/DTRACY_ENABLE /DTRACY_ON_DEMAND /DTRACY_EXPORTS "
             "/Ilib/tracy/public "
             "/Fo" OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
             "/Fd" OBJ_TRACY_DIR "/TracyClient.pdb "
@@ -408,19 +431,35 @@ static int build_tracy(void)
 
     if (any_rebuilt ||
         needs_rebuild(OBJ_TRACY_DIR "/TracyClient" OBJ_EXT,
-                      DEBUG_DIR "/TracyClient" LIB_EXT)) {
+                      DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT)) {
 #ifdef _WIN32
-        snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /OUT:" DEBUG_DIR "/TracyClient" LIB_EXT " "
-            OBJ_TRACY_DIR "/TracyClient" OBJ_EXT,
-            tool_ar);
+        if (ensure_msvc_tools() != 0) return 1;
+        {
+            char pdb_suffix[9];
+            rand_hex(pdb_suffix, 8);
+            snprintf(cmd, sizeof(cmd),
+                "\"%s\" /nologo /DLL /DEBUG "
+                "/PDB:" DEBUG_DIR "/tracy_%s.pdb "
+                "/OUT:" DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT " "
+                "/IMPLIB:" DEBUG_DIR "/tracy" LIB_EXT " "
+                OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
+                "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
+                tool_link, pdb_suffix);
+        }
 #else
         snprintf(cmd, sizeof(cmd),
-            "%s rcs " DEBUG_DIR "/TracyClient" LIB_EXT " "
-            OBJ_TRACY_DIR "/TracyClient" OBJ_EXT,
-            tool_ar);
+            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT " "
+            OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
+            "-lpthread -ldl",
+            tool_link);
 #endif
         if (run_cmd(cmd) != 0) return 1;
+
+#ifdef _WIN32
+        /* Generate .def for TCC linking */
+        generate_def_from_dll(DEBUG_DIR "/tracy.dll",
+                              DEBUG_DIR "/tracy.def", "tracy.dll");
+#endif
     } else {
         printf("   tracy is up to date.\n");
     }
@@ -428,10 +467,11 @@ static int build_tracy(void)
     return 0;
 }
 
-/* ------- harfbuzz (compiled once, linked into externals) ----------------- */
+/* ------- harfbuzz (DLL — C++ amalgamation, exports C API) ---------------- */
 static int build_harfbuzz(void)
 {
     char cmd[CMD_MAX];
+    int any_rebuilt = 0;
 
     printf("\n=== Building harfbuzz ===\n");
     if (ensure_dirs() != 0) return 1;
@@ -439,9 +479,10 @@ static int build_harfbuzz(void)
     if (needs_rebuild("lib/harfbuzz-src/src/harfbuzz.cc",
                        OBJ_EXT_DIR "/harfbuzz" OBJ_EXT)) {
 #ifdef _WIN32
+        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
             "\"%s\" /std:c++17 /EHsc /MD /Zi /Od /nologo /c "
-            "/DHAVE_DIRECTWRITE "
+            "/DHAVE_DIRECTWRITE /DHB_DLL_EXPORT "
             "/Ilib/harfbuzz-src/src "
             "/Fo" OBJ_EXT_DIR "/harfbuzz" OBJ_EXT " "
             "/Fd" OBJ_EXT_DIR "/harfbuzz.pdb "
@@ -457,6 +498,39 @@ static int build_harfbuzz(void)
             tool_cxx);
 #endif
         if (run_cmd(cmd) != 0) return 1;
+        any_rebuilt = 1;
+    }
+
+    if (any_rebuilt ||
+        needs_rebuild(OBJ_EXT_DIR "/harfbuzz" OBJ_EXT,
+                      DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT)) {
+#ifdef _WIN32
+        if (ensure_msvc_tools() != 0) return 1;
+        {
+            char pdb_suffix[9];
+            rand_hex(pdb_suffix, 8);
+            snprintf(cmd, sizeof(cmd),
+                "\"%s\" /nologo /DLL /DEBUG "
+                "/PDB:" DEBUG_DIR "/harfbuzz_%s.pdb "
+                "/OUT:" DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT " "
+                "/IMPLIB:" DEBUG_DIR "/harfbuzz" LIB_EXT " "
+                OBJ_EXT_DIR "/harfbuzz" OBJ_EXT " "
+                "dwrite.lib",
+                tool_link, pdb_suffix);
+        }
+#else
+        snprintf(cmd, sizeof(cmd),
+            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT " "
+            OBJ_EXT_DIR "/harfbuzz" OBJ_EXT,
+            tool_link);
+#endif
+        if (run_cmd(cmd) != 0) return 1;
+
+#ifdef _WIN32
+        /* Generate .def for TCC linking */
+        generate_def_from_dll(DEBUG_DIR "/harfbuzz.dll",
+                              DEBUG_DIR "/harfbuzz.def", "harfbuzz.dll");
+#endif
     } else {
         printf("   harfbuzz is up to date.\n");
     }
@@ -464,199 +538,155 @@ static int build_harfbuzz(void)
     return 0;
 }
 
-/* Generate a .def file from a DLL using dumpbin /exports.
-   TCC needs .def files to link against MSVC-built DLLs.
-   Uses _popen() to read dumpbin output directly (avoids cmd.exe quoting
-   issues with file redirection when paths contain spaces).
+/* Generate a .def file by parsing the PE export table directly.
+   No external tools needed (no dumpbin, no vcvarsall).
    Returns 0 on success. */
 #ifdef _WIN32
+static DWORD pe_rva_to_offset(DWORD rva,
+                               const IMAGE_SECTION_HEADER *sects, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        if (rva >= sects[i].VirtualAddress &&
+            rva <  sects[i].VirtualAddress + sects[i].SizeOfRawData)
+            return sects[i].PointerToRawData + (rva - sects[i].VirtualAddress);
+    }
+    return 0;
+}
+
 static int generate_def_from_dll(const char *dll_path, const char *def_path,
                                  const char *library_name)
 {
-    char cmd[CMD_MAX];
-    FILE *pipe;
-    FILE *def_fp;
-    char line[2048];
-    int in_exports = 0;
+    FILE *dll_fp, *def_fp;
+    IMAGE_DOS_HEADER dos;
+    DWORD pe_sig;
+    IMAGE_FILE_HEADER coff;
+    WORD opt_magic;
+    DWORD export_rva;
+    IMAGE_SECTION_HEADER sects[96];
+    IMAGE_EXPORT_DIRECTORY expdir;
+    DWORD names_off, name_rva, name_off;
+    char name_buf[512];
     int symbol_count = 0;
+    DWORD i;
+    long opt_start;
+    WORD opt_size;
 
-    /* Use dumpbin from PATH (set by vcvarsall) to avoid spaces-in-path
-       quoting issues with _popen -> cmd.exe. */
-    snprintf(cmd, sizeof(cmd),
-        "dumpbin /nologo /exports \"%s\"",
-        dll_path);
+    dll_fp = fopen(dll_path, "rb");
+    if (!dll_fp) { printf("!! cannot open %s\n", dll_path); return 1; }
 
-    pipe = _popen(cmd, "r");
-    if (!pipe) {
-        printf("!! dumpbin failed for %s\n", dll_path);
-        return 1;
+    /* DOS header → PE offset */
+    fread(&dos, sizeof(dos), 1, dll_fp);
+    if (dos.e_magic != IMAGE_DOS_SIGNATURE) {
+        printf("!! %s: not a valid PE file\n", dll_path);
+        fclose(dll_fp); return 1;
     }
 
+    /* PE signature + COFF header */
+    fseek(dll_fp, dos.e_lfanew, SEEK_SET);
+    fread(&pe_sig, 4, 1, dll_fp);
+    if (pe_sig != IMAGE_NT_SIGNATURE) {
+        printf("!! %s: bad PE signature\n", dll_path);
+        fclose(dll_fp); return 1;
+    }
+    fread(&coff, sizeof(coff), 1, dll_fp);
+    opt_start = ftell(dll_fp);
+    opt_size = coff.SizeOfOptionalHeader;
+
+    /* Read optional header magic to determine PE32 vs PE32+ */
+    fread(&opt_magic, 2, 1, dll_fp);
+
+    /* Export directory RVA is at offset 96 (PE32) or 112 (PE32+) from opt start */
+    {
+        int dd_off = (opt_magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) ? 112 : 96;
+        fseek(dll_fp, opt_start + dd_off, SEEK_SET);
+        fread(&export_rva, 4, 1, dll_fp);
+    }
+    if (export_rva == 0) {
+        printf("   %s: no exports.\n", dll_path);
+        fclose(dll_fp); return 0;
+    }
+
+    /* Read section headers for RVA→file-offset conversion */
+    fseek(dll_fp, opt_start + opt_size, SEEK_SET);
+    {
+        int n = (coff.NumberOfSections > 96) ? 96 : coff.NumberOfSections;
+        fread(sects, sizeof(IMAGE_SECTION_HEADER), n, dll_fp);
+    }
+
+    /* Read export directory */
+    fseek(dll_fp, pe_rva_to_offset(export_rva, sects, coff.NumberOfSections),
+          SEEK_SET);
+    fread(&expdir, sizeof(expdir), 1, dll_fp);
+
+    /* Write .def header */
     def_fp = fopen(def_path, "w");
-    if (!def_fp) {
-        _pclose(pipe);
-        printf("!! cannot create %s\n", def_path);
-        return 1;
-    }
-
+    if (!def_fp) { fclose(dll_fp); printf("!! cannot create %s\n", def_path); return 1; }
     fprintf(def_fp, "LIBRARY %s\nEXPORTS\n", library_name);
 
-    /* dumpbin /exports output has lines like:
-       "   1234  0  00012340  SDL_FunctionName"
-       with columns: ordinal, hint, RVA, name.
-       We detect the header "ordinal hint RVA name" then parse each row. */
-    while (fgets(line, sizeof(line), pipe)) {
-        char *p;
-        if (!in_exports) {
-            if (strstr(line, "ordinal") && strstr(line, "hint") &&
-                strstr(line, "RVA") && strstr(line, "name")) {
-                in_exports = 1;
-            }
-            continue;
-        }
-        /* Skip empty lines */
-        p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '\0' || *p == '\n' || *p == '\r') {
-            /* Empty line after exports section means we're done */
-            if (symbol_count > 0) break;
-            continue;
-        }
-        /* Parse: skip ordinal, hint, RVA (3 tokens), take 4th */
-        {
-            int col;
-            char *tok = p;
-            for (col = 0; col < 3; col++) {
-                while (*tok && *tok != ' ' && *tok != '\t') tok++;
-                while (*tok == ' ' || *tok == '\t') tok++;
-            }
-            if (*tok && *tok != '\n' && *tok != '\r') {
-                /* Trim trailing whitespace/newline */
-                char *end = tok;
-                while (*end && *end != ' ' && *end != '\t' &&
-                       *end != '\n' && *end != '\r') end++;
-                *end = '\0';
-                fprintf(def_fp, "%s\n", tok);
-                symbol_count++;
-            }
-        }
+    /* Walk the name pointer table */
+    names_off = pe_rva_to_offset(expdir.AddressOfNames, sects,
+                                 coff.NumberOfSections);
+    for (i = 0; i < expdir.NumberOfNames; i++) {
+        fseek(dll_fp, names_off + i * 4, SEEK_SET);
+        fread(&name_rva, 4, 1, dll_fp);
+        name_off = pe_rva_to_offset(name_rva, sects, coff.NumberOfSections);
+        fseek(dll_fp, name_off, SEEK_SET);
+        fread(name_buf, 1, sizeof(name_buf) - 1, dll_fp);
+        name_buf[sizeof(name_buf) - 1] = '\0';
+        fprintf(def_fp, "%s\n", name_buf);
+        symbol_count++;
     }
 
-    _pclose(pipe);
+    fclose(dll_fp);
     fclose(def_fp);
-
     printf("   Generated %s (%d exports)\n", def_path, symbol_count);
     return 0;
 }
 #endif
 
-/* ------- externals (DLL) ------------------------------------------------ */
+/* ------- externals (DLL — pure C, compiled by TCC) ---------------------- */
 static int build_externals(void)
 {
-    static const char *sources[] = {
-        "src/externals/externals.cpp"
-    };
-    static const char *objs[] = {
-        OBJ_EXT_DIR "/externals" OBJ_EXT
-    };
-    int count = sizeof(sources) / sizeof(sources[0]);
-    int i;
-    int any_rebuilt = 0;
     char cmd[CMD_MAX];
-    char obj_list[OBJ_MAX];
-    char pdb_suffix[9];
-    int pos;
 
     printf("\n=== Building externals ===\n");
 
-    for (i = 0; i < count; i++) {
-        if (needs_rebuild(sources[i], objs[i])) {
 #ifdef _WIN32
-            snprintf(cmd, sizeof(cmd),
-                "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-                "/DTRACY_ENABLE /DTRACY_ON_DEMAND "
-                COMMON_INCLUDES " "
-                "/Fo%s "
-                "/Fd" OBJ_EXT_DIR "/externals.pdb "
-                "%s",
-                tool_cxx, objs[i], sources[i]);
+    snprintf(cmd, sizeof(cmd),
+        ".\\tcc.exe -Blib/tcc-windows -shared"
+        " -o " DEBUG_DIR "/externals.dll"
+        " -DTRACY_ENABLE -DTRACY_ON_DEMAND -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD"
+        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
+        " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
+        " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
+        " src/externals/externals.c"
+        " " DEBUG_DIR "/SDL3.def"
+        " " DEBUG_DIR "/SDL3_shadercross.def"
+        " " DEBUG_DIR "/tracy.def"
+        " " DEBUG_DIR "/harfbuzz.def");
 #else
-            snprintf(cmd, sizeof(cmd),
-                "%s -std=c++20 -fPIC -g -O0 -Wno-changes-meaning -c "
-                "-DTRACY_ENABLE -DTRACY_ON_DEMAND "
-                COMMON_INCLUDES " "
-                "-o %s "
-                "%s",
-                tool_cxx, objs[i], sources[i]);
+    snprintf(cmd, sizeof(cmd),
+        "./tcc -Blib/tcc-linux -shared"
+        " -o " DEBUG_DIR "/libexternals.so"
+        " -DTRACY_ENABLE -DTRACY_ON_DEMAND"
+        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
+        " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
+        " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
+        " src/externals/externals.c"
+        " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -ltracy -lharfbuzz"
+        " -lpthread -ldl -lm");
 #endif
-            if (run_cmd(cmd) != 0) return 1;
-            any_rebuilt = 1;
-        }
-    }
-
-    if (any_rebuilt ||
-        needs_rebuild(objs[0], DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT) ||
-        needs_rebuild(OBJ_EXT_DIR "/harfbuzz" OBJ_EXT,
-                      DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT)) {
-        /* Build object list string */
-        pos = 0;
-        for (i = 0; i < count; i++) {
-            pos += snprintf(obj_list + pos, sizeof(obj_list) - pos,
-                            "%s ", objs[i]);
-            if (pos >= (int)sizeof(obj_list)) {
-                printf("!! object list too long\n");
-                return 1;
-            }
-        }
-        pos += snprintf(obj_list + pos, sizeof(obj_list) - pos,
-                        OBJ_EXT_DIR "/harfbuzz" OBJ_EXT " ");
-
-#ifdef _WIN32
-        rand_hex(pdb_suffix, 8);
-
-        snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /DLL /DEBUG "
-            "/PDB:" DEBUG_DIR "/externals_%s.pdb "
-            "/OUT:" DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT " "
-            "/IMPLIB:" DEBUG_DIR "/externals" LIB_EXT " "
-            "%s"
-            DEBUG_DIR "/SDL3" LIB_EXT " "
-            DEBUG_DIR "/SDL3_shadercross" LIB_EXT " "
-            DEBUG_DIR "/TracyClient" LIB_EXT " "
-            "ws2_32.lib dbghelp.lib advapi32.lib user32.lib dwrite.lib",
-            tool_link, pdb_suffix, obj_list);
-#else
-        (void)pdb_suffix;
-        snprintf(cmd, sizeof(cmd),
-            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "externals" DLL_EXT " "
-            "%s"
-            DEBUG_DIR "/TracyClient" LIB_EXT " "
-            "-L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross "
-            "-lpthread -ldl -lm",
-            tool_link, obj_list);
-#endif
-        if (run_cmd(cmd) != 0) return 1;
-
-#ifdef _WIN32
-        /* Regenerate .def for TCC linking after rebuild */
-        generate_def_from_dll(DEBUG_DIR "/externals.dll",
-                              DEBUG_DIR "/externals.def", "externals.dll");
-#endif
-    } else {
-        printf("   externals is up to date.\n");
+    printf(">> %s\n", cmd);
+    if (system(cmd) != 0) {
+        printf("!! externals build failed\n");
+        return 1;
     }
 
 #ifdef _WIN32
-    /* Ensure .def file exists for TCC linking (core.dll needs it) */
-    {
-        FILE *chk = fopen(DEBUG_DIR "/externals.def", "r");
-        if (chk) {
-            fclose(chk);
-        } else {
-            generate_def_from_dll(DEBUG_DIR "/externals.dll",
-                                  DEBUG_DIR "/externals.def", "externals.dll");
-        }
-    }
+    /* Generate .def for TCC linking (core.dll needs it) */
+    generate_def_from_dll(DEBUG_DIR "/externals.dll",
+                          DEBUG_DIR "/externals.def", "externals.dll");
 #endif
 
     return 0;
@@ -1690,6 +1720,10 @@ static int build_sdl3(void)
         if (!needs_rebuild(src, obj))
             continue;
 
+#ifdef _WIN32
+        if (ensure_msvc_tools() != 0) return 1;
+#endif
+
         /* Detect C++ by extension */
         ext = strrchr(src, '.');
         is_cpp = (ext && strcmp(ext, ".cpp") == 0);
@@ -1765,6 +1799,7 @@ static int build_sdl3(void)
         fclose(rsp);
 
 #ifdef _WIN32
+        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
             "\"%s\" /nologo /DLL /DEBUG "
             "/OUT:" DEBUG_DIR "/SDL3" DLL_EXT " "
@@ -1851,6 +1886,7 @@ static int build_spirvcross(void)
             continue;
 
 #ifdef _WIN32
+        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
             "\"%s\" /std:c++17 /EHsc /MD /O2 /nologo /c "
             "/DSPVC_EXPORT_SYMBOLS "
@@ -1901,6 +1937,7 @@ static int build_spirvcross(void)
         fclose(rsp);
 
 #ifdef _WIN32
+        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
             "\"%s\" /nologo /DLL /DEBUG "
             "/OUT:" DEBUG_DIR "/spirv-cross-c-shared" DLL_EXT " "
@@ -1933,6 +1970,7 @@ static int build_shadercross(void)
     if (needs_rebuild("lib/SDL_shadercross/src/SDL_shadercross.c",
                       OBJ_SHADERCROSS_DIR "/SDL_shadercross" OBJ_EXT)) {
 #ifdef _WIN32
+        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
             "\"%s\" /TC /MD /O2 /nologo /c "
             "/DDLL_EXPORT "
@@ -1965,6 +2003,7 @@ static int build_shadercross(void)
 #ifdef _WIN32
         needs_rebuild(OBJ_SHADERCROSS_DIR "/SDL_shadercross" OBJ_EXT,
                       DEBUG_DIR "/SDL3_shadercross" DLL_EXT)) {
+        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
             "\"%s\" /nologo /DLL /DEBUG "
             "/OUT:" DEBUG_DIR "/SDL3_shadercross" DLL_EXT " "
@@ -1975,8 +2014,25 @@ static int build_shadercross(void)
             "lib/SDL_shadercross/external/prebuilt/lib/x64/dxcompiler.lib",
             tool_link);
         if (run_cmd(cmd) != 0) return 1;
+
+        /* Generate .def for TCC linking */
+        generate_def_from_dll(DEBUG_DIR "/SDL3_shadercross.dll",
+                              DEBUG_DIR "/SDL3_shadercross.def",
+                              "SDL3_shadercross.dll");
     } else {
         printf("   SDL_shadercross is up to date.\n");
+    }
+
+    /* Ensure .def file exists even when shadercross wasn't rebuilt */
+    {
+        FILE *chk = fopen(DEBUG_DIR "/SDL3_shadercross.def", "r");
+        if (chk) {
+            fclose(chk);
+        } else {
+            generate_def_from_dll(DEBUG_DIR "/SDL3_shadercross.dll",
+                                  DEBUG_DIR "/SDL3_shadercross.def",
+                                  "SDL3_shadercross.dll");
+        }
     }
 
     /* Copy DXC runtime DLLs to build output */
