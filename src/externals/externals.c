@@ -1,5 +1,6 @@
 #include <externals.h>
 #include <game.h>
+#include <dock.h>
 #include <debug_render.h>
 #include <stdio.h>
 #include <string.h>
@@ -1077,7 +1078,7 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
 }
 
 // Game window: run Clay layout for game UI overlay, build + upload vertices
-static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, game *g) {
+static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     Clay_SetCurrentContext(clay_context);
 
     int win_w = panel_tex_w[PANEL_GAME];
@@ -1189,7 +1190,7 @@ static int profiler_flatten_arena(arena *a, uint32_t base_offset,
 }
 
 // Profiler window: run Clay layout for profiler panels, build + upload vertices
-static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, game *g) {
+static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     // Sync Clay's peak frame usage into our sub-arenas for profiler display.
     // nextAllocation = current bump offset (peak after EndLayout).
     if (clay_arena_game && clay_context)
@@ -1498,7 +1499,8 @@ static void ensure_panel_textures(dock_state *d);
 // init_externals
 // ---------------------------------------------------------------------------
 
-EXPORT int init_externals(struct game *g) {
+EXPORT int init_externals(struct memory *g) {
+    dock_state *dock = NULL;
 
     // 1. Init SDL
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -2109,16 +2111,21 @@ EXPORT int init_externals(struct game *g) {
 
     // Initialize arena (single allocation for all engine memory)
     {
-        uint32_t arena_size = 16 * 1024 * 1024; // 16 MB
+        uint32_t arena_size = 32 * 1024 * 1024; // 32 MB
         void *arena_mem = malloc(arena_size);
         arena_init(&g->arena, arena_mem, arena_size);
         printf("Arena initialized (%u bytes)\n", arena_size);
     }
 
-    // Initialize Clay UI — game window (sub-arena so profiler can track usage)
+    // Allocate editor sub-arena (dock state, editor-specific allocations)
+    g->editor_arena = arena_alloc_subarena(&g->arena, 10 * 1024 * 1024, 16, "editor");
+    g->editor.dock = arena_alloc(g->editor_arena, sizeof(dock_state), 16, "dock_state");
+    dock = (dock_state *)g->editor.dock;
+
+    // Initialize Clay UI — game context (from main arena, for in-game UI: pause menu, HUD)
     {
         uint64_t clay_mem_size = Clay_MinMemorySize();
-        clay_arena_game = arena_alloc_subarena(&g->arena, (uint32_t)clay_mem_size, 16, "clay_ui");
+        clay_arena_game = arena_alloc_subarena(&g->arena, (uint32_t)clay_mem_size, 16, "clay_game");
 
         Clay_Arena clay_arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem_size, clay_arena_game->base);
 
@@ -2128,13 +2135,13 @@ EXPORT int init_externals(struct game *g) {
         Clay_ErrorHandler err_handler = {0};
         clay_context = Clay_Initialize(clay_arena, (Clay_Dimensions){(float)window_w, (float)window_h}, err_handler);
         Clay_SetMeasureTextFunction(clay_measure_text, NULL);
-        printf("Clay game context initialized (%llu bytes from arena)\n", (unsigned long long)clay_mem_size);
+        printf("Clay game context initialized (%llu bytes from main arena)\n", (unsigned long long)clay_mem_size);
     }
 
-    // Initialize Clay UI — profiler window (sub-arena so profiler can track usage)
+    // Initialize Clay UI — editor context (from editor_arena, for profiler/editor panels)
     {
         uint64_t clay_mem_size = Clay_MinMemorySize();
-        clay_arena_prof = arena_alloc_subarena(&g->arena, (uint32_t)clay_mem_size, 16, "clay_profiler");
+        clay_arena_prof = arena_alloc_subarena(g->editor_arena, (uint32_t)clay_mem_size, 16, "clay_editor");
 
         Clay_Arena clay_arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem_size, clay_arena_prof->base);
         Clay_ErrorHandler err_handler = {0};
@@ -2142,14 +2149,18 @@ EXPORT int init_externals(struct game *g) {
         Clay_SetCurrentContext(profiler_clay_context);
         Clay_SetMeasureTextFunction(clay_measure_text, NULL);
         Clay_SetCurrentContext(clay_context);  // restore game context
-        printf("Clay profiler context initialized (%llu bytes from arena)\n", (unsigned long long)clay_mem_size);
+        printf("Clay editor context initialized (%llu bytes from editor_arena)\n", (unsigned long long)clay_mem_size);
     }
 
+    // Publish Clay contexts to memory struct (engine.dll uses clay_game, editor.dll uses clay_editor)
+    g->clay_game = clay_context;
+    g->clay_editor = profiler_clay_context;
+
     // Initialize dock system (single window, three-column layout)
-    if (!g->dock.initialized) {
-        dock_init_default(&g->dock);
+    if (!dock->initialized) {
+        dock_init_default(dock);
     }
-    g->dock.windows[0].sdl_window = window;
+    dock->windows[0].sdl_window = window;
     g->editor.open = 1;
     g->editor.window = window;  /* editor gets the main window handle for focus/mouse checks */
 
@@ -2256,8 +2267,8 @@ EXPORT int init_externals(struct game *g) {
     {
         int win_w, win_h;
         SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
-        dock_layout(&g->dock, 0, win_w, win_h);
-        ensure_panel_textures(&g->dock);
+        dock_layout(dock, 0, win_w, win_h);
+        ensure_panel_textures(dock);
     }
 
     // Init game timing
@@ -2274,7 +2285,7 @@ EXPORT int init_externals(struct game *g) {
 // Input handling
 // ---------------------------------------------------------------------------
 
-static void update_input(game *g) {
+static void update_input(memory *g) {
     g->input.horizontal = 0.0f;
     g->input.vertical = 0.0f;
     g->input.input_mask = 0;
@@ -2434,7 +2445,8 @@ static void ensure_panel_textures(dock_state *d)
 // update_externals
 // ---------------------------------------------------------------------------
 
-EXPORT void update_externals(struct game *g) {
+EXPORT void update_externals(struct memory *g) {
+    dock_state *dock = (dock_state *)g->editor.dock;
     TracyCZoneN(ctx_update, "update_externals", 1);
     // --- Timing ---
     double now = (double)SDL_GetTicks() / 1000.0;
@@ -2462,7 +2474,7 @@ EXPORT void update_externals(struct game *g) {
                 int wi;
                 int is_main = 0;
                 for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
-                    SDL_Window *dw = (SDL_Window *)g->dock.windows[wi].sdl_window;
+                    SDL_Window *dw = (SDL_Window *)dock->windows[wi].sdl_window;
                     if (dw && SDL_GetWindowID(dw) == closing_id) {
                         if (wi == 0) {
                             is_main = 1;
@@ -2471,24 +2483,24 @@ EXPORT void update_externals(struct game *g) {
                             PanelId recovered[PANEL_COUNT];
                             int rcount = 0;
                             int ri;
-                            dock_collect_leaves(&g->dock, g->dock.windows[wi].root_node,
+                            dock_collect_leaves(dock, dock->windows[wi].root_node,
                                                 recovered, &rcount, PANEL_COUNT);
-                            dock_free_subtree(&g->dock, g->dock.windows[wi].root_node);
+                            dock_free_subtree(dock, dock->windows[wi].root_node);
 
                             /* Add recovered panels as tabs to main window's first leaf */
                             {
                                 int main_leaf = -1;
                                 int mni;
                                 for (mni = 0; mni < MAX_DOCK_NODES; mni++) {
-                                    DockNode *mn = &g->dock.nodes[mni];
+                                    DockNode *mn = &dock->nodes[mni];
                                     if (mn->in_use && mn->type == DOCK_TABS && mn->panel_count > 0) {
                                         /* Check if this node belongs to window 0 */
-                                        int chk = dock_leaf_for_panel(&g->dock, g->dock.windows[0].root_node, mn->panels[0]);
+                                        int chk = dock_leaf_for_panel(dock, dock->windows[0].root_node, mn->panels[0]);
                                         if (chk == mni) { main_leaf = mni; break; }
                                     }
                                 }
                                 if (main_leaf >= 0) {
-                                    DockNode *ml = &g->dock.nodes[main_leaf];
+                                    DockNode *ml = &dock->nodes[main_leaf];
                                     for (ri = 0; ri < rcount && ml->panel_count < MAX_TABS_PER_NODE; ri++) {
                                         ml->panels[ml->panel_count] = recovered[ri];
                                         ml->panel_count++;
@@ -2499,8 +2511,8 @@ EXPORT void update_externals(struct game *g) {
                             /* Release and destroy the tear-off window */
                             SDL_ReleaseWindowFromGPUDevice(gpu_device, dw);
                             SDL_DestroyWindow(dw);
-                            g->dock.windows[wi].in_use = 0;
-                            g->dock.windows[wi].sdl_window = NULL;
+                            dock->windows[wi].in_use = 0;
+                            dock->windows[wi].sdl_window = NULL;
                         }
                         break;
                     }
@@ -2529,11 +2541,11 @@ EXPORT void update_externals(struct game *g) {
     // --- Process dock commands from editor.dll ---
 
     // Tear-off: editor set cmd_tear_off, we create the window + mutate tree
-    if (g->dock.cmd_tear_off) {
-        PanelId tp = g->dock.drag.panel;
+    if (dock->cmd_tear_off) {
+        PanelId tp = dock->drag.panel;
         int twi, new_win_idx = -1;
         for (twi = 1; twi < MAX_DOCK_WINDOWS; twi++) {
-            if (!g->dock.windows[twi].in_use) { new_win_idx = twi; break; }
+            if (!dock->windows[twi].in_use) { new_win_idx = twi; break; }
         }
         if (new_win_idx >= 0) {
             SDL_Window *new_win = SDL_CreateWindow(panel_names[tp],
@@ -2542,85 +2554,104 @@ EXPORT void update_externals(struct game *g) {
                 int new_root;
                 int src_win_idx;
                 SDL_SetWindowPosition(new_win,
-                    (int)(g->dock.cmd_screen_x - 300),
-                    (int)(g->dock.cmd_screen_y - 12));
+                    (int)(dock->cmd_screen_x - 300),
+                    (int)(dock->cmd_screen_y - 12));
                 SDL_ClaimWindowForGPUDevice(gpu_device, new_win);
 
-                new_root = dock_alloc_node(&g->dock);
-                g->dock.nodes[new_root].panels[0] = tp;
-                g->dock.nodes[new_root].panel_count = 1;
-                g->dock.nodes[new_root].active_tab = 0;
+                new_root = dock_alloc_node(dock);
+                dock->nodes[new_root].panels[0] = tp;
+                dock->nodes[new_root].panel_count = 1;
+                dock->nodes[new_root].active_tab = 0;
 
-                g->dock.windows[new_win_idx].in_use = 1;
-                g->dock.windows[new_win_idx].sdl_window = new_win;
-                g->dock.windows[new_win_idx].root_node = new_root;
+                dock->windows[new_win_idx].in_use = 1;
+                dock->windows[new_win_idx].sdl_window = new_win;
+                dock->windows[new_win_idx].root_node = new_root;
 
-                src_win_idx = g->dock.drag.source_window;
-                dock_remove_panel(&g->dock, g->dock.drag.source_node, tp);
+                src_win_idx = dock->drag.source_window;
+                dock_remove_panel(dock, dock->drag.source_node, tp);
                 {
-                    int new_src_root = dock_collapse_empty(&g->dock, g->dock.windows[src_win_idx].root_node);
-                    g->dock.windows[src_win_idx].root_node = new_src_root;
+                    int new_src_root = dock_collapse_empty(dock, dock->windows[src_win_idx].root_node);
+                    dock->windows[src_win_idx].root_node = new_src_root;
                 }
 
-                if (g->dock.windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
-                    SDL_Window *dead_win = (SDL_Window *)g->dock.windows[src_win_idx].sdl_window;
+                if (dock->windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
+                    SDL_Window *dead_win = (SDL_Window *)dock->windows[src_win_idx].sdl_window;
                     if (dead_win) {
                         SDL_ReleaseWindowFromGPUDevice(gpu_device, dead_win);
                         SDL_DestroyWindow(dead_win);
                     }
-                    g->dock.windows[src_win_idx].in_use = 0;
-                    g->dock.windows[src_win_idx].sdl_window = NULL;
+                    dock->windows[src_win_idx].in_use = 0;
+                    dock->windows[src_win_idx].sdl_window = NULL;
                 }
             }
         }
-        g->dock.cmd_tear_off = 0;
-        g->dock.drag.phase = DRAG_IDLE;
+        dock->cmd_tear_off = 0;
+        dock->drag.phase = DRAG_IDLE;
     }
 
     // Re-dock: editor set cmd_redock, we add panel as tab + destroy empty source
-    if (g->dock.cmd_redock) {
-        PanelId rp = g->dock.drag.panel;
-        int src_win_idx = g->dock.drag.source_window;
-        int src_node = g->dock.drag.source_node;
-        int tgt_win_idx = g->dock.cmd_redock_target;
+    if (dock->cmd_redock) {
+        PanelId rp = dock->drag.panel;
+        int src_win_idx = dock->drag.source_window;
+        int src_node = dock->drag.source_node;
+        int tgt_win_idx = dock->cmd_redock_target;
 
         {
-            int tgt_root = g->dock.windows[tgt_win_idx].root_node;
+            int tgt_root = dock->windows[tgt_win_idx].root_node;
             int tgt_leaf = -1;
             int ni;
             for (ni = 0; ni < MAX_DOCK_NODES && tgt_leaf < 0; ni++) {
-                if (!g->dock.nodes[ni].in_use || g->dock.nodes[ni].type != DOCK_TABS) continue;
-                if (g->dock.nodes[ni].panel_count == 0) continue;
-                if (dock_leaf_for_panel(&g->dock, tgt_root, g->dock.nodes[ni].panels[0]) == ni)
+                if (!dock->nodes[ni].in_use || dock->nodes[ni].type != DOCK_TABS) continue;
+                if (dock->nodes[ni].panel_count == 0) continue;
+                if (dock_leaf_for_panel(dock, tgt_root, dock->nodes[ni].panels[0]) == ni)
                     tgt_leaf = ni;
             }
 
-            if (tgt_leaf >= 0 && g->dock.nodes[tgt_leaf].panel_count < MAX_TABS_PER_NODE) {
-                DockNode *tl = &g->dock.nodes[tgt_leaf];
+            if (tgt_leaf >= 0 && dock->nodes[tgt_leaf].panel_count < MAX_TABS_PER_NODE) {
+                DockNode *tl = &dock->nodes[tgt_leaf];
                 tl->panels[tl->panel_count] = rp;
                 tl->panel_count++;
                 tl->active_tab = tl->panel_count - 1;
 
-                dock_remove_panel(&g->dock, src_node, rp);
+                dock_remove_panel(dock, src_node, rp);
                 {
-                    int new_src_root = dock_collapse_empty(&g->dock, g->dock.windows[src_win_idx].root_node);
-                    g->dock.windows[src_win_idx].root_node = new_src_root;
+                    int new_src_root = dock_collapse_empty(dock, dock->windows[src_win_idx].root_node);
+                    dock->windows[src_win_idx].root_node = new_src_root;
                 }
 
-                if (g->dock.windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
-                    SDL_Window *dead_win = (SDL_Window *)g->dock.windows[src_win_idx].sdl_window;
+                if (dock->windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
+                    SDL_Window *dead_win = (SDL_Window *)dock->windows[src_win_idx].sdl_window;
                     if (dead_win) {
                         SDL_ReleaseWindowFromGPUDevice(gpu_device, dead_win);
                         SDL_DestroyWindow(dead_win);
                     }
-                    g->dock.windows[src_win_idx].in_use = 0;
-                    g->dock.windows[src_win_idx].sdl_window = NULL;
+                    dock->windows[src_win_idx].in_use = 0;
+                    dock->windows[src_win_idx].sdl_window = NULL;
                 }
             }
         }
 
-        g->dock.cmd_redock = 0;
-        g->dock.drag.phase = DRAG_IDLE;
+        dock->cmd_redock = 0;
+        dock->drag.phase = DRAG_IDLE;
+    }
+
+    // Cleanup: destroy any empty dock windows (editor set cmd_cleanup_windows)
+    if (dock->cmd_cleanup_windows) {
+        int cwi2;
+        for (cwi2 = 1; cwi2 < MAX_DOCK_WINDOWS; cwi2++) {
+            if (!dock->windows[cwi2].in_use) continue;
+            if (dock->windows[cwi2].root_node >= 0) continue;
+            {
+                SDL_Window *dead = (SDL_Window *)dock->windows[cwi2].sdl_window;
+                if (dead) {
+                    SDL_ReleaseWindowFromGPUDevice(gpu_device, dead);
+                    SDL_DestroyWindow(dead);
+                }
+                dock->windows[cwi2].in_use = 0;
+                dock->windows[cwi2].sdl_window = NULL;
+            }
+        }
+        dock->cmd_cleanup_windows = 0;
     }
 
     // --- Window + dock layout (all windows) ---
@@ -2628,22 +2659,22 @@ EXPORT void update_externals(struct game *g) {
     {
         int wi;
         for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
-            if (!g->dock.windows[wi].in_use || !g->dock.windows[wi].sdl_window) continue;
+            if (!dock->windows[wi].in_use || !dock->windows[wi].sdl_window) continue;
             {
                 int ww, wh;
-                SDL_GetWindowSizeInPixels((SDL_Window *)g->dock.windows[wi].sdl_window, &ww, &wh);
-                dock_layout(&g->dock, wi, ww, wh);
+                SDL_GetWindowSizeInPixels((SDL_Window *)dock->windows[wi].sdl_window, &ww, &wh);
+                dock_layout(dock, wi, ww, wh);
             }
         }
     }
     /* Main window dimensions (for ortho etc.) */
     SDL_GetWindowSizeInPixels(window, &display_w, &display_h);
-    ensure_panel_textures(&g->dock);
+    ensure_panel_textures(dock);
 
     /* Game panel size (used for ortho projection) — search all windows */
     {
         int game_win_idx;
-        int game_node = dock_find_leaf_for_panel_global(&g->dock, PANEL_GAME, &game_win_idx);
+        int game_node = dock_find_leaf_for_panel_global(dock, PANEL_GAME, &game_win_idx);
         if (game_node >= 0) {
             g->width = panel_tex_w[PANEL_GAME];
             g->height = panel_tex_h[PANEL_GAME];
@@ -2656,15 +2687,15 @@ EXPORT void update_externals(struct game *g) {
     /* Editor panel rect (for coordinate transforms in editor.dll) — search all windows */
     {
         int ed_win_idx;
-        int ed_node = dock_find_leaf_for_panel_global(&g->dock, PANEL_EDITOR, &ed_win_idx);
+        int ed_node = dock_find_leaf_for_panel_global(dock, PANEL_EDITOR, &ed_win_idx);
         if (ed_node >= 0) {
-            DockNode *en = &g->dock.nodes[ed_node];
+            DockNode *en = &dock->nodes[ed_node];
             g->editor.panel_x = en->x;
             g->editor.panel_y = en->y + DOCK_HEADER_HEIGHT;
             g->editor.panel_w = en->w;
             g->editor.panel_h = en->h - DOCK_HEADER_HEIGHT;
             /* Set editor's window to whichever dock window contains it */
-            g->editor.window = (ed_win_idx >= 0) ? g->dock.windows[ed_win_idx].sdl_window : window;
+            g->editor.window = (ed_win_idx >= 0) ? dock->windows[ed_win_idx].sdl_window : window;
         } else {
             g->editor.panel_x = 0;
             g->editor.panel_y = 0;
@@ -2892,12 +2923,12 @@ EXPORT void update_externals(struct game *g) {
             SDL_GPUBufferRegion comp_dst;
             int ww, wh;
 
-            if (!g->dock.windows[cwi].in_use || !g->dock.windows[cwi].sdl_window) continue;
+            if (!dock->windows[cwi].in_use || !dock->windows[cwi].sdl_window) continue;
 
-            total_quads_count = count_tree_quads(&g->dock, g->dock.windows[cwi].root_node);
+            total_quads_count = count_tree_quads(dock, dock->windows[cwi].root_node);
             if (total_quads_count <= 0) continue;
 
-            SDL_GetWindowSizeInPixels((SDL_Window *)g->dock.windows[cwi].sdl_window, &ww, &wh);
+            SDL_GetWindowSizeInPixels((SDL_Window *)dock->windows[cwi].sdl_window, &ww, &wh);
 
             total_quads = (Uint32)total_quads_count;
             comp_buf_size = total_quads * 6 * (Uint32)sizeof(composite_vertex);
@@ -2909,7 +2940,7 @@ EXPORT void update_externals(struct game *g) {
             comp_verts = (composite_vertex *)SDL_MapGPUTransferBuffer(gpu_device, comp_transfer, false);
 
             qcount = 0;
-            build_tree_quads(&g->dock, g->dock.windows[cwi].root_node,
+            build_tree_quads(dock, dock->windows[cwi].root_node,
                              comp_verts, 0, (float)ww, (float)wh,
                              comp_data[cwi].quads, &qcount, MAX_COMP_QUADS);
             comp_data[cwi].quad_count = qcount;
@@ -3189,10 +3220,10 @@ EXPORT void update_externals(struct game *g) {
             SDL_GPURenderPass *comp_pass;
             SDL_GPUColorTargetInfo comp_ct;
 
-            if (!g->dock.windows[cwi].in_use || !g->dock.windows[cwi].sdl_window) continue;
+            if (!dock->windows[cwi].in_use || !dock->windows[cwi].sdl_window) continue;
             if (comp_data[cwi].quad_count <= 0 || !comp_data[cwi].gpu_buf) continue;
 
-            dw = (SDL_Window *)g->dock.windows[cwi].sdl_window;
+            dw = (SDL_Window *)dock->windows[cwi].sdl_window;
             if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, dw, &swapchain_texture, &sc_w, &sc_h)
                 || !swapchain_texture) continue;
 
@@ -3263,7 +3294,8 @@ EXPORT void update_externals(struct game *g) {
 // end_externals
 // ---------------------------------------------------------------------------
 
-EXPORT void end_externals(struct game *g) {
+EXPORT void end_externals(struct memory *g) {
+    dock_state *dock = (dock_state *)g->editor.dock;
     // Release textures
     for (int i = 0; i < TEXTURE_COUNT; i++) {
         if (gpu_textures[i]) {
@@ -3367,11 +3399,11 @@ EXPORT void end_externals(struct game *g) {
     {
         int i;
         for (i = 1; i < MAX_DOCK_WINDOWS; i++) {
-            if (g->dock.windows[i].in_use && g->dock.windows[i].sdl_window) {
-                SDL_ReleaseWindowFromGPUDevice(gpu_device, (SDL_Window *)g->dock.windows[i].sdl_window);
-                SDL_DestroyWindow((SDL_Window *)g->dock.windows[i].sdl_window);
-                g->dock.windows[i].in_use = 0;
-                g->dock.windows[i].sdl_window = NULL;
+            if (dock->windows[i].in_use && dock->windows[i].sdl_window) {
+                SDL_ReleaseWindowFromGPUDevice(gpu_device, (SDL_Window *)dock->windows[i].sdl_window);
+                SDL_DestroyWindow((SDL_Window *)dock->windows[i].sdl_window);
+                dock->windows[i].in_use = 0;
+                dock->windows[i].sdl_window = NULL;
             }
         }
     }
@@ -3402,11 +3434,11 @@ EXPORT void end_externals(struct game *g) {
 // Engine callbacks
 // ---------------------------------------------------------------------------
 
-EXPORT void init_engine(struct game *g) {
+EXPORT void init_engine(struct memory *g) {
     g_init(g);
 }
 
-EXPORT void destroy_engine(struct game *g) {
+EXPORT void destroy_engine(struct memory *g) {
     g_destroy(g);
 }
 
@@ -3426,11 +3458,11 @@ EXPORT void assign_update(update func) {
 // Editor callbacks
 // ---------------------------------------------------------------------------
 
-EXPORT void init_editor(struct game *g) {
+EXPORT void init_editor(struct memory *g) {
     if (g_editor_init) g_editor_init(g);
 }
 
-EXPORT void destroy_editor(struct game *g) {
+EXPORT void destroy_editor(struct memory *g) {
     if (g_editor_destroy) g_editor_destroy(g);
 }
 

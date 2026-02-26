@@ -2,7 +2,7 @@
 #define DOCK_H
 
 /* ── Docking panel system ──────────────────────────────────────────────────
-   Binary tree of splits + tab groups.  Stored in game.h as plain data
+   Binary tree of splits + tab groups.  Allocated from editor_arena as plain data
    (flat arrays with integer indices) so the state survives DLL hot-reload.
    ────────────────────────────────────────────────────────────────────────── */
 
@@ -98,6 +98,7 @@ typedef struct {
     float      cmd_screen_y;
     int        cmd_redock;          /* 1 = redock drag.panel into target      */
     int        cmd_redock_target;   /* target DockWindow index                */
+    int        cmd_cleanup_windows; /* 1 = destroy any empty dock windows     */
 } dock_state;
 
 /* ── Functions (implemented inline below) ──────────────────────────────── */
@@ -319,6 +320,8 @@ static int  dock_find_leaf_for_panel_global(dock_state *d, PanelId panel, int *o
 static void dock_collect_leaves(dock_state *d, int node_idx, PanelId *out, int *count, int max_count);
 static int  header_hit_test_node(dock_state *d, int node_idx, float mx, float my,
                                   int *out_node, PanelId *out_panel, int *out_tab_idx);
+static void dock_split_at(dock_state *d, int win_idx, int target_node,
+                           PanelId new_panel, DropZone zone);
 
 /* Find the parent split node of a given child.
    Returns parent index, writes 0 or 1 to *out_slot.
@@ -510,6 +513,54 @@ static int header_hit_test_node(dock_state *d, int node_idx, float mx, float my,
 
     if (header_hit_test_node(d, n->children[0], mx, my, out_node, out_panel, out_tab_idx)) return 1;
     return header_hit_test_node(d, n->children[1], mx, my, out_node, out_panel, out_tab_idx);
+}
+
+/* Split a leaf node by inserting a new panel beside or above/below it.
+   Creates a new SPLIT node that replaces target_node in the tree.
+   zone must be DROP_LEFT, DROP_RIGHT, DROP_TOP, or DROP_BOTTOM.
+   For DROP_CENTER, use direct tab insertion instead. */
+static void dock_split_at(dock_state *d, int win_idx, int target_node,
+                           PanelId new_panel, DropZone zone)
+{
+    int new_leaf, split_node, parent, slot;
+    DockNode *sn;
+
+    if (zone == DROP_NONE || zone == DROP_CENTER) return;
+    if (target_node < 0 || target_node >= MAX_DOCK_NODES) return;
+    if (!d->nodes[target_node].in_use) return;
+
+    /* 1. Allocate a new leaf for the dropped panel */
+    new_leaf = dock_alloc_node(d);
+    if (new_leaf < 0) return;
+    d->nodes[new_leaf].type = DOCK_TABS;
+    d->nodes[new_leaf].panels[0] = new_panel;
+    d->nodes[new_leaf].panel_count = 1;
+    d->nodes[new_leaf].active_tab = 0;
+
+    /* 2. Allocate a new split node */
+    split_node = dock_alloc_node(d);
+    if (split_node < 0) { dock_free_node(d, new_leaf); return; }
+    sn = &d->nodes[split_node];
+    sn->type = (zone == DROP_LEFT || zone == DROP_RIGHT) ? DOCK_SPLIT_H : DOCK_SPLIT_V;
+    sn->ratio = 0.5f;
+
+    /* 3. Set children: new panel goes on the side the user dropped */
+    if (zone == DROP_LEFT || zone == DROP_TOP) {
+        sn->children[0] = new_leaf;     /* new panel first  */
+        sn->children[1] = target_node;  /* existing second  */
+    } else {
+        sn->children[0] = target_node;  /* existing first   */
+        sn->children[1] = new_leaf;     /* new panel second */
+    }
+
+    /* 4. Replace target_node with split_node in the parent (or root) */
+    parent = dock_find_parent(d, d->windows[win_idx].root_node, target_node, &slot);
+    if (parent >= 0) {
+        d->nodes[parent].children[slot] = split_node;
+    } else {
+        /* target_node was the root — update window's root */
+        d->windows[win_idx].root_node = split_node;
+    }
 }
 
 #endif /* DOCK_H */

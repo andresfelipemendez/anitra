@@ -7,6 +7,6 @@
 EXPORT int init_core();
 typedef int (*init_core_func)();
 
-int begin_game_loop(game *g);
+int begin_game_loop(memory *g);
 
 #endif // CORE_H

@@ -21,7 +21,7 @@ GltfModel load_glb(const char *path, arena *a);
 void load_animations_glb(const char *path, GltfModel *model, arena *a);
 void gltf_set_gpu_device(void *dev);
 
-void update_input(game* g) {
+void update_input(memory* g) {
     entity* player;
     const float move_speed = 200.0f;
     int attack_pressed;
@@ -52,7 +52,7 @@ void update_input(game* g) {
     }
 }
 
-EXPORT void init_engine(game *g) {
+EXPORT void init_engine(memory *g) {
     /* Allocate entity storage from the gameplay sub-arena (only on first init, survives hot reload) */
     if (!scene.entities) {
         scene.entity_capacity = 64;
@@ -118,7 +118,7 @@ EXPORT void init_engine(game *g) {
     }
 }
 
-static void update_mesh3d(game *g) {
+static void update_mesh3d(memory *g) {
     mesh3d_state *m = &g->mesh3d;
     if (!m->visible || m->skeleton.joint_count == 0 || !m->skin_mats) return;
 
@@ -139,7 +139,7 @@ static void update_mesh3d(game *g) {
     }
 }
 
-EXPORT void update_engine(game *g) {
+EXPORT void update_engine(memory *g) {
     int i;
     if (!g) return;
 
@@ -175,5 +175,5 @@ EXPORT void update_engine(game *g) {
     }
 }
 
-EXPORT void destroy_engine(game *g) {
+EXPORT void destroy_engine(memory *g) {
 }

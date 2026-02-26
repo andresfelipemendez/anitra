@@ -16,14 +16,14 @@
 #endif
 
 /* Forward-declare so all prototypes share the file-scope tag.
-   Without this, TCC creates a separate prototype-scope 'struct game'
+   Without this, TCC creates a separate prototype-scope 'struct memory'
    for each function declaration parameter list.                      */
-struct game;
+struct memory;
 
-typedef void (*init)(struct game *g);
-typedef void (*destroy)(struct game *g);
-typedef void (*update)(struct game *g);
-typedef int (*handle_event)(struct game *g, void *event);
+typedef void (*init)(struct memory *g);
+typedef void (*destroy)(struct memory *g);
+typedef void (*update)(struct memory *g);
+typedef int (*handle_event)(struct memory *g, void *event);
 
 #define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
 #define HOTRELOAD_EDITOR_EVENT_NAME "Global\\ReloadEditorEvent"
@@ -34,16 +34,16 @@ typedef int (*handle_event)(struct game *g, void *event);
   typedef void (*func##_func)();
 
 #define DECLARE_FUNC_VOID_pGAME(func)                                          \
-  EXPORT void func(struct game *g);                                            \
-  typedef void (*func##_func)(struct game * g);
+  EXPORT void func(struct memory *g);                                            \
+  typedef void (*func##_func)(struct memory * g);
 
 #define DECLARE_FUNC_VOID_pCHAR(func)                                          \
   EXPORT void func(const char *str);                                           \
   typedef void (*func##_func)(const char *str);
 
 #define DECLARE_FUNC_INT_pGAME(func)                                           \
-  EXPORT int func(struct game *g);                                             \
-  typedef int (*func##_func)(struct game * g);
+  EXPORT int func(struct memory *g);                                             \
+  typedef int (*func##_func)(struct memory * g);
 
 #define DECLARE_FUNC_VOID_pINIT(func)                       \
   EXPORT void func(init g);                                 \

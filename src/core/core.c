@@ -66,7 +66,7 @@ EXPORT int init_core() {
 #endif
 
   {
-    game g = {0};
+    memory g = {0};
     int reload;
 
     /* Load engine DLL (copy first so engine.dll stays unlocked) */
@@ -136,7 +136,7 @@ EXPORT int init_core() {
   }
 }
 
-int begin_game_loop(game *g) {
+int begin_game_loop(memory *g) {
 #ifdef _WIN32
   HANDLE hCoreEvent = OpenEvent(EVENT_MODIFY_STATE | SYNCHRONIZE,
                                 FALSE, HOTRELOAD_CORE_EVENT_NAME);

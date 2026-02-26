@@ -52,7 +52,7 @@ static void add_line(editor_state *e, Vec3 a, Vec3 b, float r, float g, float bl
 
 /* ── Line building ─────────────────────────────────────────────── */
 
-static void build_lines(game *g) {
+static void build_lines(memory *g) {
     editor_state *e = &g->editor;
     float gc = 0.3f;
     int i;
@@ -155,7 +155,7 @@ static void build_lines(game *g) {
 
 /* ── Camera input (polling-based) ──────────────────────────────── */
 
-static void update_camera(game *g) {
+static void update_camera(memory *g) {
     editor_state *e = &g->editor;
     const bool *keys;
     float dt, spd, dx, dy;
@@ -191,7 +191,7 @@ static void update_camera(game *g) {
 
 /* ── Gizmo hover detection (polling-based) ─────────────────────── */
 
-static void update_gizmo_hover(game *g) {
+static void update_gizmo_hover(memory *g) {
     editor_state *e = &g->editor;
     SDL_Window *mouse_win;
     int i;
@@ -254,7 +254,7 @@ static void update_gizmo_hover(game *g) {
 
 /* ── Public API ────────────────────────────────────────────────── */
 
-EXPORT void init_editor(game *g) {
+EXPORT void init_editor(memory *g) {
     editor_state *e = &g->editor;
     if (e->initialized) return;
 
@@ -271,21 +271,21 @@ EXPORT void init_editor(game *g) {
     e->initialized = 1;
 }
 
-EXPORT void update_editor(game *g) {
+EXPORT void update_editor(memory *g) {
     if (!g->editor.open) return;
     update_camera(g);
     update_gizmo_hover(g);
     build_lines(g);
 }
 
-EXPORT void destroy_editor(game *g) {
+EXPORT void destroy_editor(memory *g) {
     (void)g;
 }
 
-EXPORT int editor_handle_event(game *g, void *event_ptr) {
+EXPORT int editor_handle_event(memory *g, void *event_ptr) {
     editor_state *e = &g->editor;
     SDL_Event *ev = (SDL_Event *)event_ptr;
-    dock_state *d = &g->dock;
+    dock_state *d = (dock_state *)g->editor.dock;
     DragState *drag = &d->drag;
     SDL_Window *evwin;
 
@@ -323,7 +323,7 @@ EXPORT int editor_handle_event(game *g, void *event_ptr) {
         }
     }
 
-    /* ── Dock: Mouse motion — threshold check, tear-off/redock detection ── */
+    /* ── Dock: Mouse motion — threshold, hover tracking, tear-off detection ── */
     if (ev->type == SDL_EVENT_MOUSE_MOTION && drag->phase != DRAG_IDLE) {
         float mx = ev->motion.x;
         float my = ev->motion.y;
@@ -341,7 +341,7 @@ EXPORT int editor_handle_event(game *g, void *event_ptr) {
             int ww, wh;
             SDL_GetWindowSize(src_win, &ww, &wh);
             if (mx < 0 || my < 0 || mx >= ww || my >= wh) {
-                /* Mouse left source window — check if over another dock window */
+                /* Mouse left source window — tear-off or redock as tab */
                 float gx, gy;
                 int found_other = -1;
                 int dwi;
@@ -362,25 +362,75 @@ EXPORT int editor_handle_event(game *g, void *event_ptr) {
                 }
 
                 if (found_other >= 0) {
-                    /* Over another dock window — request redock */
                     d->cmd_redock = 1;
                     d->cmd_redock_target = found_other;
                 } else {
-                    /* Outside all windows — request tear-off */
                     d->cmd_tear_off = 1;
                     d->cmd_screen_x = gx;
                     d->cmd_screen_y = gy;
                 }
+                drag->hover_node = -1;
+                drag->hover_zone = DROP_NONE;
                 drag->phase = DRAG_IDLE;
+            } else {
+                /* Mouse inside source window — track hover for drop zones */
+                int root = d->windows[drag->source_window].root_node;
+                int hover = dock_node_at_point(d, root, mx, my);
+                if (hover >= 0) {
+                    DockNode *hn = &d->nodes[hover];
+                    DropZone zone = dock_drop_zone(hn, mx, my);
+                    drag->hover_node = hover;
+                    drag->hover_window = drag->source_window;
+                    drag->hover_zone = zone;
+                } else {
+                    drag->hover_node = -1;
+                    drag->hover_zone = DROP_NONE;
+                }
             }
         }
-        return 1; /* consume motion events during drag */
+        return 1;
     }
 
-    /* ── Dock: Mouse button up — cancel drag ── */
+    /* ── Dock: Mouse button up — execute drop (split/tab) or cancel ── */
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
         ev->button.button == SDL_BUTTON_LEFT &&
         drag->phase != DRAG_IDLE) {
+        if (drag->phase == DRAG_ACTIVE && drag->hover_node >= 0 &&
+            drag->hover_zone != DROP_NONE) {
+            int tgt = drag->hover_node;
+            int win = drag->hover_window;
+            DropZone zone = drag->hover_zone;
+            PanelId panel = drag->panel;
+            int src_node = drag->source_node;
+            int src_win = drag->source_window;
+
+            if (zone == DROP_CENTER) {
+                /* Drop as tab into target node */
+                DockNode *tn = &d->nodes[tgt];
+                if (tn->panel_count < MAX_TABS_PER_NODE) {
+                    tn->panels[tn->panel_count] = panel;
+                    tn->panel_count++;
+                    tn->active_tab = tn->panel_count - 1;
+                }
+            } else {
+                /* Drop as split (LEFT/RIGHT/TOP/BOTTOM) */
+                dock_split_at(d, win, tgt, panel, zone);
+            }
+
+            /* Remove panel from source and collapse empty nodes */
+            dock_remove_panel(d, src_node, panel);
+            {
+                int new_root = dock_collapse_empty(d, d->windows[src_win].root_node);
+                d->windows[src_win].root_node = new_root;
+            }
+
+            /* If source window became empty, signal externals to destroy it */
+            if (d->windows[src_win].root_node < 0 && src_win != 0) {
+                d->cmd_cleanup_windows = 1;
+            }
+        }
+        drag->hover_node = -1;
+        drag->hover_zone = DROP_NONE;
         drag->phase = DRAG_IDLE;
         return 1;
     }

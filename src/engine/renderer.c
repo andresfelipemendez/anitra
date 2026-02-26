@@ -39,7 +39,7 @@ static void push_sprite(draw_list* dl, int texture_id, float x, float y,
     cmd->tint_b = b; cmd->tint_a = a;
 }
 
-void render_sprite_pixel_perfect(game* g, int texture_id, float x, float y,
+void render_sprite_pixel_perfect(memory* g, int texture_id, float x, float y,
                                  pixel_rect sprite_rect, int texture_width, int texture_height) {
     float quad_width = sprite_rect.w * 4.0f;
     float quad_height = sprite_rect.h * 4.0f;
@@ -55,14 +55,14 @@ void render_sprite_pixel_perfect(game* g, int texture_id, float x, float y,
                 1.0f, 1.0f, 1.0f, 1.0f);
 }
 
-void render_scaled_sprite(game* g, int texture_id, float x, float y, float width, float height) {
+void render_scaled_sprite(memory* g, int texture_id, float x, float y, float width, float height) {
     push_sprite(&g->draw_list, texture_id, x, y,
                 width, height,
                 0.0f, 0.0f, 1.0f, 1.0f,
                 1.0f, 1.0f, 1.0f, 1.0f);
 }
 
-void update_animation(game* g) {
+void update_animation(memory* g) {
     int i;
     if (!g) return;
 
@@ -78,13 +78,13 @@ void update_animation(game* g) {
     }
 }
 
-void render_tile(game* g, int tile, float x, float y) {
+void render_tile(memory* g, int tile, float x, float y) {
     pixel_rect pixel_region = tiles.sprites[tile];
     render_sprite_pixel_perfect(g, TEXTURE_TILES, x, y,
                                pixel_region, tiles.width, tiles.height);
 }
 
-void render_tiles(game* g) {
+void render_tiles(memory* g) {
     int rows = sizeof(level) / sizeof(level[0]);
     int cols = sizeof(level[0]) / sizeof(level[0][0]);
     int y, x;
@@ -96,7 +96,7 @@ void render_tiles(game* g) {
     }
 }
 
-void render_health_bar(game* g, float x, float y, float health, float max_health) {
+void render_health_bar(memory* g, float x, float y, float health, float max_health) {
     float health_ratio;
     float bar_x, bar_y;
 
@@ -123,7 +123,7 @@ void render_health_bar(game* g, float x, float y, float health, float max_health
                        bar_x, bar_y, 128.0f, 32.0f);
 }
 
-void render_entities(game* g) {
+void render_entities(memory* g) {
     int i;
     if (!g) return;
 

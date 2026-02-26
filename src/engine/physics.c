@@ -19,7 +19,7 @@ bool bbox_collide(const rect* a, const rect* b) {
             a_bottom < b_top && a_top > b_bottom);
 }
 
-void collision(game* g) {
+void collision(memory* g) {
     entity* player = &scene.entities[0];
     assert(player->type == PLAYER);
     
@@ -102,7 +102,7 @@ void collision(game* g) {
     player->collider.rect.y = player->pos.y;
 }
 
-void apply_movement(game* g) {
+void apply_movement(memory* g) {
     entity* player = &scene.entities[0];
     assert(player->type == PLAYER);
         

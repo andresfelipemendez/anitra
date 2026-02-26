@@ -7,7 +7,7 @@
 
 typedef struct { float x, y, z, r, g, b; } editor_line_vert;
 
-/* ── Editor persistent state (lives in game struct, survives hot-reload) ── */
+/* ── Editor persistent state (lives in memory struct, survives hot-reload) ── */
 
 #define EDITOR_MAX_LINES 2048
 
@@ -39,6 +39,10 @@ typedef struct editor_state {
     /* Line output — written by editor each frame, read by externals for GPU upload */
     editor_line_vert lines[EDITOR_MAX_LINES * 2];
     int line_count;      /* number of line segments (each = 2 vertices) */
+
+    /* Dock state — opaque, allocated from editor_arena.
+       Actual type is dock_state* (defined in editor/dock.h). */
+    void *dock;
 } editor_state;
 
 #endif /* EDITOR_H */

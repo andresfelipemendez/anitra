@@ -6,7 +6,6 @@
 #include "draw_list.h"
 #include "gltf_types.h"
 #include "editor.h"
-#include "dock.h"
 
 #ifndef __cplusplus
 #include <stdbool.h>
@@ -134,9 +133,10 @@ typedef struct mesh3d_state {
     Mat4 model_transform;
 } mesh3d_state;
 
-typedef struct game {
+typedef struct memory {
   struct arena arena;
-  struct arena *gameplay;    /* sub-arena for engine/gameplay allocations */
+  struct arena *gameplay;       /* sub-arena for engine/gameplay allocations */
+  struct arena *editor_arena;   /* sub-arena for editor/dock allocations */
 
   double _t_prev;
 
@@ -156,14 +156,17 @@ typedef struct game {
   /* GPU device handle — set by externals, used by engine for asset loading */
   void *gpu_device;
 
+  /* Clay UI contexts — opaque Clay_Context*, set by externals init.
+     Game Clay: for in-game UI (pause menu, HUD). Allocated from main arena.
+     Editor Clay: for editor UI (profiler, panels). Allocated from editor_arena. */
+  void *clay_game;
+  void *clay_editor;
+
   /* Loaded 3D model — populated by engine init, read by externals for rendering */
   GltfModel loaded_model;
 
   /* Editor state — populated by editor.dll, read by externals for rendering */
   editor_state editor;
-
-  /* Docking panel system — persists across hot-reload */
-  dock_state dock;
-} game;
+} memory;
 
 #endif
