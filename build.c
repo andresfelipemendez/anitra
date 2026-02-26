@@ -76,7 +76,8 @@
     "/Ilib/SDL_shadercross/external/prebuilt/inc " \
     "/Ilib/tracy/public " \
     "/Ilib/harfbuzz-src/src " \
-    "/Ilib/clay"
+    "/Ilib/clay " \
+    "/Ilib/cgltf"
 #else
 #define COMMON_INCLUDES \
     "-Isrc -Isrc/core -Isrc/engine -Isrc/externals -Iinclude " \
@@ -85,7 +86,8 @@
     "-Ilib/SDL_shadercross/external/prebuilt/inc " \
     "-Ilib/tracy/public " \
     "-Ilib/harfbuzz-src/src " \
-    "-Ilib/clay"
+    "-Ilib/clay " \
+    "-Ilib/cgltf"
 #endif
 
 /* Tool paths */
@@ -428,10 +430,12 @@ static int build_tracy(void)
 static int build_externals(void)
 {
     static const char *sources[] = {
-        "src/externals/externals.cpp"
+        "src/externals/externals.cpp",
+        "src/externals/gltf_loader.cpp"
     };
     static const char *objs[] = {
-        OBJ_EXT_DIR "/externals" OBJ_EXT
+        OBJ_EXT_DIR "/externals" OBJ_EXT,
+        OBJ_EXT_DIR "/gltf_loader" OBJ_EXT
     };
     int count = sizeof(sources) / sizeof(sources[0]);
     int i;
@@ -643,14 +647,16 @@ static int build_engine(void)
         "src/engine/renderer.c",
         "src/engine/physics.c",
         "src/engine/scene.c",
-        "src/engine/debug_render.c"
+        "src/engine/debug_render.c",
+        "src/engine/anim.c"
     };
     static const char *objs[] = {
         OBJ_ENGINE_DIR "/engine" OBJ_EXT,
         OBJ_ENGINE_DIR "/renderer" OBJ_EXT,
         OBJ_ENGINE_DIR "/physics" OBJ_EXT,
         OBJ_ENGINE_DIR "/scene" OBJ_EXT,
-        OBJ_ENGINE_DIR "/debug_render" OBJ_EXT
+        OBJ_ENGINE_DIR "/debug_render" OBJ_EXT,
+        OBJ_ENGINE_DIR "/anim" OBJ_EXT
     };
     int count = sizeof(sources) / sizeof(sources[0]);
     int i;
@@ -740,7 +746,8 @@ static int build_engine(void)
     " src/engine/renderer.c" \
     " src/engine/physics.c" \
     " src/engine/scene.c" \
-    " src/engine/debug_render.c"
+    " src/engine/debug_render.c" \
+    " src/engine/anim.c"
 #else
 #define TCC_COMPILE_CMD \
     "./tcc -Blib/tcc-linux -shared" \
@@ -1896,6 +1903,8 @@ static const char *shader_sources[] = {
     "ui_rect_fs.glsl",
     "font_vs.glsl",
     "font_fs.glsl",
+    "mesh_vs.glsl",
+    "mesh_fs.glsl",
     NULL
 };
 

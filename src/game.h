@@ -4,6 +4,7 @@
 #include "arena.h"
 #include "debug_render.h"
 #include "draw_list.h"
+#include "gltf_types.h"
 
 #ifndef __cplusplus
 #include <stdbool.h>
@@ -101,6 +102,36 @@ typedef struct camera {
     float zoom;
 } camera;
 
+/* ── 3D mesh state (populated by externals, animated by engine) ── */
+
+typedef struct mesh3d_state {
+    /* Model data — set once by externals during init */
+    Skeleton  skeleton;
+    AnimClip *clips;
+    uint32_t  clip_count;
+    uint32_t  primitive_count;  /* for externals to know if there's anything to draw */
+
+    /* Animation scratch buffers (arena-allocated by externals) */
+    Vec3 *pose_trans;
+    Quat *pose_rot;
+    Vec3 *pose_scale;
+    Mat4 *world_mats;
+    Mat4 *skin_mats;       /* final skinning matrices — read by externals for GPU upload */
+
+    /* Per-frame state — set by engine */
+    uint32_t active_clip;
+    float    anim_time;
+    int      visible;
+
+    /* Camera for 3D — set by engine */
+    Vec3 camera_eye;
+    Vec3 camera_target;
+    Vec3 camera_up;
+
+    /* Model transform — set by engine */
+    Mat4 model_transform;
+} mesh3d_state;
+
 typedef struct game {
   struct arena arena;
   struct arena *gameplay;    /* sub-arena for engine/gameplay allocations */
@@ -117,6 +148,8 @@ typedef struct game {
   int width;
   int height;
   float dt;
+
+  mesh3d_state mesh3d;
 } game;
 
 #endif

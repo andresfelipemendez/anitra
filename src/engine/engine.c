@@ -6,6 +6,16 @@
 #include <physics.h>
 #include <math.h>
 
+/* Animation functions (from anim.c, same DLL) */
+void init_pose_from_bind(Skeleton *skel, Vec3 *trans, Quat *rot, Vec3 *scale);
+void sample_clip(AnimClip *clip, float time,
+                 Vec3 *out_trans, Quat *out_rot, Vec3 *out_scale,
+                 uint32_t joint_count);
+void compute_world_transforms(Skeleton *skel,
+                               Vec3 *trans, Quat *rot, Vec3 *scales,
+                               Mat4 *out_world);
+void compute_skinning_matrices(Skeleton *skel, Mat4 *world, Mat4 *out_skinning);
+
 void update_input(game* g) {
     entity* player;
     const float move_speed = 200.0f;
@@ -45,7 +55,38 @@ EXPORT void init_engine(game *g) {
             (uint32_t)(scene.entity_capacity * sizeof(entity)), 16, "entities");
     }
     scene_init();
-    printf("hi from init engine\n");
+
+    /* Compute initial bind-pose skinning matrices so the mesh renders correctly
+       even before the first animation frame */
+    if (g->mesh3d.skeleton.joint_count > 0 && g->mesh3d.skin_mats) {
+        init_pose_from_bind(&g->mesh3d.skeleton,
+                            g->mesh3d.pose_trans, g->mesh3d.pose_rot, g->mesh3d.pose_scale);
+        compute_world_transforms(&g->mesh3d.skeleton,
+                                  g->mesh3d.pose_trans, g->mesh3d.pose_rot, g->mesh3d.pose_scale,
+                                  g->mesh3d.world_mats);
+        compute_skinning_matrices(&g->mesh3d.skeleton, g->mesh3d.world_mats, g->mesh3d.skin_mats);
+    }
+}
+
+static void update_mesh3d(game *g) {
+    mesh3d_state *m = &g->mesh3d;
+    if (!m->visible || m->skeleton.joint_count == 0 || !m->skin_mats) return;
+
+    if (m->clip_count > 0 && m->clips) {
+        uint32_t ci = m->active_clip < m->clip_count ? m->active_clip : 0;
+        AnimClip *clip = &m->clips[ci];
+
+        m->anim_time += g->dt;
+        if (clip->duration > 0.0f && m->anim_time > clip->duration)
+            m->anim_time -= clip->duration;
+
+        init_pose_from_bind(&m->skeleton, m->pose_trans, m->pose_rot, m->pose_scale);
+        sample_clip(clip, m->anim_time, m->pose_trans, m->pose_rot, m->pose_scale,
+                    m->skeleton.joint_count);
+        compute_world_transforms(&m->skeleton, m->pose_trans, m->pose_rot, m->pose_scale,
+                                  m->world_mats);
+        compute_skinning_matrices(&m->skeleton, m->world_mats, m->skin_mats);
+    }
 }
 
 EXPORT void update_engine(game *g) {
@@ -63,6 +104,9 @@ EXPORT void update_engine(game *g) {
     apply_movement(g);
     update_camera_matrix(&g->camera, g->draw_list.view_matrix);
     render_entities(g);
+
+    /* 3D mesh animation (driven by engine, rendered by externals) */
+    update_mesh3d(g);
 
     /* Copy debug lines from debug_renderer to draw_list */
     for (i = 0; i < g->debug_renderer.current_line_count; i++) {
@@ -82,5 +126,4 @@ EXPORT void update_engine(game *g) {
 }
 
 EXPORT void destroy_engine(game *g) {
-    printf("hi from destroy_engine \n");
 }

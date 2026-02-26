@@ -23,12 +23,18 @@
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
 
+#include "gltf_types.h"
+
+// Forward declarations from gltf_loader.cpp
+extern GltfModel load_glb(const char *path, arena *a);
+extern void load_animations_glb(const char *path, GltfModel *model, arena *a);
+
 // ---------------------------------------------------------------------------
 // Static globals (replace GL state)
 // ---------------------------------------------------------------------------
 
 static SDL_Window *window = NULL;
-static SDL_GPUDevice *gpu_device = NULL;
+SDL_GPUDevice *gpu_device = NULL;  /* non-static: shared with gltf_loader.cpp */
 
 // Sprite pipeline
 static SDL_GPUGraphicsPipeline *sprite_pipeline = NULL;
@@ -42,6 +48,19 @@ static SDL_GPUGraphicsPipeline *ui_rect_pipeline = NULL;
 
 // Font pipeline (vector text)
 static SDL_GPUGraphicsPipeline *font_pipeline = NULL;
+
+// Mesh (3D skinned) pipeline
+static SDL_GPUGraphicsPipeline *mesh_pipeline = NULL;
+static SDL_GPUSampler *mesh_sampler = NULL;
+static SDL_GPUTexture *depth_texture = NULL;
+static Uint32 depth_w = 0, depth_h = 0;
+static SDL_GPUBuffer *bone_storage_buffer = NULL;
+static SDL_GPUTexture *white_texture = NULL;
+
+// glTF model — GPU primitives kept here (not in game struct)
+static GltfModel loaded_model = {};
+
+#define MAX_BONES 128
 
 // Font GPU storage buffers
 static SDL_GPUBuffer *font_curve_buffer = NULL;
@@ -106,6 +125,12 @@ struct font_vertex {
 struct uniform_data {
     float projection[16];
     float view[16];
+};
+
+struct mesh_uniform_data {
+    float projection[16];
+    float view[16];
+    float model[16];
 };
 
 // ---------------------------------------------------------------------------
@@ -1318,7 +1343,8 @@ EXPORT int init_externals(game *g) {
 
         pipe_info.target_info.color_target_descriptions = &color_target;
         pipe_info.target_info.num_color_targets = 1;
-        pipe_info.target_info.has_depth_stencil_target = false;
+        pipe_info.target_info.has_depth_stencil_target = true;
+        pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
 
         pipe_info.props = 0;
 
@@ -1392,7 +1418,8 @@ EXPORT int init_externals(game *g) {
 
         pipe_info.target_info.color_target_descriptions = &color_target;
         pipe_info.target_info.num_color_targets = 1;
-        pipe_info.target_info.has_depth_stencil_target = false;
+        pipe_info.target_info.has_depth_stencil_target = true;
+        pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
 
         pipe_info.props = 0;
 
@@ -1462,6 +1489,8 @@ EXPORT int init_externals(game *g) {
         pipe_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         pipe_info.target_info.color_target_descriptions = &color_target;
         pipe_info.target_info.num_color_targets = 1;
+        pipe_info.target_info.has_depth_stencil_target = true;
+        pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
 
         ui_rect_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
         if (!ui_rect_pipeline) {
@@ -1541,6 +1570,8 @@ EXPORT int init_externals(game *g) {
         pipe_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         pipe_info.target_info.color_target_descriptions = &color_target;
         pipe_info.target_info.num_color_targets = 1;
+        pipe_info.target_info.has_depth_stencil_target = true;
+        pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
 
         font_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
         if (!font_pipeline) {
@@ -1552,7 +1583,159 @@ EXPORT int init_externals(game *g) {
         SDL_ReleaseGPUShader(gpu_device, font_fs);
     }
 
-    // 12. Create sampler (nearest-neighbor for pixel art)
+    // 12. Compile and create mesh (3D skinned) pipeline
+    {
+        SDL_GPUShader *mesh_vs = load_shader_from_spirv(
+            "assets/shaders/compiled/mesh_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        SDL_GPUShader *mesh_fs = load_shader_from_spirv(
+            "assets/shaders/compiled/mesh_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        if (!mesh_vs || !mesh_fs) {
+            fprintf(stderr, "Failed to compile mesh shaders\n");
+            return -1;
+        }
+
+        SDL_GPUVertexBufferDescription vbuf_desc = {};
+        vbuf_desc.slot = 0;
+        vbuf_desc.pitch = sizeof(SkinnedVertex);
+        vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+
+        SDL_GPUVertexAttribute attrs[5] = {};
+        // location 0: position (float3)
+        attrs[0].location = 0;
+        attrs[0].buffer_slot = 0;
+        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+        attrs[0].offset = offsetof(SkinnedVertex, position);
+        // location 1: normal (float3)
+        attrs[1].location = 1;
+        attrs[1].buffer_slot = 0;
+        attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+        attrs[1].offset = offsetof(SkinnedVertex, normal);
+        // location 2: uv (float2)
+        attrs[2].location = 2;
+        attrs[2].buffer_slot = 0;
+        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+        attrs[2].offset = offsetof(SkinnedVertex, uv);
+        // location 3: bone_ids (ubyte4)
+        attrs[3].location = 3;
+        attrs[3].buffer_slot = 0;
+        attrs[3].format = SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4;
+        attrs[3].offset = offsetof(SkinnedVertex, bone_ids);
+        // location 4: bone_weights (float4)
+        attrs[4].location = 4;
+        attrs[4].buffer_slot = 0;
+        attrs[4].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+        attrs[4].offset = offsetof(SkinnedVertex, bone_weights);
+
+        SDL_GPUColorTargetBlendState blend = {};
+        blend.enable_blend = false;
+
+        SDL_GPUTextureFormat swapchain_format =
+            SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
+
+        SDL_GPUColorTargetDescription color_target = {};
+        color_target.format = swapchain_format;
+        color_target.blend_state = blend;
+
+        SDL_GPUGraphicsPipelineCreateInfo pipe_info = {};
+        pipe_info.vertex_shader = mesh_vs;
+        pipe_info.fragment_shader = mesh_fs;
+        pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
+        pipe_info.vertex_input_state.num_vertex_buffers = 1;
+        pipe_info.vertex_input_state.vertex_attributes = attrs;
+        pipe_info.vertex_input_state.num_vertex_attributes = 5;
+        pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        pipe_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+        pipe_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+        pipe_info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+        pipe_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+
+        pipe_info.depth_stencil_state.enable_depth_test = true;
+        pipe_info.depth_stencil_state.enable_depth_write = true;
+        pipe_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+
+        pipe_info.target_info.color_target_descriptions = &color_target;
+        pipe_info.target_info.num_color_targets = 1;
+        pipe_info.target_info.has_depth_stencil_target = true;
+        pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+
+        mesh_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
+        if (!mesh_pipeline) {
+            fprintf(stderr, "Failed to create mesh pipeline: %s\n", SDL_GetError());
+            return -1;
+        }
+
+        SDL_ReleaseGPUShader(gpu_device, mesh_vs);
+        SDL_ReleaseGPUShader(gpu_device, mesh_fs);
+    }
+
+    // 13. Create mesh sampler (linear filtering for 3D textures)
+    {
+        SDL_GPUSamplerCreateInfo samp_info = {};
+        samp_info.min_filter = SDL_GPU_FILTER_LINEAR;
+        samp_info.mag_filter = SDL_GPU_FILTER_LINEAR;
+        samp_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+        samp_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        samp_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+        samp_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+
+        mesh_sampler = SDL_CreateGPUSampler(gpu_device, &samp_info);
+        if (!mesh_sampler) {
+            fprintf(stderr, "Failed to create mesh sampler: %s\n", SDL_GetError());
+            return -1;
+        }
+    }
+
+    // 14. Create white 1x1 fallback texture (for untextured meshes)
+    {
+        SDL_GPUTextureCreateInfo tex_info = {};
+        tex_info.type = SDL_GPU_TEXTURETYPE_2D;
+        tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        tex_info.width = 1;
+        tex_info.height = 1;
+        tex_info.layer_count_or_depth = 1;
+        tex_info.num_levels = 1;
+        tex_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+
+        white_texture = SDL_CreateGPUTexture(gpu_device, &tex_info);
+
+        uint32_t white_pixel = 0xFFFFFFFF;
+        SDL_GPUTransferBufferCreateInfo tbuf_info = {};
+        tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tbuf_info.size = 4;
+        SDL_GPUTransferBuffer *transfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
+        void *map = SDL_MapGPUTransferBuffer(gpu_device, transfer, false);
+        memcpy(map, &white_pixel, 4);
+        SDL_UnmapGPUTransferBuffer(gpu_device, transfer);
+
+        SDL_GPUCommandBuffer *upload_cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
+        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(upload_cmd);
+        SDL_GPUTextureTransferInfo src = {};
+        src.transfer_buffer = transfer;
+        SDL_GPUTextureRegion dst = {};
+        dst.texture = white_texture;
+        dst.w = 1;
+        dst.h = 1;
+        dst.d = 1;
+        SDL_UploadToGPUTexture(copy, &src, &dst, false);
+        SDL_EndGPUCopyPass(copy);
+        SDL_SubmitGPUCommandBuffer(upload_cmd);
+        SDL_ReleaseGPUTransferBuffer(gpu_device, transfer);
+    }
+
+    // 15. Create bone storage buffer
+    {
+        SDL_GPUBufferCreateInfo buf_info = {};
+        buf_info.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+        buf_info.size = MAX_BONES * sizeof(Mat4);
+        bone_storage_buffer = SDL_CreateGPUBuffer(gpu_device, &buf_info);
+        if (!bone_storage_buffer) {
+            fprintf(stderr, "Failed to create bone storage buffer: %s\n", SDL_GetError());
+            return -1;
+        }
+    }
+
+    // 16. Create sampler (nearest-neighbor for pixel art)
     {
         SDL_GPUSamplerCreateInfo samp_info = {};
         samp_info.min_filter = SDL_GPU_FILTER_NEAREST;
@@ -1660,6 +1843,76 @@ EXPORT int init_externals(game *g) {
 
     // Allocate gameplay sub-arena (entities, etc.)
     g->gameplay = arena_alloc_subarena(&g->arena, 256 * 1024, 16, "gameplay");
+
+    // Create initial depth texture (matching window size)
+    {
+        int win_w, win_h;
+        SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
+        depth_w = (Uint32)win_w;
+        depth_h = (Uint32)win_h;
+
+        SDL_GPUTextureCreateInfo depth_info = {};
+        depth_info.type = SDL_GPU_TEXTURETYPE_2D;
+        depth_info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        depth_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        depth_info.width = depth_w;
+        depth_info.height = depth_h;
+        depth_info.layer_count_or_depth = 1;
+        depth_info.num_levels = 1;
+        depth_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+
+        depth_texture = SDL_CreateGPUTexture(gpu_device, &depth_info);
+        if (!depth_texture) {
+            fprintf(stderr, "Failed to create depth texture: %s\n", SDL_GetError());
+            return -1;
+        }
+        printf("Depth texture created (%u x %u)\n", depth_w, depth_h);
+    }
+
+    // Load glTF model (Knight) — populate g->mesh3d for engine to animate
+    {
+        arena *model_arena = arena_alloc_subarena(&g->arena, 2 * 1024 * 1024, 16, "gltf_models");
+        if (model_arena) {
+            loaded_model = load_glb(
+                "C:/Users/andres/Downloads/KayKit_Adventurers_2.0_FREE/Characters/gltf/Knight.glb",
+                model_arena);
+
+            if (loaded_model.mesh.primitive_count > 0) {
+                // Try loading animations from separate file
+                if (loaded_model.clip_count == 0) {
+                    load_animations_glb(
+                        "C:/Users/andres/Downloads/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb",
+                        &loaded_model, model_arena);
+                }
+
+                // Populate g->mesh3d so engine.c can drive animation
+                uint32_t jc = loaded_model.skeleton.joint_count;
+                g->mesh3d.skeleton        = loaded_model.skeleton;
+                g->mesh3d.clips           = loaded_model.clips;
+                g->mesh3d.clip_count      = loaded_model.clip_count;
+                g->mesh3d.primitive_count  = loaded_model.mesh.primitive_count;
+
+                g->mesh3d.pose_trans  = (Vec3*)arena_alloc(model_arena, jc * sizeof(Vec3), 16, "pose_trans");
+                g->mesh3d.pose_rot    = (Quat*)arena_alloc(model_arena, jc * sizeof(Quat), 16, "pose_rot");
+                g->mesh3d.pose_scale  = (Vec3*)arena_alloc(model_arena, jc * sizeof(Vec3), 16, "pose_scale");
+                g->mesh3d.world_mats  = (Mat4*)arena_alloc(model_arena, jc * sizeof(Mat4), 16, "world_mats");
+                g->mesh3d.skin_mats   = (Mat4*)arena_alloc(model_arena, jc * sizeof(Mat4), 16, "skin_mats");
+
+                // Engine will set these in init_engine / update_engine
+                g->mesh3d.visible = 1;
+                g->mesh3d.active_clip = loaded_model.clip_count > 6 ? 6 : 0;
+                g->mesh3d.anim_time = 0.0f;
+                g->mesh3d.camera_eye    = VEC3(0.0f, 1.0f, 3.0f);
+                g->mesh3d.camera_target = VEC3(0.0f, 0.5f, 0.0f);
+                g->mesh3d.camera_up     = VEC3(0.0f, 1.0f, 0.0f);
+                g->mesh3d.model_transform = loaded_model.armature_transform;
+            } else {
+                fprintf(stderr, "Warning: Knight.glb loaded but has no primitives\n");
+            }
+        } else {
+            fprintf(stderr, "Warning: Failed to allocate gltf_models sub-arena\n");
+        }
+    }
 
     // Init game timing
     g->_t_prev = (double)SDL_GetTicks() / 1000.0;
@@ -1811,7 +2064,7 @@ EXPORT void update_externals(game *g) {
     g->draw_list.sprite_count = 0;
     g->draw_list.line_count = 0;
 
-    // --- Call engine update (fills draw_list) ---
+    // --- Call engine update (fills draw_list + updates mesh3d animation) ---
     g_update(g);
 
     // --- Render ---
@@ -1925,6 +2178,28 @@ EXPORT void update_externals(game *g) {
         SDL_ReleaseGPUTransferBuffer(gpu_device, line_transfer);
     }
 
+    // --- Upload bone matrices (computed by engine) ---
+    if (g->mesh3d.visible && g->mesh3d.skeleton.joint_count > 0 && g->mesh3d.skin_mats) {
+        Uint32 bone_size = g->mesh3d.skeleton.joint_count * sizeof(Mat4);
+        SDL_GPUTransferBufferCreateInfo tbuf_info = {};
+        tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tbuf_info.size = bone_size;
+        SDL_GPUTransferBuffer *bone_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
+        void *map = SDL_MapGPUTransferBuffer(gpu_device, bone_transfer, false);
+        memcpy(map, g->mesh3d.skin_mats, bone_size);
+        SDL_UnmapGPUTransferBuffer(gpu_device, bone_transfer);
+
+        SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(cmd_buf);
+        SDL_GPUTransferBufferLocation src_loc = {};
+        src_loc.transfer_buffer = bone_transfer;
+        SDL_GPUBufferRegion dst_region = {};
+        dst_region.buffer = bone_storage_buffer;
+        dst_region.size = bone_size;
+        SDL_UploadToGPUBuffer(copy_pass, &src_loc, &dst_region, false);
+        SDL_EndGPUCopyPass(copy_pass);
+        SDL_ReleaseGPUTransferBuffer(gpu_device, bone_transfer);
+    }
+
     // --- Prepare Clay UI: game window (layout + upload) ---
     ui_prepare_game(cmd_buf, g);
 
@@ -1947,14 +2222,78 @@ EXPORT void update_externals(game *g) {
     }
 
     if (swapchain_texture) {
+        // Recreate depth texture if window was resized
+        if (sc_w != depth_w || sc_h != depth_h) {
+            if (depth_texture) SDL_ReleaseGPUTexture(gpu_device, depth_texture);
+            depth_w = sc_w;
+            depth_h = sc_h;
+            SDL_GPUTextureCreateInfo d_info = {};
+            d_info.type = SDL_GPU_TEXTURETYPE_2D;
+            d_info.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+            d_info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+            d_info.width = depth_w;
+            d_info.height = depth_h;
+            d_info.layer_count_or_depth = 1;
+            d_info.num_levels = 1;
+            d_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+            depth_texture = SDL_CreateGPUTexture(gpu_device, &d_info);
+        }
+
         SDL_GPUColorTargetInfo color_target = {};
         color_target.texture = swapchain_texture;
         color_target.clear_color = {0.45f, 0.55f, 0.60f, 1.0f};
         color_target.load_op = SDL_GPU_LOADOP_CLEAR;
         color_target.store_op = SDL_GPU_STOREOP_STORE;
 
-        SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, NULL);
+        SDL_GPUDepthStencilTargetInfo depth_target = {};
+        depth_target.texture = depth_texture;
+        depth_target.clear_depth = 1.0f;
+        depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
+        depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
 
+        SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target);
+
+        // --- 3D Mesh (camera + animation driven by engine via g->mesh3d) ---
+        if (g->mesh3d.visible && loaded_model.mesh.primitive_count > 0) {
+            SDL_BindGPUGraphicsPipeline(render_pass, mesh_pipeline);
+
+            // Build perspective projection from engine's camera
+            float aspect = (float)sc_w / (float)sc_h;
+            Mat4 proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, aspect, 0.1f, 100.0f);
+            Mat4 view = mat4_look_at(g->mesh3d.camera_eye, g->mesh3d.camera_target, g->mesh3d.camera_up);
+
+            mesh_uniform_data mesh_uniforms;
+            memcpy(mesh_uniforms.projection, proj.m, sizeof(float) * 16);
+            memcpy(mesh_uniforms.view, view.m, sizeof(float) * 16);
+            memcpy(mesh_uniforms.model, g->mesh3d.model_transform.m, sizeof(float) * 16);
+            SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+
+            // Bind bone storage buffer (vertex stage, slot 0)
+            SDL_BindGPUVertexStorageBuffers(render_pass, 0, &bone_storage_buffer, 1);
+
+            for (uint32_t p = 0; p < loaded_model.mesh.primitive_count; p++) {
+                GltfPrimitive *prim = &loaded_model.mesh.primitives[p];
+
+                SDL_GPUBufferBinding vbuf_binding = {};
+                vbuf_binding.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
+                SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+
+                SDL_GPUBufferBinding ibuf_binding = {};
+                ibuf_binding.buffer = (SDL_GPUBuffer *)prim->index_buffer;
+                SDL_BindGPUIndexBuffer(render_pass, &ibuf_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+                SDL_GPUTextureSamplerBinding tex_bind = {};
+                tex_bind.texture = prim->texture ? (SDL_GPUTexture *)prim->texture : white_texture;
+                tex_bind.sampler = mesh_sampler;
+                SDL_BindGPUFragmentSamplers(render_pass, 0, &tex_bind, 1);
+
+                SDL_DrawGPUIndexedPrimitives(render_pass, prim->index_count, 1, 0, 0, 0);
+            }
+        }
+
+        // --- 2D rendering ---
         uniform_data uniforms;
         memcpy(uniforms.projection, g->draw_list.ortho_projection, sizeof(float) * 16);
         memcpy(uniforms.view, g->draw_list.view_matrix, sizeof(float) * 16);
@@ -2121,6 +2460,24 @@ EXPORT void end_externals(game *g) {
     if (font_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(gpu_device, font_pipeline);
         font_pipeline = NULL;
+    }
+    if (mesh_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(gpu_device, mesh_pipeline);
+        mesh_pipeline = NULL;
+    }
+
+    // Release mesh-related GPU resources
+    if (mesh_sampler) { SDL_ReleaseGPUSampler(gpu_device, mesh_sampler); mesh_sampler = NULL; }
+    if (depth_texture) { SDL_ReleaseGPUTexture(gpu_device, depth_texture); depth_texture = NULL; }
+    if (white_texture) { SDL_ReleaseGPUTexture(gpu_device, white_texture); white_texture = NULL; }
+    if (bone_storage_buffer) { SDL_ReleaseGPUBuffer(gpu_device, bone_storage_buffer); bone_storage_buffer = NULL; }
+
+    // Release glTF model GPU resources
+    for (uint32_t p = 0; p < loaded_model.mesh.primitive_count; p++) {
+        GltfPrimitive *prim = &loaded_model.mesh.primitives[p];
+        if (prim->vertex_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->vertex_buffer);
+        if (prim->index_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->index_buffer);
+        if (prim->texture) SDL_ReleaseGPUTexture(gpu_device, (SDL_GPUTexture *)prim->texture);
     }
 
     // Shadercross
