@@ -4,7 +4,150 @@
 #include <dock.h>
 #include <SDL3/SDL.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdbool.h>
+
+#define CLAY_IMPLEMENTATION
+#include "clay.h"
+
+/* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
+
+/* Memory profiler colors (one per allocation slot) */
+static const Clay_Color profiler_colors[] = {
+    {100, 160, 220, 255},  /* blue   */
+    {220, 140,  80, 255},  /* orange */
+    {100, 200, 120, 255},  /* green  */
+    {200, 100, 180, 255},  /* pink   */
+    {180, 180, 100, 255},  /* yellow */
+    {130, 120, 220, 255},  /* purple */
+    {100, 200, 200, 255},  /* teal   */
+    {220, 110, 110, 255},  /* red    */
+};
+static const int profiler_color_count = (int)(sizeof(profiler_colors) / sizeof(profiler_colors[0]));
+
+/* Format bytes as human-readable string (rotating static buffers).
+   Static buffers reset to zero on hot-reload — fine, overwritten before read. */
+static const char *format_bytes(uint32_t bytes) {
+    static char bufs[4][32];
+    static int idx = 0;
+    char *buf = bufs[idx++ & 3];
+    if (bytes >= 1024 * 1024)
+        snprintf(buf, 32, "%.2f MB", bytes / (1024.0 * 1024.0));
+    else if (bytes >= 1024)
+        snprintf(buf, 32, "%.1f KB", bytes / 1024.0);
+    else
+        snprintf(buf, 32, "%u B", bytes);
+    return buf;
+}
+
+/* Recursive: emit Clay tree rows for an arena and its children */
+static void profiler_tree_arena(arena *a, int depth, int *row_id) {
+    uint32_t i;
+    for (i = 0; i < a->record_count; i++) {
+        arena_record *r = &a->records[i];
+        Clay_Color color = profiler_colors[(*row_id) % profiler_color_count];
+
+        /* Build size string */
+        static char size_bufs[256][32];
+        int bidx = (*row_id) % 256;
+        if (r->child) {
+            float child_pct = (r->child->capacity > 0)
+                ? (100.0f * r->child->used / r->child->capacity) : 0.0f;
+            snprintf(size_bufs[bidx], sizeof(size_bufs[bidx]), "%s (%.0f%%)",
+                format_bytes(r->child->capacity), (double)child_pct);
+        } else {
+            snprintf(size_bufs[bidx], sizeof(size_bufs[bidx]), "%s", format_bytes(r->size));
+        }
+
+        CLAY(CLAY_IDI("TreeRow", (int32_t)*row_id), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                .padding = { .left = (uint16_t)(4 + depth * 12), .right = 4, .top = 2, .bottom = 2 },
+                .childGap = 6,
+                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                .layoutDirection = CLAY_LEFT_TO_RIGHT
+            }
+        }) {
+            /* Color swatch */
+            CLAY(CLAY_IDI("TSwatch", (int32_t)*row_id), {
+                .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
+                .backgroundColor = color,
+                .cornerRadius = CLAY_CORNER_RADIUS(2)
+            }) {}
+
+            /* Tag name */
+            {
+                Clay_String tag_s = {false, (int32_t)strlen(r->tag), r->tag};
+                CLAY_TEXT(tag_s, CLAY_TEXT_CONFIG({.textColor = {200, 200, 200, 255}, .fontSize = 16}));
+            }
+
+            /* Size (right side, dimmer) */
+            {
+                Clay_String sz_s = {false, (int32_t)strlen(size_bufs[bidx]), size_bufs[bidx]};
+                CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 16}));
+            }
+        }
+
+        (*row_id)++;
+
+        if (r->child) {
+            profiler_tree_arena(r->child, depth + 1, row_id);
+        }
+    }
+}
+
+/* Collect all leaf records (flattened) for block + grid views */
+typedef struct FlatRecord {
+    const char *tag;
+    uint32_t    offset;
+    uint32_t    size;
+    int         color_idx;
+} FlatRecord;
+#define MAX_FLAT_RECORDS 256
+
+static int profiler_flatten_arena(arena *a, uint32_t base_offset,
+                                  FlatRecord *out, int count, int *color_id) {
+    uint32_t i;
+    for (i = 0; i < a->record_count && count < MAX_FLAT_RECORDS; i++) {
+        arena_record *r = &a->records[i];
+        if (r->child && r->child->record_count > 0) {
+            count = profiler_flatten_arena(r->child, base_offset + r->offset + (uint32_t)sizeof(arena),
+                                           out, count, color_id);
+        } else if (r->child) {
+            out[count].tag = r->tag;
+            out[count].offset = base_offset + r->offset;
+            out[count].size = r->child->used > 0 ? r->child->used : r->size;
+            out[count].color_idx = (*color_id)++;
+            count++;
+        } else {
+            out[count].tag = r->tag;
+            out[count].offset = base_offset + r->offset;
+            out[count].size = r->size;
+            out[count].color_idx = (*color_id)++;
+            count++;
+        }
+    }
+    return count;
+}
+
+/* Simple text measurement for Clay — uses pre-computed font advance table.
+   No HarfBuzz, no kerning. Good enough for profiler UI (ASCII, single font). */
+static Clay_Dimensions profiler_measure_text(Clay_StringSlice text,
+                                              Clay_TextElementConfig *config,
+                                              void *userData) {
+    editor_state *e = (editor_state *)userData;
+    float scale = (float)config->fontSize;
+    float width = 0;
+    int i;
+    for (i = 0; i < text.length; i++) {
+        int ch = (unsigned char)text.chars[i];
+        if (ch < 128) width += e->font_advances[ch] * scale;
+    }
+    return (Clay_Dimensions){
+        ceilf(width + 1.0f),
+        ceilf(e->font_line_height * scale)
+    };
+}
 
 /* ── Internal helpers ─────────────────────────────────────────── */
 
@@ -269,10 +412,390 @@ EXPORT void init_editor(memory *g) {
     e->gizmo_active  = 0;
     e->line_count = 0;
     e->initialized = 1;
+
+    /* Create profiler Clay context (one-time, backed by editor_arena).
+       profiler_clay_ctx in editor_state survives hot-reload. */
+    if (!e->profiler_clay_ctx && g->editor_arena) {
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(g->editor_arena, clay_size, 16, "clay_editor");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->profiler_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->profiler_clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+            g->clay_editor = e->profiler_clay_ctx;
+        }
+    }
+}
+
+/* ── Profiler Clay layout (produces render commands for externals GPU upload) ── */
+
+static void profiler_layout(memory *g) {
+    editor_state *e = &g->editor;
+    dock_state *d = (dock_state *)e->dock;
+    Clay_Context *pctx = (Clay_Context *)e->profiler_clay_ctx;
+    int prof_win_idx;
+    int prof_node;
+    int win_w, win_h;
+    arena *a;
+    float used_pct;
+    static char title_buf[128];
+    static FlatRecord flat[MAX_FLAT_RECORDS];
+    int flat_color, flat_count;
+    Clay_RenderCommandArray commands;
+
+    if (!pctx) return;
+
+    /* Sync profiler Clay arena usage for display */
+    {
+        Clay_Context *pc = pctx;
+        arena *clay_sub_arena = NULL;
+        uint32_t ri;
+        /* Find the clay_editor sub-arena by tag in editor_arena records */
+        for (ri = 0; ri < g->editor_arena->record_count; ri++) {
+            if (g->editor_arena->records[ri].child &&
+                strcmp(g->editor_arena->records[ri].tag, "clay_editor") == 0) {
+                clay_sub_arena = g->editor_arena->records[ri].child;
+                break;
+            }
+        }
+        if (clay_sub_arena)
+            clay_sub_arena->used = (uint32_t)pc->internalArena.nextAllocation;
+    }
+
+    Clay_SetCurrentContext(pctx);
+
+    /* Get profiler panel dimensions from dock node */
+    prof_node = dock_find_leaf_for_panel_global(d, PANEL_PROFILER, &prof_win_idx);
+    if (prof_node >= 0) {
+        DockNode *pn = &d->nodes[prof_node];
+        win_w = (int)pn->w;
+        win_h = (int)(pn->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    } else {
+        win_w = 800;
+        win_h = 600;
+    }
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+
+    Clay_BeginLayout();
+
+    a = &g->arena;
+    used_pct = (a->capacity > 0) ? (100.0f * a->used / a->capacity) : 0.0f;
+
+    snprintf(title_buf, sizeof(title_buf), "Memory Profiler    %s / %s  (%.1f%%)",
+        format_bytes(a->used), format_bytes(a->capacity), (double)used_pct);
+
+    /* Flatten records for block+grid */
+    flat_color = 0;
+    flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
+
+    /* Root container */
+    CLAY(CLAY_ID("PRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 0,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {25, 25, 30, 255}
+    }) {
+        /* Title bar */
+        CLAY(CLAY_ID("PTitleBar"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                .padding = { .left = 8, .right = 8, .top = 6, .bottom = 10 }
+            }
+        }) {
+            Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
+            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+        }
+
+        /* Three-panel row */
+        CLAY(CLAY_ID("PPanels"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .childGap = 8,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT
+            }
+        }) {
+            /* ===== TREE PANEL (left, 35%) ===== */
+            CLAY(CLAY_ID("PTree"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_PERCENT(0.35f), CLAY_SIZING_GROW({0}) },
+                    .padding = CLAY_PADDING_ALL(8),
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {35, 35, 40, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                {
+                    Clay_String hdr = CLAY_STRING("Tree View");
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
+                }
+
+                /* Arena root row */
+                {
+                    static char root_buf[64];
+                    snprintf(root_buf, sizeof(root_buf), "Arena  %s", format_bytes(a->capacity));
+                    {
+                        Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
+                        CLAY(CLAY_ID("TRootRow"), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                            }
+                        }) {
+                            CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+                        }
+                    }
+                }
+
+                {
+                    int row_id = 0;
+                    profiler_tree_arena(a, 1, &row_id);
+                }
+            }
+
+            /* ===== BLOCK PANEL (center, 20%) ===== */
+            CLAY(CLAY_ID("PBlock"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_PERCENT(0.20f), CLAY_SIZING_GROW({0}) },
+                    .padding = CLAY_PADDING_ALL(8),
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {35, 35, 40, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                {
+                    Clay_String hdr = CLAY_STRING("Block View");
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
+                }
+
+                /* Column of proportional blocks */
+                {
+                    float block_total_h = (float)(win_h - 80);
+                    int bi;
+                    if (block_total_h < 100) block_total_h = 100;
+
+                    for (bi = 0; bi < flat_count; bi++) {
+                        float frac = (float)flat[bi].size / (float)a->capacity;
+                        float bh = frac * block_total_h;
+                        Clay_Color bcolor;
+                        static char block_bufs[MAX_FLAT_RECORDS][48];
+                        if (bh < 2.0f) bh = 2.0f;
+                        bcolor = profiler_colors[flat[bi].color_idx % profiler_color_count];
+                        snprintf(block_bufs[bi], sizeof(block_bufs[bi]), "%s", flat[bi].tag);
+
+                        CLAY(CLAY_IDI("BlkEntry", (int32_t)bi), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(bh) },
+                                .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
+                                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
+                            },
+                            .backgroundColor = bcolor,
+                            .cornerRadius = CLAY_CORNER_RADIUS(2)
+                        }) {
+                            if (bh > 14) {
+                                Clay_String bs = {false, (int32_t)strlen(block_bufs[bi]), block_bufs[bi]};
+                                CLAY_TEXT(bs, CLAY_TEXT_CONFIG({.textColor = {0, 0, 0, 200}, .fontSize = 16}));
+                            }
+                        }
+                    }
+
+                    /* Free space block */
+                    {
+                        uint32_t free_bytes = a->capacity - a->used;
+                        float frac = (float)free_bytes / (float)a->capacity;
+                        float fh = frac * block_total_h;
+                        static char free_buf[32];
+                        if (fh < 2.0f) fh = 2.0f;
+                        snprintf(free_buf, sizeof(free_buf), "FREE %s", format_bytes(free_bytes));
+
+                        CLAY(CLAY_ID("BlkFree"), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(fh) },
+                                .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
+                                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
+                            },
+                            .backgroundColor = {50, 50, 55, 255},
+                            .cornerRadius = CLAY_CORNER_RADIUS(2)
+                        }) {
+                            if (fh > 14) {
+                                Clay_String fs = {false, (int32_t)strlen(free_buf), free_buf};
+                                CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {120, 120, 120, 255}, .fontSize = 16}));
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* ===== GRID PANEL (right) ===== */
+            CLAY(CLAY_ID("PGrid"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                    .padding = CLAY_PADDING_ALL(8),
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {35, 35, 40, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                {
+                    Clay_String hdr = CLAY_STRING("Grid View");
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
+                }
+
+                /* Grid: each cell = 64KB of arena space */
+                {
+                    uint32_t cell_size = 64 * 1024;
+                    uint32_t total_cells = (a->capacity + cell_size - 1) / cell_size;
+                    int grid_cols = 16;
+                    int grid_rows = ((int)total_cells + grid_cols - 1) / grid_cols;
+                    int row;
+
+                    for (row = 0; row < grid_rows; row++) {
+                        CLAY(CLAY_IDI("GRow", (int32_t)row), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                .childGap = 2,
+                                .layoutDirection = CLAY_LEFT_TO_RIGHT
+                            }
+                        }) {
+                            int col;
+                            for (col = 0; col < grid_cols; col++) {
+                                uint32_t cell_idx = (uint32_t)(row * grid_cols + col);
+                                uint32_t cell_start, cell_end;
+                                Clay_Color cell_color = {50, 50, 55, 255};
+                                int32_t cell_id;
+                                int fi;
+                                if (cell_idx >= total_cells) break;
+
+                                cell_start = cell_idx * cell_size;
+                                cell_end = cell_start + cell_size;
+                                if (cell_end > a->capacity) cell_end = a->capacity;
+
+                                /* Find which record owns this cell */
+                                for (fi = 0; fi < flat_count; fi++) {
+                                    uint32_t rec_start = flat[fi].offset;
+                                    uint32_t rec_end = flat[fi].offset + flat[fi].size;
+                                    if (rec_start < cell_end && rec_end > cell_start) {
+                                        cell_color = profiler_colors[flat[fi].color_idx % profiler_color_count];
+                                        break;
+                                    }
+                                }
+
+                                cell_id = (int32_t)(row * grid_cols + col);
+                                CLAY(CLAY_IDI("GCell", cell_id), {
+                                    .layout = {
+                                        .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) }
+                                    },
+                                    .backgroundColor = cell_color,
+                                    .cornerRadius = CLAY_CORNER_RADIUS(2)
+                                }) {}
+                            }
+                        }
+                    }
+
+                    /* Legend */
+                    CLAY(CLAY_ID("GLegend"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = 0, .right = 0, .top = 8, .bottom = 0 },
+                            .childGap = 12,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT
+                        }
+                    }) {
+                        CLAY(CLAY_ID("GLAllocBox"), {
+                            .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
+                            .backgroundColor = profiler_colors[0],
+                            .cornerRadius = CLAY_CORNER_RADIUS(1)
+                        }) {}
+                        {
+                            Clay_String ls = CLAY_STRING("= allocated");
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
+                        }
+                        CLAY(CLAY_ID("GLFreeBox"), {
+                            .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
+                            .backgroundColor = {50, 50, 55, 255},
+                            .cornerRadius = CLAY_CORNER_RADIUS(1)
+                        }) {}
+                        {
+                            Clay_String ls = CLAY_STRING("= free");
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    e->profiler_cmd_count = commands.length;
+    e->profiler_cmd_array = commands.internalArray;
 }
 
 EXPORT void update_editor(memory *g) {
-    if (!g->editor.open) return;
+    editor_state *e = &g->editor;
+    dock_state *d = (dock_state *)e->dock;
+
+    if (!e->open) return;
+
+    /* ── Dock layout — compute pixel rects for all windows ── */
+    {
+        int wi;
+        for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
+            int ww, wh;
+            if (!d->windows[wi].in_use || !d->windows[wi].sdl_window) continue;
+            SDL_GetWindowSizeInPixels((SDL_Window *)d->windows[wi].sdl_window, &ww, &wh);
+            dock_layout(d, wi, ww, wh);
+        }
+    }
+
+    /* ── Game panel size (for ortho projection in engine) ── */
+    {
+        int game_win_idx;
+        int game_node = dock_find_leaf_for_panel_global(d, PANEL_GAME, &game_win_idx);
+        if (game_node >= 0) {
+            DockNode *gn = &d->nodes[game_node];
+            g->width = (int)gn->w;
+            g->height = (int)(gn->h - DOCK_HEADER_HEIGHT);
+            if (g->height < 1) g->height = 1;
+        } else {
+            int dw2, dh2;
+            SDL_GetWindowSizeInPixels((SDL_Window *)d->windows[0].sdl_window, &dw2, &dh2);
+            g->width = dw2;
+            g->height = dh2;
+        }
+    }
+
+    /* ── Editor panel rect (for coordinate transforms) ── */
+    {
+        int ed_win_idx;
+        int ed_node = dock_find_leaf_for_panel_global(d, PANEL_EDITOR, &ed_win_idx);
+        if (ed_node >= 0) {
+            DockNode *en = &d->nodes[ed_node];
+            e->panel_x = en->x;
+            e->panel_y = en->y + DOCK_HEADER_HEIGHT;
+            e->panel_w = en->w;
+            e->panel_h = en->h - DOCK_HEADER_HEIGHT;
+            e->window = (ed_win_idx >= 0) ? d->windows[ed_win_idx].sdl_window : d->windows[0].sdl_window;
+        } else {
+            int dw3, dh3;
+            SDL_GetWindowSizeInPixels((SDL_Window *)d->windows[0].sdl_window, &dw3, &dh3);
+            e->panel_x = 0; e->panel_y = 0;
+            e->panel_w = (float)dw3; e->panel_h = (float)dh3;
+            e->window = d->windows[0].sdl_window;
+        }
+    }
+
+    /* ── Profiler Clay layout (produces render commands for externals) ── */
+    profiler_layout(g);
+
+    /* ── Camera, gizmo, lines (existing editor behavior) ── */
     update_camera(g);
     update_gizmo_hover(g);
     build_lines(g);
@@ -287,12 +810,69 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
     SDL_Event *ev = (SDL_Event *)event_ptr;
     dock_state *d = (dock_state *)g->editor.dock;
     DragState *drag = &d->drag;
+    ResizeState *resize = &d->resize;
     SDL_Window *evwin;
+
+    /* ── Dock: Divider resize — mouse down to start ── */
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        ev->button.button == SDL_BUTTON_LEFT &&
+        drag->phase == DRAG_IDLE && !resize->active) {
+        evwin = SDL_GetWindowFromEvent(ev);
+        {
+            int win_idx = dock_window_for_sdl(d, evwin);
+            if (win_idx >= 0) {
+                float density = SDL_GetWindowPixelDensity(evwin);
+                float pmx = ev->button.x * density;
+                float pmy = ev->button.y * density;
+                int hit = dock_divider_at_point(d, d->windows[win_idx].root_node, pmx, pmy);
+                if (hit >= 0) {
+                    DockNode *sn = &d->nodes[hit];
+                    resize->active = 1;
+                    resize->node = hit;
+                    resize->window = win_idx;
+                    resize->initial_ratio = sn->ratio;
+                    resize->grab_pos = (sn->type == DOCK_SPLIT_H) ? pmx : pmy;
+                    return 1;
+                }
+            }
+        }
+    }
+
+    /* ── Dock: Divider resize — mouse motion to update ratio ── */
+    if (ev->type == SDL_EVENT_MOUSE_MOTION && resize->active) {
+        SDL_Window *rwin = (SDL_Window *)d->windows[resize->window].sdl_window;
+        float density = SDL_GetWindowPixelDensity(rwin);
+        float pmx = ev->motion.x * density;
+        float pmy = ev->motion.y * density;
+        DockNode *sn = &d->nodes[resize->node];
+        float mouse_pos = (sn->type == DOCK_SPLIT_H) ? pmx : pmy;
+        float extent    = (sn->type == DOCK_SPLIT_H) ? sn->w : sn->h;
+        float origin    = (sn->type == DOCK_SPLIT_H) ? sn->x : sn->y;
+        float new_ratio;
+        if (extent < 1.0f) extent = 1.0f;
+        new_ratio = (mouse_pos - origin) / extent;
+        /* Clamp so neither child collapses below minimum size */
+        {
+            float min_frac = (float)DOCK_MIN_PANEL_SIZE / extent;
+            if (new_ratio < min_frac) new_ratio = min_frac;
+            if (new_ratio > 1.0f - min_frac) new_ratio = 1.0f - min_frac;
+        }
+        sn->ratio = new_ratio;
+        return 1;
+    }
+
+    /* ── Dock: Divider resize — mouse up to finish ── */
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
+        ev->button.button == SDL_BUTTON_LEFT &&
+        resize->active) {
+        resize->active = 0;
+        return 1;
+    }
 
     /* ── Dock: Left mouse button down — tab switch or drag start ── */
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
         ev->button.button == SDL_BUTTON_LEFT &&
-        drag->phase == DRAG_IDLE) {
+        drag->phase == DRAG_IDLE && !resize->active) {
         evwin = SDL_GetWindowFromEvent(ev);
         {
             int win_idx = dock_window_for_sdl(d, evwin);
@@ -441,6 +1021,36 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
         drag->hover_zone = DROP_NONE;
         drag->phase = DRAG_IDLE;
         return 1;
+    }
+
+    /* ── Dock: Cursor feedback for divider hover ── */
+    if (ev->type == SDL_EVENT_MOUSE_MOTION &&
+        drag->phase == DRAG_IDLE && !resize->active) {
+        evwin = SDL_GetWindowFromEvent(ev);
+        {
+            int win_idx = dock_window_for_sdl(d, evwin);
+            if (win_idx >= 0) {
+                /* Cached cursors: survive within a single DLL load.
+                   3 lightweight objects — negligible even if leaked on hot-reload. */
+                static SDL_Cursor *cur_default = NULL;
+                static SDL_Cursor *cur_sizewe  = NULL;
+                static SDL_Cursor *cur_sizens  = NULL;
+                float density = SDL_GetWindowPixelDensity(evwin);
+                float pmx = ev->motion.x * density;
+                float pmy = ev->motion.y * density;
+                int hit = dock_divider_at_point(d, d->windows[win_idx].root_node, pmx, pmy);
+                if (!cur_default) cur_default = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
+                if (!cur_sizewe)  cur_sizewe  = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
+                if (!cur_sizens)  cur_sizens  = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_NS_RESIZE);
+                if (hit >= 0) {
+                    DockNode *sn = &d->nodes[hit];
+                    SDL_SetCursor(sn->type == DOCK_SPLIT_H ? cur_sizewe : cur_sizens);
+                } else {
+                    SDL_SetCursor(cur_default);
+                }
+            }
+        }
+        /* Don't return — let other handlers see the motion event */
     }
 
     /* ── Editor-specific events below (require open panel) ── */

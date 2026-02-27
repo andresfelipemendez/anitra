@@ -40,6 +40,17 @@ typedef struct editor_state {
     editor_line_vert lines[EDITOR_MAX_LINES * 2];
     int line_count;      /* number of line segments (each = 2 vertices) */
 
+    /* Font metrics — pre-computed by externals at init, used by editor for Clay text measurement.
+       Advances are in design units scaled to 1px font height; multiply by fontSize for pixel width. */
+    float font_advances[128];
+    float font_line_height;    /* (ascent - descent + lineGap) normalized to 1px */
+
+    /* Profiler Clay render output — written by editor each frame, read by externals for GPU upload.
+       profiler_clay_ctx survives hot-reload (lives in editor_arena). */
+    void *profiler_clay_ctx;       /* Clay_Context* in editor_arena */
+    int   profiler_cmd_count;      /* number of Clay_RenderCommand items */
+    void *profiler_cmd_array;      /* Clay_RenderCommand* in Clay arena memory */
+
     /* Dock state — opaque, allocated from editor_arena.
        Actual type is dock_state* (defined in editor/dock.h). */
     void *dock;

@@ -70,9 +70,7 @@ static hb_face_t *hb_editor_face = NULL;
 static arena         *clay_arena_game = NULL;    // sub-arena backing Clay game context
 static Clay_Context  *clay_context = NULL;
 
-// Clay profiler context (no longer a separate window — rendered to panel texture)
-static arena         *clay_arena_prof = NULL;    // sub-arena backing Clay profiler context
-static Clay_Context  *profiler_clay_context = NULL;
+// Clay profiler context is now owned by editor.dll — render commands are read from editor_state
 
 // Editor line pipeline (editor renders to panel texture)
 static SDL_GPUGraphicsPipeline *editor_line_pipeline = NULL;
@@ -927,35 +925,6 @@ static UIRenderState ui_game = {0};
 static UIRenderState ui_profiler = {0};
 
 // ---------------------------------------------------------------------------
-// Memory profiler colors (one per allocation slot)
-// ---------------------------------------------------------------------------
-static const Clay_Color profiler_colors[] = {
-    {100, 160, 220, 255},  // blue
-    {220, 140,  80, 255},  // orange
-    {100, 200, 120, 255},  // green
-    {200, 100, 180, 255},  // pink
-    {180, 180, 100, 255},  // yellow
-    {130, 120, 220, 255},  // purple
-    {100, 200, 200, 255},  // teal
-    {220, 110, 110, 255},  // red
-};
-static const int profiler_color_count = sizeof(profiler_colors) / sizeof(profiler_colors[0]);
-
-// Format bytes as human-readable string (rotating static buffers)
-static const char *format_bytes(uint32_t bytes) {
-    static char bufs[4][32];
-    static int idx = 0;
-    char *buf = bufs[idx++ & 3];
-    if (bytes >= 1024 * 1024)
-        snprintf(buf, 32, "%.2f MB", bytes / (1024.0 * 1024.0));
-    else if (bytes >= 1024)
-        snprintf(buf, 32, "%.1f KB", bytes / 1024.0);
-    else
-        snprintf(buf, 32, "%u B", bytes);
-    return buf;
-}
-
-// ---------------------------------------------------------------------------
 // Build Clay render commands → vertex arrays (window-agnostic)
 // ---------------------------------------------------------------------------
 static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray commands) {
@@ -1136,361 +1105,18 @@ static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
 }
 
 // ---------------------------------------------------------------------------
-// Profiler UI layout helpers
+// Profiler helpers (tree_arena, flatten, format_bytes, colors) live in editor.c
 // ---------------------------------------------------------------------------
 
-// Recursive: emit tree rows for an arena and its children
-static void profiler_tree_arena(arena *a, int depth, int *row_id) {
-    for (uint32_t i = 0; i < a->record_count; i++) {
-        arena_record *r = &a->records[i];
-        Clay_Color color = profiler_colors[(*row_id) % profiler_color_count];
-
-        // Build size string
-        static char size_bufs[256][32];
-        int idx = (*row_id) % 256;
-        if (r->child) {
-            float child_pct = (r->child->capacity > 0)
-                ? (100.0f * r->child->used / r->child->capacity) : 0.0f;
-            snprintf(size_bufs[idx], sizeof(size_bufs[idx]), "%s (%.0f%%)",
-                format_bytes(r->child->capacity), (double)child_pct);
-        } else {
-            snprintf(size_bufs[idx], sizeof(size_bufs[idx]), "%s", format_bytes(r->size));
-        }
-
-        CLAY(CLAY_IDI("TreeRow", (int32_t)*row_id), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                .padding = { .left = (uint16_t)(4 + depth * 12), .right = 4, .top = 2, .bottom = 2 },
-                .childGap = 6,
-                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
-                .layoutDirection = CLAY_LEFT_TO_RIGHT
-            }
-        }) {
-            // Color swatch
-            CLAY(CLAY_IDI("TSwatch", (int32_t)*row_id), {
-                .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
-                .backgroundColor = color,
-                .cornerRadius = CLAY_CORNER_RADIUS(2)
-            }) {}
-
-            // Tag name (grows to fill)
-            {
-                Clay_String tag_s = {false, (int32_t)strlen(r->tag), r->tag};
-                CLAY_TEXT(tag_s, CLAY_TEXT_CONFIG({.textColor = {200, 200, 200, 255}, .fontSize = 16}));
-            }
-
-            // Size (right side, dimmer)
-            {
-                Clay_String sz_s = {false, (int32_t)strlen(size_bufs[idx]), size_bufs[idx]};
-                CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 16}));
-            }
-        }
-
-        (*row_id)++;
-
-        if (r->child) {
-            profiler_tree_arena(r->child, depth + 1, row_id);
-        }
-    }
-}
-
-// Collect all leaf records (flattened) for block + grid views
-typedef struct FlatRecord {
-    const char *tag;
-    uint32_t    offset;  /* absolute offset within root arena */
-    uint32_t    size;
-    int         color_idx;
-} FlatRecord;
-#define MAX_FLAT_RECORDS 256
-
-static int profiler_flatten_arena(arena *a, uint32_t base_offset,
-                                  FlatRecord *out, int count, int *color_id) {
-    for (uint32_t i = 0; i < a->record_count && count < MAX_FLAT_RECORDS; i++) {
-        arena_record *r = &a->records[i];
-        if (r->child && r->child->record_count > 0) {
-            // Sub-arena with its own records — recurse into children
-            count = profiler_flatten_arena(r->child, base_offset + r->offset + (uint32_t)sizeof(arena),
-                                           out, count, color_id);
-        } else if (r->child) {
-            // Sub-arena with no internal records (e.g. Clay) — show as leaf using its used size
-            out[count].tag = r->tag;
-            out[count].offset = base_offset + r->offset;
-            out[count].size = r->child->used > 0 ? r->child->used : r->size;
-            out[count].color_idx = (*color_id)++;
-            count++;
-        } else {
-            out[count].tag = r->tag;
-            out[count].offset = base_offset + r->offset;
-            out[count].size = r->size;
-            out[count].color_idx = (*color_id)++;
-            count++;
-        }
-    }
-    return count;
-}
-
-// Profiler window: run Clay layout for profiler panels, build + upload vertices
+// Profiler window: read pre-computed Clay commands from editor.dll, build + upload vertices
 static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    // Sync Clay's peak frame usage into our sub-arenas for profiler display.
-    // nextAllocation = current bump offset (peak after EndLayout).
-    if (clay_arena_game && clay_context)
-        clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
-    if (clay_arena_prof && profiler_clay_context)
-        clay_arena_prof->used = (uint32_t)profiler_clay_context->internalArena.nextAllocation;
+    if (g->editor.profiler_cmd_count <= 0 || !g->editor.profiler_cmd_array)
+        return;
 
-    Clay_SetCurrentContext(profiler_clay_context);
+    Clay_RenderCommandArray commands;
+    commands.length = g->editor.profiler_cmd_count;
+    commands.internalArray = (Clay_RenderCommand *)g->editor.profiler_cmd_array;
 
-    int win_w = panel_tex_w[PANEL_PROFILER];
-    int win_h = panel_tex_h[PANEL_PROFILER];
-    if (win_w <= 0) win_w = 800;
-    if (win_h <= 0) win_h = 600;
-    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
-
-    Clay_BeginLayout();
-
-    arena *a = &g->arena;
-    float used_pct = (a->capacity > 0) ? (100.0f * a->used / a->capacity) : 0.0f;
-
-    static char title_buf[128];
-    snprintf(title_buf, sizeof(title_buf), "Memory Profiler    %s / %s  (%.1f%%)",
-        format_bytes(a->used), format_bytes(a->capacity), (double)used_pct);
-
-    // Flatten records for block+grid
-    static FlatRecord flat[MAX_FLAT_RECORDS];
-    int flat_color = 0;
-    int flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
-
-    // Root container — fills entire window
-    CLAY(CLAY_ID("PRoot"), {
-        .layout = {
-            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-            .padding = CLAY_PADDING_ALL(12),
-            .childGap = 0,
-            .layoutDirection = CLAY_TOP_TO_BOTTOM
-        },
-        .backgroundColor = {25, 25, 30, 255}
-    }) {
-        // Title bar
-        CLAY(CLAY_ID("PTitleBar"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                .padding = { .left = 8, .right = 8, .top = 6, .bottom = 10 }
-            }
-        }) {
-            Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
-            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
-        }
-
-        // Three-panel row
-        CLAY(CLAY_ID("PPanels"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-                .childGap = 8,
-                .layoutDirection = CLAY_LEFT_TO_RIGHT
-            }
-        }) {
-            // ===== TREE PANEL (left, 35%) =====
-            CLAY(CLAY_ID("PTree"), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_PERCENT(0.35f), CLAY_SIZING_GROW({0}) },
-                    .padding = CLAY_PADDING_ALL(8),
-                    .childGap = 2,
-                    .layoutDirection = CLAY_TOP_TO_BOTTOM
-                },
-                .backgroundColor = {35, 35, 40, 255},
-                .cornerRadius = CLAY_CORNER_RADIUS(4)
-            }) {
-                {
-                    Clay_String hdr = CLAY_STRING("Tree View");
-                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
-                }
-
-                // Arena root row
-                {
-                    static char root_buf[64];
-                    snprintf(root_buf, sizeof(root_buf), "Arena  %s", format_bytes(a->capacity));
-                    Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
-
-                    CLAY(CLAY_ID("TRootRow"), {
-                        .layout = {
-                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                            .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
-                        }
-                    }) {
-                        CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
-                    }
-                }
-
-                int row_id = 0;
-                profiler_tree_arena(a, 1, &row_id);
-            }
-
-            // ===== BLOCK PANEL (center, 20%) =====
-            CLAY(CLAY_ID("PBlock"), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_PERCENT(0.20f), CLAY_SIZING_GROW({0}) },
-                    .padding = CLAY_PADDING_ALL(8),
-                    .childGap = 2,
-                    .layoutDirection = CLAY_TOP_TO_BOTTOM
-                },
-                .backgroundColor = {35, 35, 40, 255},
-                .cornerRadius = CLAY_CORNER_RADIUS(4)
-            }) {
-                {
-                    Clay_String hdr = CLAY_STRING("Block View");
-                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
-                }
-
-                // Column of proportional blocks
-                float block_total_h = (float)(win_h - 80);  // approximate available height
-                if (block_total_h < 100) block_total_h = 100;
-
-                for (int i = 0; i < flat_count; i++) {
-                    float frac = (float)flat[i].size / (float)a->capacity;
-                    float h = frac * block_total_h;
-                    if (h < 2.0f) h = 2.0f;
-                    Clay_Color color = profiler_colors[flat[i].color_idx % profiler_color_count];
-
-                    static char block_bufs[MAX_FLAT_RECORDS][48];
-                    snprintf(block_bufs[i], sizeof(block_bufs[i]), "%s", flat[i].tag);
-
-                    CLAY(CLAY_IDI("BlkEntry", (int32_t)i), {
-                        .layout = {
-                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(h) },
-                            .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
-                            .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
-                        },
-                        .backgroundColor = color,
-                        .cornerRadius = CLAY_CORNER_RADIUS(2)
-                    }) {
-                        if (h > 14) {
-                            Clay_String bs = {false, (int32_t)strlen(block_bufs[i]), block_bufs[i]};
-                            CLAY_TEXT(bs, CLAY_TEXT_CONFIG({.textColor = {0, 0, 0, 200}, .fontSize = 16}));
-                        }
-                    }
-                }
-
-                // Free space block
-                {
-                    uint32_t free_bytes = a->capacity - a->used;
-                    float frac = (float)free_bytes / (float)a->capacity;
-                    float h = frac * block_total_h;
-                    if (h < 2.0f) h = 2.0f;
-
-                    static char free_buf[32];
-                    snprintf(free_buf, sizeof(free_buf), "FREE %s", format_bytes(free_bytes));
-
-                    CLAY(CLAY_ID("BlkFree"), {
-                        .layout = {
-                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(h) },
-                            .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
-                            .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
-                        },
-                        .backgroundColor = {50, 50, 55, 255},
-                        .cornerRadius = CLAY_CORNER_RADIUS(2)
-                    }) {
-                        if (h > 14) {
-                            Clay_String fs = {false, (int32_t)strlen(free_buf), free_buf};
-                            CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {120, 120, 120, 255}, .fontSize = 16}));
-                        }
-                    }
-                }
-            }
-
-            // ===== GRID PANEL (right) =====
-            CLAY(CLAY_ID("PGrid"), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-                    .padding = CLAY_PADDING_ALL(8),
-                    .childGap = 2,
-                    .layoutDirection = CLAY_TOP_TO_BOTTOM
-                },
-                .backgroundColor = {35, 35, 40, 255},
-                .cornerRadius = CLAY_CORNER_RADIUS(4)
-            }) {
-                {
-                    Clay_String hdr = CLAY_STRING("Grid View");
-                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
-                }
-
-                // Grid: each cell = 64KB of arena space
-                uint32_t cell_size = 64 * 1024;  // 64 KB per cell
-                uint32_t total_cells = (a->capacity + cell_size - 1) / cell_size;
-                int grid_cols = 16;
-                int grid_rows = ((int)total_cells + grid_cols - 1) / grid_cols;
-
-                for (int row = 0; row < grid_rows; row++) {
-                    CLAY(CLAY_IDI("GRow", (int32_t)row), {
-                        .layout = {
-                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                            .childGap = 2,
-                            .layoutDirection = CLAY_LEFT_TO_RIGHT
-                        }
-                    }) {
-                        for (int col = 0; col < grid_cols; col++) {
-                            uint32_t cell_idx = (uint32_t)(row * grid_cols + col);
-                            if (cell_idx >= total_cells) break;
-
-                            uint32_t cell_start = cell_idx * cell_size;
-                            uint32_t cell_end = cell_start + cell_size;
-                            if (cell_end > a->capacity) cell_end = a->capacity;
-
-                            // Find which record owns this cell
-                            Clay_Color cell_color = {50, 50, 55, 255};  // free/dark
-                            for (int fi = 0; fi < flat_count; fi++) {
-                                uint32_t rec_start = flat[fi].offset;
-                                uint32_t rec_end = flat[fi].offset + flat[fi].size;
-                                if (rec_start < cell_end && rec_end > cell_start) {
-                                    cell_color = profiler_colors[flat[fi].color_idx % profiler_color_count];
-                                    break;
-                                }
-                            }
-
-                            int32_t cell_id = (int32_t)(row * grid_cols + col);
-                            CLAY(CLAY_IDI("GCell", cell_id), {
-                                .layout = {
-                                    .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) }
-                                },
-                                .backgroundColor = cell_color,
-                                .cornerRadius = CLAY_CORNER_RADIUS(2)
-                            }) {}
-                        }
-                    }
-                }
-
-                // Legend
-                CLAY(CLAY_ID("GLegend"), {
-                    .layout = {
-                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                        .padding = { .left = 0, .right = 0, .top = 8, .bottom = 0 },
-                        .childGap = 12,
-                        .layoutDirection = CLAY_LEFT_TO_RIGHT
-                    }
-                }) {
-                    CLAY(CLAY_ID("GLAllocBox"), {
-                        .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
-                        .backgroundColor = profiler_colors[0],
-                        .cornerRadius = CLAY_CORNER_RADIUS(1)
-                    }) {}
-                    {
-                        Clay_String ls = CLAY_STRING("= allocated");
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
-                    }
-                    CLAY(CLAY_ID("GLFreeBox"), {
-                        .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
-                        .backgroundColor = {50, 50, 55, 255},
-                        .cornerRadius = CLAY_CORNER_RADIUS(1)
-                    }) {}
-                    {
-                        Clay_String ls = CLAY_STRING("= free");
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
-                    }
-                }
-            }
-        }
-    }
-
-    Clay_RenderCommandArray commands = Clay_EndLayout();
     ui_build_vertices(&ui_profiler, commands);
     ui_upload(cmd_buf, &ui_profiler);
 }
@@ -2149,6 +1775,18 @@ EXPORT int init_externals(struct memory *g) {
         return -1;
     }
 
+    // Pre-compute ASCII advance table for editor.dll's Clay text measurement
+    {
+        float scale1 = stbtt_ScaleForPixelHeight(&editor_font.stb_info, 1.0f);
+        int ch;
+        for (ch = 0; ch < 128; ch++) {
+            int advance, lsb;
+            stbtt_GetCodepointHMetrics(&editor_font.stb_info, ch, &advance, &lsb);
+            g->editor.font_advances[ch] = (float)advance * scale1;
+        }
+        g->editor.font_line_height = editor_font.ascent - editor_font.descent + editor_font.line_gap;
+    }
+
     // Initialize arena (single allocation for all engine memory)
     {
         uint32_t arena_size = 32 * 1024 * 1024; // 32 MB
@@ -2178,23 +1816,8 @@ EXPORT int init_externals(struct memory *g) {
         printf("Clay game context initialized (%llu bytes from main arena)\n", (unsigned long long)clay_mem_size);
     }
 
-    // Initialize Clay UI — editor context (from editor_arena, for profiler/editor panels)
-    {
-        uint64_t clay_mem_size = Clay_MinMemorySize();
-        clay_arena_prof = arena_alloc_subarena(g->editor_arena, (uint32_t)clay_mem_size, 16, "clay_editor");
-
-        Clay_Arena clay_arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem_size, clay_arena_prof->base);
-        Clay_ErrorHandler err_handler = {0};
-        profiler_clay_context = Clay_Initialize(clay_arena, (Clay_Dimensions){800, 600}, err_handler);
-        Clay_SetCurrentContext(profiler_clay_context);
-        Clay_SetMeasureTextFunction(clay_measure_text, NULL);
-        Clay_SetCurrentContext(clay_context);  // restore game context
-        printf("Clay editor context initialized (%llu bytes from editor_arena)\n", (unsigned long long)clay_mem_size);
-    }
-
-    // Publish Clay contexts to memory struct (engine.dll uses clay_game, editor.dll uses clay_editor)
+    // Clay editor context is now created by editor.dll (init_editor) — we just publish the game context
     g->clay_game = clay_context;
-    g->clay_editor = profiler_clay_context;
 
     // Initialize dock system (single window, three-column layout)
     if (!dock->initialized) {
@@ -2701,67 +2324,29 @@ EXPORT void update_externals(struct memory *g) {
         dock->cmd_cleanup_windows = 0;
     }
 
-    // --- Window + dock layout (all windows) ---
-    int display_w, display_h;
-    {
-        int wi;
-        for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
-            if (!dock->windows[wi].in_use || !dock->windows[wi].sdl_window) continue;
-            {
-                int ww, wh;
-                SDL_GetWindowSizeInPixels((SDL_Window *)dock->windows[wi].sdl_window, &ww, &wh);
-                dock_layout(dock, wi, ww, wh);
-            }
-        }
-    }
-    /* Main window dimensions (for ortho etc.) */
-    SDL_GetWindowSizeInPixels(window, &display_w, &display_h);
+    // --- Update editor (dock layout, panel rects, profiler Clay, camera, gizmo, lines) ---
+    // Editor.dll now does: dock_layout for all windows, game panel size, editor panel
+    // rect, profiler Clay layout. Must run BEFORE ensure_panel_textures and ortho.
+    // Sync game Clay arena usage so profiler display is accurate
+    if (clay_arena_game && clay_context)
+        clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
+    if (g->editor.open && g_editor_update) g_editor_update(g);
+
+    // --- Panel textures (after dock_layout in editor, which set node rects) ---
     ensure_panel_textures(dock);
 
-    /* Game panel size (used for ortho projection) — search all windows */
+    // --- Ortho projection (based on game panel size, set by editor.dll) ---
     {
-        int game_win_idx;
-        int game_node = dock_find_leaf_for_panel_global(dock, PANEL_GAME, &game_win_idx);
-        if (game_node >= 0) {
-            g->width = panel_tex_w[PANEL_GAME];
-            g->height = panel_tex_h[PANEL_GAME];
-        } else {
-            g->width = display_w;
-            g->height = display_h;
-        }
+        float w = (float)g->width;
+        float h = (float)g->height;
+        float ortho[16] = {
+            2.0f/w, 0,      0,     0,
+            0,      2.0f/h, 0,     0,
+            0,      0,     -1.0f,  0,
+            0,      0,      0,     1.0f
+        };
+        memcpy(g->draw_list.ortho_projection, ortho, sizeof(ortho));
     }
-
-    /* Editor panel rect (for coordinate transforms in editor.dll) — search all windows */
-    {
-        int ed_win_idx;
-        int ed_node = dock_find_leaf_for_panel_global(dock, PANEL_EDITOR, &ed_win_idx);
-        if (ed_node >= 0) {
-            DockNode *en = &dock->nodes[ed_node];
-            g->editor.panel_x = en->x;
-            g->editor.panel_y = en->y + DOCK_HEADER_HEIGHT;
-            g->editor.panel_w = en->w;
-            g->editor.panel_h = en->h - DOCK_HEADER_HEIGHT;
-            /* Set editor's window to whichever dock window contains it */
-            g->editor.window = (ed_win_idx >= 0) ? dock->windows[ed_win_idx].sdl_window : window;
-        } else {
-            g->editor.panel_x = 0;
-            g->editor.panel_y = 0;
-            g->editor.panel_w = (float)display_w;
-            g->editor.panel_h = (float)display_h;
-            g->editor.window = window;
-        }
-    }
-
-    // --- Ortho projection (based on game panel size) ---
-    float w = (float)g->width;
-    float h = (float)g->height;
-    float ortho[16] = {
-        2.0f/w, 0,      0,     0,
-        0,      2.0f/h, 0,     0,
-        0,      0,     -1.0f,  0,
-        0,      0,      0,     1.0f
-    };
-    memcpy(g->draw_list.ortho_projection, ortho, sizeof(ortho));
 
     // --- Reset draw list ---
     g->draw_list.sprite_count = 0;
@@ -2769,9 +2354,6 @@ EXPORT void update_externals(struct memory *g) {
 
     // --- Call engine update (fills draw_list + updates mesh3d animation) ---
     g_update(g);
-
-    // --- Update editor (camera, gizmo, line building — runs in editor.dll) ---
-    if (g->editor.open && g_editor_update) g_editor_update(g);
 
     // --- Render ---
     SDL_GPUCommandBuffer *cmd_buf = SDL_AcquireGPUCommandBuffer(gpu_device);
@@ -3380,7 +2962,6 @@ EXPORT void end_externals(struct memory *g) {
 
     // Clay memory is inside sub-arenas — no separate free needed
     clay_arena_game = NULL;
-    clay_arena_prof = NULL;
 
     // Release editor mouse look if active
     if (g->editor.cam_mouse_look && window) {

@@ -715,8 +715,9 @@ static int build_externals(void)
 #define TCC_EDITOR_CMD \
     ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/editor.dll" \
+    " -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/editor -Isrc/engine" \
-    " -Ilib/SDL3/include" \
+    " -Ilib/SDL3/include -Ilib/clay" \
     " src/editor/editor.c" \
     " build/Debug/SDL3.def"
 
@@ -753,8 +754,9 @@ static int build_externals(void)
 #define TCC_EDITOR_CMD \
     "./tcc -Blib/tcc-linux -shared" \
     " -o build/Debug/editor.so" \
+    " -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/editor -Isrc/engine" \
-    " -Ilib/SDL3/include" \
+    " -Ilib/SDL3/include -Ilib/clay" \
     " src/editor/editor.c"
 
 #define TCC_CORE_CMD \

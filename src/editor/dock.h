@@ -84,12 +84,26 @@ typedef struct {
     DropZone  hover_zone;
 } DragState;
 
+/* ── Resize state (divider dragging) ───────────────────────────────────── */
+
+#define DOCK_DIVIDER_HIT_HALF  4  /* pixels each side of divider line      */
+#define DOCK_MIN_PANEL_SIZE   50  /* minimum child size in pixels           */
+
+typedef struct {
+    int   active;                   /* 1 = currently resizing                */
+    int   node;                     /* split node being resized              */
+    int   window;                   /* window index                          */
+    float grab_pos;                 /* mouse pos along split axis at grab    */
+    float initial_ratio;            /* ratio before drag started             */
+} ResizeState;
+
 /* ── Top-level dock state ──────────────────────────────────────────────── */
 
 typedef struct {
     DockNode   nodes[MAX_DOCK_NODES];
     DockWindow windows[MAX_DOCK_WINDOWS];
     DragState  drag;
+    ResizeState resize;
     int        initialized;
 
     /* Commands: set by editor.dll, processed by externals.dll each frame */
@@ -111,6 +125,7 @@ static void dock_layout(dock_state *d, int win_idx, int win_w, int win_h);
 static int dock_leaf_for_panel(dock_state *d, int node_idx, PanelId panel);
 static int dock_node_at_point(dock_state *d, int node_idx, float px, float py);
 static DropZone dock_drop_zone(DockNode *node, float px, float py);
+static int dock_divider_at_point(dock_state *d, int node_idx, float px, float py);
 
 /* ── Inline implementations ────────────────────────────────────────────── */
 
@@ -161,6 +176,7 @@ static void dock_init_default(dock_state *d)
             d->windows[i].in_use = 0;
     }
     d->drag.phase = DRAG_IDLE;
+    d->resize.active = 0;
 
     /* Editor leaf */
     editor_leaf = dock_alloc_node(d);
@@ -513,6 +529,43 @@ static int header_hit_test_node(dock_state *d, int node_idx, float mx, float my,
 
     if (header_hit_test_node(d, n->children[0], mx, my, out_node, out_panel, out_tab_idx)) return 1;
     return header_hit_test_node(d, n->children[1], mx, my, out_node, out_panel, out_tab_idx);
+}
+
+/* Find the split node whose divider line is under the cursor.
+   Returns node index of the SPLIT_H or SPLIT_V node, or -1 if none.
+   Checks deepest (most nested) splits first so inner dividers win over outer. */
+static int dock_divider_at_point(dock_state *d, int node_idx, float px, float py)
+{
+    DockNode *n;
+    int result;
+    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) return -1;
+    n = &d->nodes[node_idx];
+    if (!n->in_use) return -1;
+
+    /* Only split nodes have dividers */
+    if (n->type == DOCK_TABS) return -1;
+
+    /* Check children first (deeper dividers take priority) */
+    result = dock_divider_at_point(d, n->children[0], px, py);
+    if (result >= 0) return result;
+    result = dock_divider_at_point(d, n->children[1], px, py);
+    if (result >= 0) return result;
+
+    /* Check this node's divider */
+    if (px < n->x || px >= n->x + n->w || py < n->y || py >= n->y + n->h)
+        return -1; /* mouse outside this node entirely */
+
+    if (n->type == DOCK_SPLIT_H) {
+        float div_x = n->x + n->w * n->ratio;
+        if (px >= div_x - DOCK_DIVIDER_HIT_HALF && px <= div_x + DOCK_DIVIDER_HIT_HALF)
+            return node_idx;
+    } else { /* DOCK_SPLIT_V */
+        float div_y = n->y + n->h * n->ratio;
+        if (py >= div_y - DOCK_DIVIDER_HIT_HALF && py <= div_y + DOCK_DIVIDER_HIT_HALF)
+            return node_idx;
+    }
+
+    return -1;
 }
 
 /* Split a leaf node by inserting a new panel beside or above/below it.

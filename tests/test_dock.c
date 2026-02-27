@@ -237,6 +237,70 @@ TEST(drop_zone_edges) {
     ASSERT_EQ(dock_drop_zone(&n, 300.0f, 250.0f), DROP_CENTER);
 }
 
+/* ── Tests: Divider hit-test ──────────────────────────────────────────── */
+
+TEST(divider_hit_on_vertical_split_line) {
+    /* In default layout: root is SPLIT_H at ratio=0.25 of 1600px → divider at x=400.
+       Inner is SPLIT_H at ratio=0.667 of 1200px → divider at x=400+1200*0.667 = 1200.4 */
+    dock_state d = make_default_dock();
+    dock_layout(&d, 0, 1600, 900);
+    {
+        /* Hit the root divider (at x=400, y in range) */
+        int hit = dock_divider_at_point(&d, d.windows[0].root_node, 400.0f, 450.0f);
+        ASSERT(hit >= 0);
+        ASSERT_EQ(d.nodes[hit].type, DOCK_SPLIT_H);
+    }
+}
+
+TEST(divider_hit_on_inner_split_line) {
+    dock_state d = make_default_dock();
+    dock_layout(&d, 0, 1600, 900);
+    {
+        /* Hit the inner divider (at x~1200, y in range) */
+        int hit = dock_divider_at_point(&d, d.windows[0].root_node, 1200.0f, 450.0f);
+        ASSERT(hit >= 0);
+        ASSERT_EQ(d.nodes[hit].type, DOCK_SPLIT_H);
+    }
+}
+
+TEST(divider_miss_in_panel_center) {
+    dock_state d = make_default_dock();
+    dock_layout(&d, 0, 1600, 900);
+    {
+        /* Center of the editor panel — no divider */
+        int hit = dock_divider_at_point(&d, d.windows[0].root_node, 200.0f, 450.0f);
+        ASSERT_EQ(hit, -1);
+    }
+}
+
+TEST(divider_miss_outside_window) {
+    dock_state d = make_default_dock();
+    dock_layout(&d, 0, 1600, 900);
+    {
+        int hit = dock_divider_at_point(&d, d.windows[0].root_node, -10.0f, 450.0f);
+        ASSERT_EQ(hit, -1);
+    }
+}
+
+TEST(divider_inner_takes_priority_over_outer) {
+    /* Create a layout where inner and outer dividers are close.
+       dock_divider_at_point checks children first, so deeper wins. */
+    dock_state d = make_default_dock();
+    int root = d.windows[0].root_node;
+    int inner = d.nodes[root].children[1]; /* inner SPLIT_H */
+    /* Make inner's divider at a specific position */
+    dock_layout(&d, 0, 1600, 900);
+    {
+        /* The inner SPLIT_H is the right child of root.
+           Its x starts at 400, w = 1200, ratio = 0.667.
+           Divider at 400 + 1200*0.667 = 1200.4.
+           Root divider is at 1600*0.25 = 400. */
+        int hit_inner = dock_divider_at_point(&d, d.windows[0].root_node, 1200.0f, 450.0f);
+        ASSERT(hit_inner >= 0);
+        ASSERT_EQ(hit_inner, inner);
+    }
+}
+
 /* ── Tests: Split at ──────────────────────────────────────────────────── */
 
 TEST(split_at_left_creates_horizontal_split) {
@@ -622,6 +686,13 @@ int main(void) {
 
     /* Drop zones */
     run_drop_zone_edges();
+
+    /* Divider hit-test */
+    run_divider_hit_on_vertical_split_line();
+    run_divider_hit_on_inner_split_line();
+    run_divider_miss_in_panel_center();
+    run_divider_miss_outside_window();
+    run_divider_inner_takes_priority_over_outer();
 
     /* Split at */
     run_split_at_left_creates_horizontal_split();
