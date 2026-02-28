@@ -1425,12 +1425,13 @@ EXPORT int init_externals(struct memory *m) {
 
     // 9b. Create 3D editor line pipeline (float3 position)
     {
+        const char *editor_line_vs_path = "assets/shaders/compiled/editor_line_vs.spv";
         SDL_GPUShader *ed_vs = load_shader_from_spirv(
-            m->game.shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            editor_line_vs_path, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *ed_fs = load_shader_from_spirv(
             m->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!ed_vs || !ed_fs) {
-            fprintf(stderr, "Failed to compile editor line shaders\n");
+            fprintf(stderr, "Failed to compile editor line shaders (vs=%s)\n", editor_line_vs_path);
             return -1;
         }
 
@@ -2032,9 +2033,9 @@ EXPORT int init_externals(struct memory *m) {
         m->game.dl.sprite_capacity = MAX_DRAW_COMMANDS;
         m->game.dl.sprites = (draw_command*)arena_alloc(rendering,
             (uint32_t)(MAX_DRAW_COMMANDS * sizeof(draw_command)), 16, "draw_commands");
-        m->game.dl.line_capacity = MAX_DEBUG_LINES;
+        m->game.dl.line_capacity = DRAW_LIST_MAX_DEBUG_LINES;
         m->game.dl.lines = (debug_line_command*)arena_alloc(rendering,
-            (uint32_t)(MAX_DEBUG_LINES * sizeof(debug_line_command)), 16, "debug_lines");
+            (uint32_t)(DRAW_LIST_MAX_DEBUG_LINES * sizeof(debug_line_command)), 16, "debug_lines");
 
         m->game.dbg.max_lines = 1000;
         m->game.dbg.current_line_count = 0;

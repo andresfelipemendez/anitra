@@ -225,8 +225,7 @@ static void mul_mat4(const float *a, const float *b, float *out) {
 
 /* ── mesh extraction ──────────────────────────────────────────── */
 
-static GltfMesh extract_mesh(cgltf_mesh *mesh, cgltf_skin *skin,
-                              const float *node_world, arena *ar) {
+static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, arena *ar) {
     GltfMesh result = {0};
     int apply_transform;
     uint32_t pi;
@@ -455,6 +454,10 @@ static AnimClip extract_anim_clip(cgltf_animation *anim, cgltf_skin *skin, arena
         case cgltf_interpolation_type_step:         interp = 0; break;
         case cgltf_interpolation_type_linear:       interp = 1; break;
         case cgltf_interpolation_type_cubic_spline: interp = 2; break;
+        case cgltf_interpolation_type_max_enum:
+        default:
+            interp = 1;
+            break;
         }
 
         clip.headers[c].joint_index = joint_index;
@@ -588,7 +591,7 @@ GltfModel load_glb(const char *path, arena *ar) {
             cgltf_node_transform_world(node, mesh_world);
             mul_mat4(inv_skel_world, mesh_world, mesh_to_skel);
 
-            sub = extract_mesh(node->mesh, skin, mesh_to_skel, ar);
+            sub = extract_mesh(node->mesh, mesh_to_skel, ar);
             for (p = 0; p < sub.primitive_count; p++) {
                 model.mesh.primitives[prim_idx++] = sub.primitives[p];
             }

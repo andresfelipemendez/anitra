@@ -29,6 +29,7 @@ void sample_clip(AnimClip *clip, float time,
     for (uint32_t c = 0; c < clip->channel_count; c++) {
         ChannelHeader *h = &clip->headers[c];
         ChannelTimes *t = &clip->times[c];
+        if (h->joint_index >= joint_count) continue;
 
         if (t->keyframe_count < 2) {
             switch (h->property) {

@@ -177,4 +177,5 @@ EXPORT void update_engine(game_state *gs) {
 }
 
 EXPORT void destroy_engine(game_state *gs) {
+    (void)gs;
 }

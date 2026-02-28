@@ -2,7 +2,7 @@
 #define DRAW_LIST_H
 
 #define MAX_DRAW_COMMANDS 256
-#define MAX_DEBUG_LINES 128
+#define DRAW_LIST_MAX_DEBUG_LINES 128
 
 typedef struct draw_command {
     int texture_id;

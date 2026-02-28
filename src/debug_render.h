@@ -9,7 +9,7 @@ typedef struct {
 } debug_color;
 
 /* Debug renderer state */
-#define MAX_DEBUG_LINES 256
+#define DEBUG_RENDER_MAX_LINES 256
 
 typedef struct debug_renderer {
     float* vertex_buffer;  /* x,y,r,g,b for each line endpoint — arena-allocated */
