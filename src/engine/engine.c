@@ -21,6 +21,40 @@ GltfModel load_glb(const char *path, arena *a);
 void load_animations_glb(const char *path, GltfModel *model, arena *a);
 void gltf_set_gpu_device(void *dev);
 
+static void restore_scene_storage(game_state *gs) {
+    if (!scene.entities && gs->scene_entities) {
+        scene.entities = gs->scene_entities;
+        scene.entity_capacity = gs->scene_entity_capacity;
+    }
+    if (!scene.parent_components && gs->parent_components) {
+        scene.parent_components = gs->parent_components;
+        scene.parent_component_capacity = gs->parent_component_capacity;
+    }
+    if (!scene.parent_transform_components && gs->parent_transform_components) {
+        scene.parent_transform_components = gs->parent_transform_components;
+        scene.parent_transform_component_capacity = gs->parent_transform_component_capacity;
+    }
+    if (!scene.parent_rotation_components && gs->parent_rotation_components) {
+        scene.parent_rotation_components = gs->parent_rotation_components;
+        scene.parent_rotation_component_capacity = gs->parent_rotation_component_capacity;
+    }
+}
+
+static void sync_scene_views(game_state *gs) {
+    gs->scene_entities = scene.entities;
+    gs->scene_entity_count = scene.entity_count;
+    gs->scene_entity_capacity = scene.entity_capacity;
+    gs->parent_components = scene.parent_components;
+    gs->parent_component_count = scene.parent_component_count;
+    gs->parent_component_capacity = scene.parent_component_capacity;
+    gs->parent_transform_components = scene.parent_transform_components;
+    gs->parent_transform_component_count = scene.parent_transform_component_count;
+    gs->parent_transform_component_capacity = scene.parent_transform_component_capacity;
+    gs->parent_rotation_components = scene.parent_rotation_components;
+    gs->parent_rotation_component_count = scene.parent_rotation_component_count;
+    gs->parent_rotation_component_capacity = scene.parent_rotation_component_capacity;
+}
+
 void update_input(game_state* gs) {
     entity* player;
     const float move_speed = 200.0f;
@@ -53,13 +87,39 @@ void update_input(game_state* gs) {
 }
 
 EXPORT void init_engine(game_state *gs) {
+    restore_scene_storage(gs);
+
     /* Allocate entity storage from the gameplay sub-arena (only on first init, survives hot reload) */
+    if (scene.entity_capacity <= 0) {
+        scene.entity_capacity = (gs->scene_entity_capacity > 0) ? gs->scene_entity_capacity : 64;
+    }
     if (!scene.entities) {
-        scene.entity_capacity = 64;
         scene.entities = (entity *)arena_alloc(gs->gameplay,
             (uint32_t)(scene.entity_capacity * sizeof(entity)), 16, "entities");
     }
+    if (!scene.parent_components) {
+        if (scene.parent_component_capacity <= 0)
+            scene.parent_component_capacity = scene.entity_capacity;
+        scene.parent_components = (parent_component *)arena_alloc(gs->gameplay,
+            (uint32_t)(scene.parent_component_capacity * sizeof(parent_component)),
+            16, "parent_components");
+    }
+    if (!scene.parent_transform_components) {
+        if (scene.parent_transform_component_capacity <= 0)
+            scene.parent_transform_component_capacity = scene.entity_capacity;
+        scene.parent_transform_components = (parent_transform_component *)arena_alloc(gs->gameplay,
+            (uint32_t)(scene.parent_transform_component_capacity * sizeof(parent_transform_component)),
+            16, "parent_transform_components");
+    }
+    if (!scene.parent_rotation_components) {
+        if (scene.parent_rotation_component_capacity <= 0)
+            scene.parent_rotation_component_capacity = scene.entity_capacity;
+        scene.parent_rotation_components = (parent_rotation_component *)arena_alloc(gs->gameplay,
+            (uint32_t)(scene.parent_rotation_component_capacity * sizeof(parent_rotation_component)),
+            16, "parent_rotation_components");
+    }
     scene_init();
+    sync_scene_views(gs);
 
     /* Load 3D model assets.
        Only runs on first init when no model is loaded yet. */
@@ -143,6 +203,7 @@ static void update_mesh3d(game_state *gs) {
 EXPORT void update_engine(game_state *gs) {
     int i;
     if (!gs) return;
+    sync_scene_views(gs);
 
     gs->dl.sprite_count = 0;
     gs->dl.line_count = 0;

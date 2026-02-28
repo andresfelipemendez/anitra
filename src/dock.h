@@ -44,6 +44,7 @@ static const char *panel_names[PANEL_COUNT] = {
     "Game",
     "Editor",
     "Profiler",
+    "Scene Tree",
     "Inspector",
     "Outline",
     "Assets"
@@ -217,10 +218,12 @@ static void dock_init_default(dock_state *d) {
     d->nodes[mid].panels[0] = PANEL_EDITOR;
     d->nodes[mid].panel_count = 1;
 
-    /* Right leaf: Profiler panel */
+    /* Right leaf: Profiler + Scene Tree tabs */
     right = dock_alloc_node(d);
     d->nodes[right].panels[0] = PANEL_PROFILER;
-    d->nodes[right].panel_count = 1;
+    d->nodes[right].panels[1] = PANEL_SCENE_TREE;
+    d->nodes[right].panel_count = 2;
+    d->nodes[right].active_tab = 0;
 
     /* Wire up children */
     d->nodes[root].children[0] = left;

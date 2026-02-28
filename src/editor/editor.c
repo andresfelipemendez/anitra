@@ -10,6 +10,8 @@
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
 
+#define PROFILER_MAX_FLAT_RECORDS 65536
+
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 
@@ -49,10 +51,6 @@ typedef struct HoverInfo {
     int found;
 } HoverInfo;
 
-/* Collapsed state for tree nodes (persists across frames within a DLL load) */
-#define MAX_TREE_NODES 256
-static int tree_collapsed[MAX_TREE_NODES]; /* 0 = expanded, 1 = collapsed */
-
 /* Collect all leaf records (flattened) for block + grid views */
 typedef struct FlatRecord {
     const char *tag;
@@ -60,36 +58,39 @@ typedef struct FlatRecord {
     uint32_t    size;
     int         color_idx;
 } FlatRecord;
-#define MAX_FLAT_RECORDS 256
 
 /* Flatten arena into leaf records for block/grid views.
    If out is NULL, only advances color_id (used by tree collapse skip). */
 static int profiler_flatten_arena(arena *a, uint32_t base_offset,
                                   FlatRecord *out, int count, int *color_id) {
     uint32_t i;
-    for (i = 0; i < a->record_count && count < MAX_FLAT_RECORDS; i++) {
+    for (i = 0; i < a->record_count; i++) {
         arena_record *r = &a->records[i];
         if (r->child && r->child->record_count > 0) {
             count = profiler_flatten_arena(r->child, base_offset + r->offset + (uint32_t)sizeof(arena),
                                            out, count, color_id);
         } else if (r->child) {
-            if (out) {
+            if (out && count < PROFILER_MAX_FLAT_RECORDS) {
                 out[count].tag = r->tag;
                 out[count].offset = base_offset + r->offset;
                 out[count].size = r->child->used > 0 ? r->child->used : r->size;
                 out[count].color_idx = (*color_id);
+                count++;
+            } else if (!out) {
+                count++;
             }
             (*color_id)++;
-            count++;
         } else {
-            if (out) {
+            if (out && count < PROFILER_MAX_FLAT_RECORDS) {
                 out[count].tag = r->tag;
                 out[count].offset = base_offset + r->offset;
                 out[count].size = r->size;
                 out[count].color_idx = (*color_id);
+                count++;
+            } else if (!out) {
+                count++;
             }
             (*color_id)++;
-            count++;
         }
     }
     return count;
@@ -111,7 +112,7 @@ static int count_arena_records(arena *a) {
    This keeps colors in sync with profiler_flatten_arena(). */
 static void profiler_tree_arena(arena *a, int depth, int *row_id,
                                 uint32_t base_offset, HoverInfo *hover,
-                                int *color_id, int click) {
+                                int *color_id, int click, int *collapsed_nodes) {
     uint32_t i;
     for (i = 0; i < a->record_count; i++) {
         arena_record *r = &a->records[i];
@@ -131,9 +132,9 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
 
         /* Build size string */
         {
-            static char size_bufs[256][32];
-            static char label_bufs[256][48];
-            int bidx = rid % 256;
+            static char size_bufs[PROFILER_TREE_MAX_NODES][32];
+            static char label_bufs[PROFILER_TREE_MAX_NODES][48];
+            int bidx = rid % PROFILER_TREE_MAX_NODES;
             if (r->child) {
                 float child_pct = (r->child->capacity > 0)
                     ? (100.0f * r->child->used / r->child->capacity) : 0.0f;
@@ -145,7 +146,7 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
             /* Label: collapse arrow for parents, bullet for leaves */
             if (is_parent) {
                 snprintf(label_bufs[bidx], sizeof(label_bufs[bidx]), "%s %s",
-                    (rid < MAX_TREE_NODES && tree_collapsed[rid]) ? ">" : "v", r->tag);
+                    (rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid]) ? ">" : "v", r->tag);
             } else {
                 snprintf(label_bufs[bidx], sizeof(label_bufs[bidx]), "%s", r->tag);
             }
@@ -164,8 +165,8 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
                 hovered = Clay_Hovered();
 
                 /* Toggle collapse on click */
-                if (hovered && click && is_parent && rid < MAX_TREE_NODES)
-                    tree_collapsed[rid] = !tree_collapsed[rid];
+                if (hovered && click && is_parent && rid < PROFILER_TREE_MAX_NODES)
+                    collapsed_nodes[rid] = !collapsed_nodes[rid];
 
                 /* Store hover info for grid/block highlight */
                 if (hovered && hover) {
@@ -204,11 +205,11 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
 
         (*row_id)++;
 
-        if (r->child && !(rid < MAX_TREE_NODES && tree_collapsed[rid])) {
+        if (r->child && !(rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid])) {
             profiler_tree_arena(r->child, depth + 1, row_id,
                                 base_offset + r->offset + (uint32_t)sizeof(arena),
-                                hover, color_id, click);
-        } else if (is_parent && rid < MAX_TREE_NODES && tree_collapsed[rid]) {
+                                hover, color_id, click, collapsed_nodes);
+        } else if (is_parent && rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid]) {
             /* Skip children — advance both row_id and color_id to keep
                them stable regardless of expand/collapse state */
             *row_id += count_arena_records(r->child);
@@ -238,6 +239,64 @@ static Clay_Dimensions profiler_measure_text(Clay_StringSlice text,
         ceilf(width + 1.0f),
         ceilf(e->font_line_height * scale)
     };
+}
+
+static const char *entity_type_name(entity_type type) {
+    switch (type) {
+        case PLAYER: return "PLAYER";
+        case ENEMY: return "ENEMY";
+        default: return "UNKNOWN";
+    }
+}
+
+static int find_parent_component(const game_state *gs, int entity_index, int *out_parent_index) {
+    int i;
+    for (i = 0; i < gs->parent_component_count; i++) {
+        parent_component *pc = &gs->parent_components[i];
+        if (pc->entity_index == entity_index) {
+            if (out_parent_index) *out_parent_index = pc->parent_entity_index;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_parent_transform_component(const game_state *gs, int entity_index) {
+    int i;
+    for (i = 0; i < gs->parent_transform_component_count; i++) {
+        parent_transform_component *pt = &gs->parent_transform_components[i];
+        if (pt->entity_index == entity_index) return 1;
+    }
+    return 0;
+}
+
+static int has_parent_rotation_component(const game_state *gs, int entity_index) {
+    int i;
+    for (i = 0; i < gs->parent_rotation_component_count; i++) {
+        parent_rotation_component *pr = &gs->parent_rotation_components[i];
+        if (pr->entity_index == entity_index) return 1;
+    }
+    return 0;
+}
+
+static int panel_event_hit(dock_state *d, PanelId panel, SDL_Window *evwin,
+                           float mx, float my, float *out_lx, float *out_ly) {
+    int pwin_idx;
+    int pnode = dock_find_leaf_for_panel_global(d, panel, &pwin_idx);
+    if (pnode < 0 || pwin_idx < 0) return 0;
+    if (evwin != (SDL_Window *)d->windows[pwin_idx].sdl_window) return 0;
+    {
+        DockNode *pn = &d->nodes[pnode];
+        float lx = mx - pn->x;
+        float ly = my - pn->y - DOCK_HEADER_HEIGHT;
+        float pw = pn->w;
+        float ph = pn->h - DOCK_HEADER_HEIGHT;
+        if (ph < 1) ph = 1;
+        if (lx < 0 || ly < 0 || lx >= pw || ly >= ph) return 0;
+        if (out_lx) *out_lx = lx;
+        if (out_ly) *out_ly = ly;
+    }
+    return 1;
 }
 
 /* ── Internal helpers ─────────────────────────────────────────── */
@@ -518,6 +577,18 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             es->clay_editor = e->profiler_clay_ctx;
         }
     }
+
+    if (!e->scene_tree_clay_ctx && es->editor_arena) {
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_scene_tree");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->scene_tree_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->scene_tree_clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+        }
+    }
 }
 
 /* ── Profiler Clay layout (produces render commands for externals GPU upload) ── */
@@ -532,7 +603,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     arena *a;
     float used_pct;
     static char title_buf[128];
-    static FlatRecord flat[MAX_FLAT_RECORDS];
+    static FlatRecord flat[PROFILER_MAX_FLAT_RECORDS];
     int flat_color, flat_count;
     uint32_t hover_offset, hover_size; /* byte range of hovered record (for range match) */
     int have_hover;
@@ -649,32 +720,40 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                     },
                     .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
                 }) {
-                    /* Arena root row */
-                    {
-                        static char root_buf[64];
-                        snprintf(root_buf, sizeof(root_buf), "Arena  %s", format_bytes(a->capacity));
+                    CLAY(CLAY_ID("PTreeContent"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .childGap = 2,
+                            .layoutDirection = CLAY_TOP_TO_BOTTOM
+                        }
+                    }) {
+                        /* Arena root row */
                         {
-                            Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
-                            CLAY(CLAY_ID("TRootRow"), {
-                                .layout = {
-                                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                                    .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                            static char root_buf[64];
+                            snprintf(root_buf, sizeof(root_buf), "Arena  %s", format_bytes(a->capacity));
+                            {
+                                Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
+                                CLAY(CLAY_ID("TRootRow"), {
+                                    .layout = {
+                                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                        .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                                    }
+                                }) {
+                                    CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
                                 }
-                            }) {
-                                CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
                             }
                         }
-                    }
 
-                    {
-                        HoverInfo hi = {0};
-                        int row_id = 0;
-                        int tree_color = 0;
-                        profiler_tree_arena(a, 1, &row_id, 0, &hi,
-                                            &tree_color, click);
-                        hover_offset = hi.offset;
-                        hover_size = hi.size;
-                        have_hover = hi.found;
+                        {
+                            HoverInfo hi = {0};
+                            int row_id = 0;
+                            int tree_color = 0;
+                            profiler_tree_arena(a, 1, &row_id, 0, &hi,
+                                                &tree_color, click, e->profiler_tree_collapsed);
+                            hover_offset = hi.offset;
+                            hover_size = hi.size;
+                            have_hover = hi.found;
+                        }
                     }
                 }
             }
@@ -696,18 +775,24 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                 }
 
                 /* Column of proportional blocks */
-                {
-                    float block_total_h = (float)(win_h - 80);
+                CLAY(CLAY_ID("PBlockBody"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .clip = { .vertical = true, .childOffset = {0, 0} }
+                }) {
+                    float block_total_h = (e->prof_container_h > 1.0f) ? e->prof_container_h : (float)(win_h - 80);
                     int bi;
-                    if (block_total_h < 100) block_total_h = 100;
+                    if (block_total_h < 1.0f) block_total_h = 1.0f;
 
                     for (bi = 0; bi < flat_count; bi++) {
-                        float frac = (float)flat[bi].size / (float)a->capacity;
+                        float frac = (a->capacity > 0) ? ((float)flat[bi].size / (float)a->capacity) : 0.0f;
                         float bh = frac * block_total_h;
                         Clay_Color bcolor;
                         int blk_hovered;
-                        static char block_bufs[MAX_FLAT_RECORDS][48];
-                        if (bh < 2.0f) bh = 2.0f;
+                        static char block_bufs[PROFILER_MAX_FLAT_RECORDS][48];
+                        if (bh <= 0.0f) continue;
                         bcolor = profiler_colors[flat[bi].color_idx % profiler_color_count];
                         blk_hovered = have_hover &&
                             flat[bi].offset >= hover_offset &&
@@ -744,24 +829,25 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                     /* Free space block */
                     {
                         uint32_t free_bytes = a->capacity - a->used;
-                        float frac = (float)free_bytes / (float)a->capacity;
+                        float frac = (a->capacity > 0) ? ((float)free_bytes / (float)a->capacity) : 0.0f;
                         float fh = frac * block_total_h;
                         static char free_buf[32];
-                        if (fh < 2.0f) fh = 2.0f;
-                        snprintf(free_buf, sizeof(free_buf), "FREE %s", format_bytes(free_bytes));
+                        if (fh > 0.0f) {
+                            snprintf(free_buf, sizeof(free_buf), "FREE %s", format_bytes(free_bytes));
 
-                        CLAY(CLAY_ID("BlkFree"), {
-                            .layout = {
-                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(fh) },
-                                .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
-                                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
-                            },
-                            .backgroundColor = {50, 50, 55, 255},
-                            .cornerRadius = CLAY_CORNER_RADIUS(2)
-                        }) {
-                            if (fh > 14) {
-                                Clay_String fs = {false, (int32_t)strlen(free_buf), free_buf};
-                                CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {120, 120, 120, 255}, .fontSize = 16}));
+                            CLAY(CLAY_ID("BlkFree"), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(fh) },
+                                    .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
+                                    .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
+                                },
+                                .backgroundColor = {50, 50, 55, 255},
+                                .cornerRadius = CLAY_CORNER_RADIUS(2)
+                            }) {
+                                if (fh > 14) {
+                                    Clay_String fs = {false, (int32_t)strlen(free_buf), free_buf};
+                                    CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {120, 120, 120, 255}, .fontSize = 16}));
+                                }
                             }
                         }
                     }
@@ -923,6 +1009,169 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     }
 }
 
+static void scene_tree_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    Clay_Context *ctx = (Clay_Context *)e->scene_tree_clay_ctx;
+    int scene_win_idx;
+    int scene_node;
+    int win_w, win_h;
+    int click;
+    static char title_buf[128];
+    static char entity_label_bufs[SCENE_TREE_MAX_ENTITIES][96];
+    static char entity_type_bufs[SCENE_TREE_MAX_ENTITIES][64];
+    static char parent_comp_bufs[SCENE_TREE_MAX_ENTITIES][128];
+    Clay_RenderCommandArray commands;
+
+    if (!ctx) {
+        e->scene_tree_cmd_count = 0;
+        e->scene_tree_cmd_array = NULL;
+        return;
+    }
+
+    Clay_SetCurrentContext(ctx);
+
+    scene_node = dock_find_leaf_for_panel_global(d, PANEL_SCENE_TREE, &scene_win_idx);
+    if (scene_node >= 0) {
+        DockNode *sn = &d->nodes[scene_node];
+        win_w = (int)sn->w;
+        win_h = (int)(sn->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    } else {
+        win_w = 600;
+        win_h = 700;
+    }
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+
+    click = e->scene_tree_click;
+    {
+        Clay_Vector2 mpos = {e->scene_tree_mouse_x, e->scene_tree_mouse_y};
+        Clay_Vector2 sdelta = {0, e->scene_tree_scroll_y};
+        Clay_SetPointerState(mpos, (bool)e->scene_tree_mouse_down);
+        Clay_UpdateScrollContainers(true, sdelta, gs->dt);
+        e->scene_tree_scroll_y = 0;
+    }
+
+    Clay_BeginLayout();
+
+    snprintf(title_buf, sizeof(title_buf), "Scene Tree  (%d entities)", gs->scene_entity_count);
+    CLAY(CLAY_ID("STRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 8,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+        Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
+        CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 225, 235, 255}, .fontSize = 16}));
+
+        CLAY(CLAY_ID("STList"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .childGap = 8,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+        }) {
+            CLAY(CLAY_ID("STListContent"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .childGap = 8,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                }
+            }) {
+                int i;
+                for (i = 0; i < gs->scene_entity_count; i++) {
+                    entity *ent = &gs->scene_entities[i];
+                    int bi = i % SCENE_TREE_MAX_ENTITIES;
+                    int parent_idx = -1;
+                    int has_parent = find_parent_component(gs, i, &parent_idx);
+                    int has_parent_transform = has_parent_transform_component(gs, i);
+                    int has_parent_rotation = has_parent_rotation_component(gs, i);
+                    int has_children = has_parent || has_parent_transform || has_parent_rotation;
+                    int collapsed = (i < SCENE_TREE_MAX_ENTITIES) ? e->scene_tree_collapsed[i] : 0;
+
+                    snprintf(entity_label_bufs[bi], sizeof(entity_label_bufs[bi]), "%s Entity %d",
+                        has_children ? (collapsed ? ">" : "v") : "-", i);
+                    snprintf(entity_type_bufs[bi], sizeof(entity_type_bufs[bi]), "Type: %s", entity_type_name(ent->type));
+
+                    CLAY(CLAY_IDI("STEntity", (int32_t)i), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = CLAY_PADDING_ALL(8),
+                            .childGap = 3,
+                            .layoutDirection = CLAY_TOP_TO_BOTTOM
+                        },
+                        .backgroundColor = {36, 42, 56, 255},
+                        .cornerRadius = CLAY_CORNER_RADIUS(4)
+                    }) {
+                        CLAY(CLAY_IDI("STEntityHdr", (int32_t)i), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                .padding = { .left = 4, .right = 4, .top = 2, .bottom = 2 }
+                            },
+                            .backgroundColor = Clay_Hovered() ? ((Clay_Color){52, 60, 78, 255})
+                                                              : ((Clay_Color){0, 0, 0, 0})
+                        }) {
+                            int hovered = Clay_Hovered();
+                            if (has_children && hovered && click && i < SCENE_TREE_MAX_ENTITIES)
+                                e->scene_tree_collapsed[i] = !e->scene_tree_collapsed[i];
+
+                            {
+                                Clay_String es = {false, (int32_t)strlen(entity_label_bufs[bi]), entity_label_bufs[bi]};
+                                CLAY_TEXT(es, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = 16}));
+                            }
+                        }
+
+                        {
+                            Clay_String tys = {false, (int32_t)strlen(entity_type_bufs[bi]), entity_type_bufs[bi]};
+                            CLAY_TEXT(tys, CLAY_TEXT_CONFIG({.textColor = {176, 188, 205, 255}, .fontSize = 16}));
+                        }
+
+                        if (!has_children) {
+                            Clay_String cs = CLAY_STRING("Components: (none)");
+                            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = 16}));
+                        } else if (!e->scene_tree_collapsed[i]) {
+                            CLAY(CLAY_IDI("STEntityComps", (int32_t)i), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                    .padding = { .left = 14, .right = 0, .top = 2, .bottom = 2 },
+                                    .childGap = 2,
+                                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                                }
+                            }) {
+                                if (has_parent) {
+                                    snprintf(parent_comp_bufs[bi], sizeof(parent_comp_bufs[bi]),
+                                        "Component: Parent (entity %d)", parent_idx);
+                                    {
+                                        Clay_String cs = {false, (int32_t)strlen(parent_comp_bufs[bi]), parent_comp_bufs[bi]};
+                                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = 16}));
+                                    }
+                                }
+                                if (has_parent_transform) {
+                                    Clay_String cs = CLAY_STRING("Component: Parent Transform");
+                                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = 16}));
+                                }
+                                if (has_parent_rotation) {
+                                    Clay_String cs = CLAY_STRING("Component: Parent Rotation");
+                                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = 16}));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    e->scene_tree_cmd_count = commands.length;
+    e->scene_tree_cmd_array = commands.internalArray;
+    e->scene_tree_click = 0;
+}
+
 EXPORT void update_editor(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
@@ -979,6 +1228,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
 
     /* ── Profiler Clay layout (produces render commands for externals) ── */
     profiler_layout(gs, es);
+    scene_tree_layout(gs, es);
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
     update_camera(gs, es);
@@ -1322,39 +1572,59 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         e->gizmo_active = 0;
     }
 
-    /* ── Profiler input: track mouse position + scroll for Clay scroll containers ── */
+    /* ── Profiler + Scene Tree input: track mouse position + scroll for Clay containers ── */
     if (ev->type == SDL_EVENT_MOUSE_MOTION) {
         evwin = SDL_GetWindowFromEvent(ev);
         {
-            int pwin_idx;
-            int pnode = dock_find_leaf_for_panel_global(d, PANEL_PROFILER, &pwin_idx);
-            if (pnode >= 0 && pwin_idx >= 0 &&
-                evwin == (SDL_Window *)d->windows[pwin_idx].sdl_window) {
-                DockNode *pn = &d->nodes[pnode];
-                e->prof_mouse_x = ev->motion.x - pn->x;
-                e->prof_mouse_y = ev->motion.y - pn->y - DOCK_HEADER_HEIGHT;
+            float lx, ly;
+            if (panel_event_hit(d, PANEL_PROFILER, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
+                e->prof_mouse_x = lx;
+                e->prof_mouse_y = ly;
+            }
+            if (panel_event_hit(d, PANEL_SCENE_TREE, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
+                e->scene_tree_mouse_x = lx;
+                e->scene_tree_mouse_y = ly;
             }
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_WHEEL) {
         evwin = SDL_GetWindowFromEvent(ev);
         {
-            int pwin_idx;
-            int pnode = dock_find_leaf_for_panel_global(d, PANEL_PROFILER, &pwin_idx);
-            if (pnode >= 0 && pwin_idx >= 0 &&
-                evwin == (SDL_Window *)d->windows[pwin_idx].sdl_window) {
-                /* Accumulate — consumed and cleared by profiler_layout each frame.
-                   Clay internally multiplies by 10, so 3.0 → ~30px per tick. */
+            float mx, my;
+            SDL_GetMouseState(&mx, &my);
+            if (panel_event_hit(d, PANEL_PROFILER, evwin, mx, my, NULL, NULL)) {
                 e->prof_scroll_y += ev->wheel.y * 3.0f;
+            }
+            if (panel_event_hit(d, PANEL_SCENE_TREE, evwin, mx, my, NULL, NULL)) {
+                e->scene_tree_scroll_y += ev->wheel.y * 3.0f;
             }
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev->button.button == SDL_BUTTON_LEFT) {
-        e->prof_mouse_down = 1;
-        e->prof_click = 1;
+        evwin = SDL_GetWindowFromEvent(ev);
+        {
+            float lx, ly;
+            e->prof_mouse_down = panel_event_hit(d, PANEL_PROFILER, evwin,
+                ev->button.x, ev->button.y, &lx, &ly);
+            if (e->prof_mouse_down) {
+                e->prof_mouse_x = lx;
+                e->prof_mouse_y = ly;
+                e->prof_click = 1;
+            }
+
+            e->scene_tree_mouse_down = panel_event_hit(d, PANEL_SCENE_TREE, evwin,
+                ev->button.x, ev->button.y, &lx, &ly);
+            if (e->scene_tree_mouse_down) {
+                e->scene_tree_mouse_x = lx;
+                e->scene_tree_mouse_y = ly;
+                e->scene_tree_click = 1;
+            }
+        }
     }
-    if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT)
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT) {
         e->prof_mouse_down = 0;
+        e->scene_tree_mouse_down = 0;
+    }
 
     return 0;
 }

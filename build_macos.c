@@ -190,11 +190,11 @@ static const char *sdl3_sources_platform[] = {
 
 static int watch_and_rebuild(void)
 {
-    int kq, engine_fd, editor_fd, core_fd;
-    struct kevent changes[3];
-    struct kevent events[3];
+    int kq, engine_fd, editor_fd, core_fd, externals_fd;
+    struct kevent changes[4];
+    struct kevent events[4];
 
-    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
+    printf("=== Forge: watching src/engine + src/editor + src/core + src/externals for changes ===\n");
     fflush(stdout);
 
     kq = kqueue();
@@ -227,15 +227,28 @@ static int watch_and_rebuild(void)
         return 1;
     }
 
+    externals_fd = open("src/externals", O_RDONLY | O_DIRECTORY);
+    if (externals_fd < 0) {
+        printf("!! failed to open src/externals for watching\n");
+        close(core_fd);
+        close(editor_fd);
+        close(engine_fd);
+        close(kq);
+        return 1;
+    }
+
     EV_SET(&changes[0], engine_fd, EVFILT_VNODE,
            EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
     EV_SET(&changes[1], editor_fd, EVFILT_VNODE,
            EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
     EV_SET(&changes[2], core_fd, EVFILT_VNODE,
            EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
+    EV_SET(&changes[3], externals_fd, EVFILT_VNODE,
+           EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
 
-    if (kevent(kq, changes, 3, NULL, 0, NULL) < 0) {
+    if (kevent(kq, changes, 4, NULL, 0, NULL) < 0) {
         printf("!! kevent registration failed\n");
+        close(externals_fd);
         close(core_fd);
         close(editor_fd);
         close(engine_fd);
@@ -250,7 +263,6 @@ static int watch_and_rebuild(void)
     printf(">> " TCC_COMPILE_CMD "\n");
     fflush(stdout);
     if (system(TCC_COMPILE_CMD) == 0) {
-        fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
         printf("   Initial engine compile OK.\n");
     } else {
         printf("!! Initial engine compile failed. Waiting for changes...\n");
@@ -260,7 +272,6 @@ static int watch_and_rebuild(void)
     printf(">> " TCC_EDITOR_CMD "\n");
     fflush(stdout);
     if (system(TCC_EDITOR_CMD) == 0) {
-        fclose(fopen(DEBUG_DIR "/.editor-reload-signal", "w"));
         printf("   Initial editor compile OK.\n");
     } else {
         printf("!! Initial editor compile failed. Waiting for changes...\n");
@@ -278,9 +289,9 @@ static int watch_and_rebuild(void)
     /* Watch loop */
     while (1) {
         int nev, i;
-        int engine_changed = 0, editor_changed = 0, core_changed = 0;
+        int engine_changed = 0, editor_changed = 0, core_changed = 0, externals_changed = 0;
 
-        nev = kevent(kq, NULL, 0, events, 3, NULL);
+        nev = kevent(kq, NULL, 0, events, 4, NULL);
         if (nev < 0) {
             printf("!! kevent wait failed\n");
             break;
@@ -290,17 +301,19 @@ static int watch_and_rebuild(void)
             if ((int)events[i].ident == engine_fd) engine_changed = 1;
             if ((int)events[i].ident == editor_fd) editor_changed = 1;
             if ((int)events[i].ident == core_fd)   core_changed = 1;
+            if ((int)events[i].ident == externals_fd) externals_changed = 1;
         }
 
         /* Debounce: wait 50ms and drain */
         usleep(50000);
         {
             struct timespec zero = {0, 0};
-            while (kevent(kq, NULL, 0, events, 3, &zero) > 0) {
+            while (kevent(kq, NULL, 0, events, 4, &zero) > 0) {
                 for (i = 0; i < nev; i++) {
                     if ((int)events[i].ident == engine_fd) engine_changed = 1;
                     if ((int)events[i].ident == editor_fd) editor_changed = 1;
                     if ((int)events[i].ident == core_fd)   core_changed = 1;
+                    if ((int)events[i].ident == externals_fd) externals_changed = 1;
                 }
             }
         }
@@ -343,9 +356,21 @@ static int watch_and_rebuild(void)
                 printf("!! Core compile failed.\n");
             }
         }
+
+        if (externals_changed) {
+            printf("\n--- Externals change detected, recompiling... ---\n");
+            fflush(stdout);
+            if (build_externals() == 0) {
+                fclose(fopen(DEBUG_DIR "/.core-reload-signal", "w"));
+                printf("   Compile OK. Externals rebuilt. Core reload signal written.\n");
+            } else {
+                printf("!! Externals compile failed.\n");
+            }
+        }
         fflush(stdout);
     }
 
+    close(externals_fd);
     close(core_fd);
     close(editor_fd);
     close(engine_fd);

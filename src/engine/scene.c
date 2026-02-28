@@ -72,6 +72,9 @@ Scene scene = {0};
 
 void scene_init(void) {
     scene.entity_count = 2;
+    scene.parent_component_count = 0;
+    scene.parent_transform_component_count = 0;
+    scene.parent_rotation_component_count = 0;
 
     /* Player entity */
     scene.entities[0].sprite_sheet = player;
@@ -108,6 +111,20 @@ void scene_init(void) {
     scene.entities[1].velocity.y = 0.0f;
     scene.entities[1].health = 50.0f;
     scene.entities[1].type = ENEMY;
+
+    if (scene.parent_component_capacity > 0 && scene.parent_components) {
+        scene.parent_components[scene.parent_component_count].entity_index = 1;
+        scene.parent_components[scene.parent_component_count].parent_entity_index = 0;
+        scene.parent_component_count++;
+    }
+    if (scene.parent_transform_component_capacity > 0 && scene.parent_transform_components) {
+        scene.parent_transform_components[scene.parent_transform_component_count].entity_index = 1;
+        scene.parent_transform_component_count++;
+    }
+    if (scene.parent_rotation_component_capacity > 0 && scene.parent_rotation_components) {
+        scene.parent_rotation_components[scene.parent_rotation_component_count].entity_index = 1;
+        scene.parent_rotation_component_count++;
+    }
 }
 
 const int level[6][6] = {

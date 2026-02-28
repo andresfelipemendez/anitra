@@ -786,14 +786,17 @@ typedef struct UIRenderState {
 
 static UIRenderState ui_game = {0};
 static UIRenderState ui_profiler = {0};
+static UIRenderState ui_scene_tree = {0};
 
 // ---------------------------------------------------------------------------
 // Build Clay render commands → vertex arrays (window-agnostic)
 // ---------------------------------------------------------------------------
 static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray commands) {
-    /* CPU-side scissor clipping: track active clip rect from SCISSOR_START/END.
-       Rects are clamped; text commands fully outside are skipped,
-       individual glyphs partially outside are clipped. */
+    /* CPU-side scissor clipping with proper nesting (push on START, pop on END). */
+    typedef struct ClipRect { float x0, y0, x1, y1; } ClipRect;
+    enum { UI_CLIP_STACK_MAX = 32 };
+    ClipRect clip_stack[UI_CLIP_STACK_MAX];
+    int clip_depth = 0;
     int clipping = 0;
     float clip_x0 = 0, clip_y0 = 0, clip_x1 = 99999, clip_y1 = 99999;
 
@@ -806,15 +809,39 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
 
         switch (cmd->commandType) {
         case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: {
+            ClipRect next = { box.x, box.y, box.x + box.width, box.y + box.height };
+            if (clip_depth > 0) {
+                ClipRect parent = clip_stack[clip_depth - 1];
+                if (next.x0 < parent.x0) next.x0 = parent.x0;
+                if (next.y0 < parent.y0) next.y0 = parent.y0;
+                if (next.x1 > parent.x1) next.x1 = parent.x1;
+                if (next.y1 > parent.y1) next.y1 = parent.y1;
+            }
+            if (clip_depth < UI_CLIP_STACK_MAX) {
+                clip_stack[clip_depth++] = next;
+            } else {
+                clip_stack[UI_CLIP_STACK_MAX - 1] = next;
+                clip_depth = UI_CLIP_STACK_MAX;
+            }
             clipping = 1;
-            clip_x0 = box.x;
-            clip_y0 = box.y;
-            clip_x1 = box.x + box.width;
-            clip_y1 = box.y + box.height;
+            clip_x0 = clip_stack[clip_depth - 1].x0;
+            clip_y0 = clip_stack[clip_depth - 1].y0;
+            clip_x1 = clip_stack[clip_depth - 1].x1;
+            clip_y1 = clip_stack[clip_depth - 1].y1;
             break;
         }
         case CLAY_RENDER_COMMAND_TYPE_SCISSOR_END: {
-            clipping = 0;
+            if (clip_depth > 0) clip_depth--;
+            if (clip_depth > 0) {
+                clipping = 1;
+                clip_x0 = clip_stack[clip_depth - 1].x0;
+                clip_y0 = clip_stack[clip_depth - 1].y0;
+                clip_x1 = clip_stack[clip_depth - 1].x1;
+                clip_y1 = clip_stack[clip_depth - 1].y1;
+            } else {
+                clipping = 0;
+                clip_x0 = 0; clip_y0 = 0; clip_x1 = 99999; clip_y1 = 99999;
+            }
             break;
         }
         case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
@@ -1148,6 +1175,18 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
             }
         }
     }
+}
+
+static void scene_tree_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
+    if (g->editor.scene_tree_cmd_count <= 0 || !g->editor.scene_tree_cmd_array)
+        return;
+
+    Clay_RenderCommandArray commands;
+    commands.length = g->editor.scene_tree_cmd_count;
+    commands.internalArray = (Clay_RenderCommand *)g->editor.scene_tree_cmd_array;
+
+    ui_build_vertices(&ui_scene_tree, commands);
+    ui_upload(cmd_buf, &ui_scene_tree);
 }
 
 /* Draw the grid texture quad during the profiler render pass.
@@ -2610,6 +2649,11 @@ EXPORT void update_externals(struct memory *m) {
         profiler_prepare(cmd_buf, m);
     }
 
+    // --- Prepare Clay UI: scene tree window (layout + upload) ---
+    if (panel_color[PANEL_SCENE_TREE]) {
+        scene_tree_prepare(cmd_buf, m);
+    }
+
     // --- Upload editor 3D lines (populated by editor.dll) ---
     SDL_GPUBuffer *editor_line_gpu_buf = NULL;
     int editor_vert_count = m->editor.line_count * 2;
@@ -2688,20 +2732,12 @@ EXPORT void update_externals(struct memory *m) {
             qcount = 0;
             {
                 int vi = 0;
-                int qcount_before;
                 vi = build_tree_quads(dock, dock->windows[cwi].root_node,
                                       comp_verts, vi, (float)ww, (float)wh,
                                       comp_data[cwi].quads, &qcount, MAX_COMP_QUADS);
-                qcount_before = qcount;
                 vi = build_drop_zone_quad(dock, cwi,
                                           comp_verts, vi, (float)ww, (float)wh,
                                           comp_data[cwi].quads, &qcount, MAX_COMP_QUADS);
-                if (qcount > qcount_before) {
-                    DockNode *dzn = &dock->nodes[dock->drag.hover_node];
-                    printf("[drop_zone] win=%d node=%d zone=%d rect=(%.0f,%.0f,%.0f,%.0f)\n",
-                           cwi, dock->drag.hover_node, dock->drag.hover_zone,
-                           dzn->x, dzn->y, dzn->w, dzn->h);
-                }
             }
             comp_data[cwi].quad_count = qcount;
 
@@ -2888,6 +2924,46 @@ EXPORT void update_externals(struct memory *m) {
         SDL_EndGPURenderPass(prof_pass);
     }
 
+    // --- SCENE TREE PANEL RENDER PASS (offscreen) ---
+    if (panel_color[PANEL_SCENE_TREE] && panel_depth[PANEL_SCENE_TREE]) {
+        Uint32 sw = (Uint32)panel_tex_w[PANEL_SCENE_TREE];
+        Uint32 sh = (Uint32)panel_tex_h[PANEL_SCENE_TREE];
+
+        SDL_GPUColorTargetInfo st_ct = {0};
+        st_ct.texture = panel_color[PANEL_SCENE_TREE];
+        st_ct.clear_color = (SDL_FColor){0.09f, 0.12f, 0.16f, 1.0f};
+        st_ct.load_op = SDL_GPU_LOADOP_CLEAR;
+        st_ct.store_op = SDL_GPU_STOREOP_STORE;
+
+        SDL_GPUDepthStencilTargetInfo st_dt = {0};
+        st_dt.texture = panel_depth[PANEL_SCENE_TREE];
+        st_dt.clear_depth = 1.0f;
+        st_dt.load_op = SDL_GPU_LOADOP_CLEAR;
+        st_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        st_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        st_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+
+        SDL_GPURenderPass *st_pass = SDL_BeginGPURenderPass(cmd_buf, &st_ct, 1, &st_dt);
+
+        {
+            uniform_data st_uniforms;
+            float st_lw = (float)sw / display_density;
+            float st_lh = (float)sh / display_density;
+            float st_ortho[16] = {
+                2.0f/st_lw,    0,             0,     0,
+                0,            -2.0f/st_lh,    0,     0,
+                0,             0,            -1.0f,  0,
+               -1.0f,          1.0f,          0,     1.0f
+            };
+            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            memcpy(st_uniforms.projection, st_ortho, sizeof(st_ortho));
+            memcpy(st_uniforms.view, identity, sizeof(identity));
+            ui_draw(st_pass, cmd_buf, &st_uniforms, &ui_scene_tree);
+        }
+
+        SDL_EndGPURenderPass(st_pass);
+    }
+
     // --- EDITOR PANEL RENDER PASS (offscreen) ---
     if (m->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
         Uint32 ew = (Uint32)panel_tex_w[PANEL_EDITOR];
@@ -3051,6 +3127,7 @@ EXPORT void update_externals(struct memory *m) {
     }
     ui_release_buffers(&ui_game);
     ui_release_buffers(&ui_profiler);
+    ui_release_buffers(&ui_scene_tree);
     if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
 
     TracyCZoneEnd(ctx_update);

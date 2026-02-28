@@ -87,6 +87,19 @@ typedef struct entity {
     entity_type type;
 } entity;
 
+typedef struct parent_component {
+    int entity_index;
+    int parent_entity_index;
+} parent_component;
+
+typedef struct parent_transform_component {
+    int entity_index;
+} parent_transform_component;
+
+typedef struct parent_rotation_component {
+    int entity_index;
+} parent_rotation_component;
+
 typedef enum InputButton {
     INPUT_A = 1 << 0,
     INPUT_B = 1 << 1,
@@ -167,6 +180,20 @@ typedef struct game_state {
   int width;
   int height;
   float dt;
+
+  /* Scene entity/component views (owned by engine's scene storage) */
+  entity *scene_entities;
+  int scene_entity_count;
+  int scene_entity_capacity;
+  parent_component *parent_components;
+  int parent_component_count;
+  int parent_component_capacity;
+  parent_transform_component *parent_transform_components;
+  int parent_transform_component_count;
+  int parent_transform_component_capacity;
+  parent_rotation_component *parent_rotation_components;
+  int parent_rotation_component_count;
+  int parent_rotation_component_capacity;
 
   mesh3d_state mesh3d;
   lighting_state lighting;

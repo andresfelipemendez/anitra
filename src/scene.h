@@ -13,6 +13,18 @@ typedef struct Scene {
     int entity_count;
     int entity_capacity;
     entity *entities;
+
+    int parent_component_count;
+    int parent_component_capacity;
+    parent_component *parent_components;
+
+    int parent_transform_component_count;
+    int parent_transform_component_capacity;
+    parent_transform_component *parent_transform_components;
+
+    int parent_rotation_component_count;
+    int parent_rotation_component_capacity;
+    parent_rotation_component *parent_rotation_components;
 } Scene;
 
 extern Scene scene;

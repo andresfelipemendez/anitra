@@ -8,6 +8,9 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 
@@ -16,6 +19,25 @@ static volatile int editorReloadFlag = 0;
 static volatile int shutdownRequested = 0;
 static void *engine_lib = NULL;
 static void *editor_lib = NULL;
+
+#ifndef _WIN32
+#define ENGINE_RELOAD_SIGNAL_FILE "build/Debug/.reload-signal"
+#define EDITOR_RELOAD_SIGNAL_FILE "build/Debug/.editor-reload-signal"
+#define CORE_RELOAD_SIGNAL_FILE   "build/Debug/.core-reload-signal"
+
+static int consume_reload_signal_file(const char *path) {
+  struct stat st;
+  if (stat(path, &st) != 0) return 0;
+  remove(path);
+  return 1;
+}
+
+static void clear_reload_signal_files(void) {
+  remove(ENGINE_RELOAD_SIGNAL_FILE);
+  remove(EDITOR_RELOAD_SIGNAL_FILE);
+  remove(CORE_RELOAD_SIGNAL_FILE);
+}
+#endif
 
 #ifdef _WIN32
 static HANDLE hEngineThread = NULL;
@@ -65,6 +87,9 @@ EXPORT int init_core(const char *project_path) {
   if (hEditorEvent == NULL) {
     printf("CreateEvent (editor) failed (%lu)\n", GetLastError());
   }
+#else
+  /* Avoid stale file signals causing immediate reload after launch */
+  clear_reload_signal_files();
 #endif
 
   {
@@ -208,12 +233,12 @@ EXPORT int init_core(const char *project_path) {
     init_engine(&g);
     init_editor(&g);
 
-#ifdef _WIN32
     /* Reset state for fresh load */
     shutdownRequested = 0;
     reloadFlag = 0;
     editorReloadFlag = 0;
 
+#ifdef _WIN32
     hEngineThread = CreateThread(NULL, 0, waitforreloadsignal, hEngineEvent, 0, NULL);
     hEditorThread = CreateThread(NULL, 0, waitforeditorreloadsignal, hEditorEvent, 0, NULL);
 #endif
@@ -261,8 +286,14 @@ int begin_game_loop(memory *g) {
 #endif
 
   while (g->game.play) {
-#ifdef _WIN32
-if (reloadFlag) {
+#ifndef _WIN32
+    if (consume_reload_signal_file(ENGINE_RELOAD_SIGNAL_FILE))
+      reloadFlag = 1;
+    if (consume_reload_signal_file(EDITOR_RELOAD_SIGNAL_FILE))
+      editorReloadFlag = 1;
+#endif
+
+    if (reloadFlag) {
       reloadFlag = 0;
       
       /* Verify new DLL was loaded */
@@ -336,14 +367,22 @@ engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine")
       assign_editor_handle_event(new_handle_ev);
       init_editor(g);
     }
+
     /* Core reload: poll with 0ms timeout (non-blocking) */
+#ifdef _WIN32
     if (hCoreEvent && WaitForSingleObject(hCoreEvent, 0) == WAIT_OBJECT_0) {
       printf("Core reload signal received — tearing down...\n");
       ResetEvent(hCoreEvent);
       CloseHandle(hCoreEvent);
       return 1; /* signal reload to init_core */
     }
+#else
+    if (consume_reload_signal_file(CORE_RELOAD_SIGNAL_FILE)) {
+      printf("Core reload signal received — tearing down...\n");
+      return 1; /* signal reload to init_core */
+    }
 #endif
+
     update_externals(g);
   }
 

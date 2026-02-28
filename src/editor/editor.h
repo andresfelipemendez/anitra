@@ -13,6 +13,8 @@ typedef struct { float x, y, z, r, g, b; } editor_line_vert;
 #define EDITOR_MAX_LINES 2048
 #define PROF_GRID_MAX_COLS 32
 #define PROF_GRID_MAX_ROWS 512
+#define PROFILER_TREE_MAX_NODES 65536
+#define SCENE_TREE_MAX_ENTITIES 512
 
 typedef struct editor_state {
     /* Arena pointers — set by externals init, used by editor for allocation */
@@ -61,12 +63,27 @@ typedef struct editor_state {
     int   profiler_cmd_count;      /* number of Clay_RenderCommand items */
     void *profiler_cmd_array;      /* Clay_RenderCommand* in Clay arena memory */
 
+    /* Scene tree Clay render output — written by editor each frame, read by externals. */
+    void *scene_tree_clay_ctx;     /* Clay_Context* in editor_arena */
+    int   scene_tree_cmd_count;    /* number of Clay_RenderCommand items */
+    void *scene_tree_cmd_array;    /* Clay_RenderCommand* in Clay arena memory */
+
+    /* Hot-reload-persistent collapsed state */
+    int profiler_tree_collapsed[PROFILER_TREE_MAX_NODES];
+    int scene_tree_collapsed[SCENE_TREE_MAX_ENTITIES];
+
     /* Profiler input — accumulated per frame by event handler, consumed by profiler_layout */
     float prof_mouse_x, prof_mouse_y; /* mouse position in profiler-local coords */
     float prof_scroll_y;              /* scroll wheel delta this frame */
     int   prof_mouse_down;            /* left button held */
     int   prof_click;                 /* 1 on the frame left button was pressed */
     int   prof_hover_record;          /* hovered flat record index, -1 = none */
+
+    /* Scene tree input — accumulated per frame by event handler, consumed by scene_tree_layout */
+    float scene_tree_mouse_x, scene_tree_mouse_y; /* mouse position in scene-tree-local coords */
+    float scene_tree_scroll_y;                    /* scroll wheel delta this frame */
+    int   scene_tree_mouse_down;                  /* left button held */
+    int   scene_tree_click;                       /* 1 on the frame left button was pressed */
 
     /* Scrollbar data — set by profiler_layout after EndLayout, read by externals renderer */
     float prof_scroll_pos;            /* current scroll Y offset (<=0) */
