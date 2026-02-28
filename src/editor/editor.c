@@ -1,7 +1,7 @@
 #include <game.h>
 #include <export.h>
 #include <math3d.h>
-#include <dock.h>
+#include "dock.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdio.h>
@@ -10,6 +10,7 @@
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
 
+/* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 
 /* Memory profiler colors (one per allocation slot) */
@@ -40,61 +41,17 @@ static const char *format_bytes(uint32_t bytes) {
     return buf;
 }
 
-/* Recursive: emit Clay tree rows for an arena and its children */
-static void profiler_tree_arena(arena *a, int depth, int *row_id) {
-    uint32_t i;
-    for (i = 0; i < a->record_count; i++) {
-        arena_record *r = &a->records[i];
-        Clay_Color color = profiler_colors[(*row_id) % profiler_color_count];
+/* Hovered record info — set by profiler_tree_arena, used by grid/block for highlighting */
+typedef struct HoverInfo {
+    const char *tag;
+    uint32_t offset;
+    uint32_t size;
+    int found;
+} HoverInfo;
 
-        /* Build size string */
-        static char size_bufs[256][32];
-        int bidx = (*row_id) % 256;
-        if (r->child) {
-            float child_pct = (r->child->capacity > 0)
-                ? (100.0f * r->child->used / r->child->capacity) : 0.0f;
-            snprintf(size_bufs[bidx], sizeof(size_bufs[bidx]), "%s (%.0f%%)",
-                format_bytes(r->child->capacity), (double)child_pct);
-        } else {
-            snprintf(size_bufs[bidx], sizeof(size_bufs[bidx]), "%s", format_bytes(r->size));
-        }
-
-        CLAY(CLAY_IDI("TreeRow", (int32_t)*row_id), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                .padding = { .left = (uint16_t)(4 + depth * 12), .right = 4, .top = 2, .bottom = 2 },
-                .childGap = 6,
-                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
-                .layoutDirection = CLAY_LEFT_TO_RIGHT
-            }
-        }) {
-            /* Color swatch */
-            CLAY(CLAY_IDI("TSwatch", (int32_t)*row_id), {
-                .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
-                .backgroundColor = color,
-                .cornerRadius = CLAY_CORNER_RADIUS(2)
-            }) {}
-
-            /* Tag name */
-            {
-                Clay_String tag_s = {false, (int32_t)strlen(r->tag), r->tag};
-                CLAY_TEXT(tag_s, CLAY_TEXT_CONFIG({.textColor = {200, 200, 200, 255}, .fontSize = 16}));
-            }
-
-            /* Size (right side, dimmer) */
-            {
-                Clay_String sz_s = {false, (int32_t)strlen(size_bufs[bidx]), size_bufs[bidx]};
-                CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 16}));
-            }
-        }
-
-        (*row_id)++;
-
-        if (r->child) {
-            profiler_tree_arena(r->child, depth + 1, row_id);
-        }
-    }
-}
+/* Collapsed state for tree nodes (persists across frames within a DLL load) */
+#define MAX_TREE_NODES 256
+static int tree_collapsed[MAX_TREE_NODES]; /* 0 = expanded, 1 = collapsed */
 
 /* Collect all leaf records (flattened) for block + grid views */
 typedef struct FlatRecord {
@@ -105,6 +62,8 @@ typedef struct FlatRecord {
 } FlatRecord;
 #define MAX_FLAT_RECORDS 256
 
+/* Flatten arena into leaf records for block/grid views.
+   If out is NULL, only advances color_id (used by tree collapse skip). */
 static int profiler_flatten_arena(arena *a, uint32_t base_offset,
                                   FlatRecord *out, int count, int *color_id) {
     uint32_t i;
@@ -114,20 +73,152 @@ static int profiler_flatten_arena(arena *a, uint32_t base_offset,
             count = profiler_flatten_arena(r->child, base_offset + r->offset + (uint32_t)sizeof(arena),
                                            out, count, color_id);
         } else if (r->child) {
-            out[count].tag = r->tag;
-            out[count].offset = base_offset + r->offset;
-            out[count].size = r->child->used > 0 ? r->child->used : r->size;
-            out[count].color_idx = (*color_id)++;
+            if (out) {
+                out[count].tag = r->tag;
+                out[count].offset = base_offset + r->offset;
+                out[count].size = r->child->used > 0 ? r->child->used : r->size;
+                out[count].color_idx = (*color_id);
+            }
+            (*color_id)++;
             count++;
         } else {
-            out[count].tag = r->tag;
-            out[count].offset = base_offset + r->offset;
-            out[count].size = r->size;
-            out[count].color_idx = (*color_id)++;
+            if (out) {
+                out[count].tag = r->tag;
+                out[count].offset = base_offset + r->offset;
+                out[count].size = r->size;
+                out[count].color_idx = (*color_id);
+            }
+            (*color_id)++;
             count++;
         }
     }
     return count;
+}
+
+/* Count total records recursively (for stable row_id skipping on collapse) */
+static int count_arena_records(arena *a) {
+    uint32_t i;
+    int n = (int)a->record_count;
+    for (i = 0; i < a->record_count; i++)
+        if (a->records[i].child) n += count_arena_records(a->records[i].child);
+    return n;
+}
+
+/* Recursive: emit Clay tree rows for an arena and its children.
+   color_id tracks flat-record-consistent color assignment:
+     - leaf records and leaf sub-arenas: assign color and increment
+     - parent sub-arenas (with children): neutral color, don't increment
+   This keeps colors in sync with profiler_flatten_arena(). */
+static void profiler_tree_arena(arena *a, int depth, int *row_id,
+                                uint32_t base_offset, HoverInfo *hover,
+                                int *color_id, int click) {
+    uint32_t i;
+    for (i = 0; i < a->record_count; i++) {
+        arena_record *r = &a->records[i];
+        int rid = *row_id;
+        int is_parent = r->child && r->child->record_count > 0;
+        int hovered;
+        Clay_Color swatch;
+
+        /* Color assignment matches profiler_flatten_arena logic:
+           parent sub-arenas use neutral gray, leaves get sequential colors */
+        if (is_parent) {
+            swatch = (Clay_Color){120, 120, 130, 255};
+        } else {
+            swatch = profiler_colors[(*color_id) % profiler_color_count];
+            (*color_id)++;
+        }
+
+        /* Build size string */
+        {
+            static char size_bufs[256][32];
+            static char label_bufs[256][48];
+            int bidx = rid % 256;
+            if (r->child) {
+                float child_pct = (r->child->capacity > 0)
+                    ? (100.0f * r->child->used / r->child->capacity) : 0.0f;
+                snprintf(size_bufs[bidx], sizeof(size_bufs[bidx]), "%s (%.0f%%)",
+                    format_bytes(r->child->capacity), (double)child_pct);
+            } else {
+                snprintf(size_bufs[bidx], sizeof(size_bufs[bidx]), "%s", format_bytes(r->size));
+            }
+            /* Label: collapse arrow for parents, bullet for leaves */
+            if (is_parent) {
+                snprintf(label_bufs[bidx], sizeof(label_bufs[bidx]), "%s %s",
+                    (rid < MAX_TREE_NODES && tree_collapsed[rid]) ? ">" : "v", r->tag);
+            } else {
+                snprintf(label_bufs[bidx], sizeof(label_bufs[bidx]), "%s", r->tag);
+            }
+
+            /* Two-column row: [left: indent+swatch+tag GROW] [right: size FIT] */
+            CLAY(CLAY_IDI("TreeRow", (int32_t)rid), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .padding = { .left = (uint16_t)(4 + depth * 12), .right = 8, .top = 2, .bottom = 2 },
+                    .childGap = 4,
+                    .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                },
+                .backgroundColor = Clay_Hovered() ? ((Clay_Color){60, 60, 70, 255}) : ((Clay_Color){0, 0, 0, 0})
+            }) {
+                hovered = Clay_Hovered();
+
+                /* Toggle collapse on click */
+                if (hovered && click && is_parent && rid < MAX_TREE_NODES)
+                    tree_collapsed[rid] = !tree_collapsed[rid];
+
+                /* Store hover info for grid/block highlight */
+                if (hovered && hover) {
+                    hover->tag = r->tag;
+                    hover->offset = base_offset + r->offset;
+                    hover->size = r->child ? r->child->capacity + (uint32_t)sizeof(arena) : r->size;
+                    hover->found = 1;
+                }
+
+                /* Color swatch */
+                CLAY(CLAY_IDI("TSwatch", (int32_t)rid), {
+                    .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
+                    .backgroundColor = swatch,
+                    .cornerRadius = CLAY_CORNER_RADIUS(2)
+                }) {}
+
+                /* Tag name — grows to push size to the right */
+                CLAY(CLAY_IDI("TLabel", (int32_t)rid), {
+                    .layout = { .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) } }
+                }) {
+                    Clay_String tag_s = {false, (int32_t)strlen(label_bufs[bidx]), label_bufs[bidx]};
+                    CLAY_TEXT(tag_s, CLAY_TEXT_CONFIG({
+                        .textColor = hovered ? ((Clay_Color){255, 255, 255, 255})
+                                             : ((Clay_Color){200, 200, 200, 255}),
+                        .fontSize = 16
+                    }));
+                }
+
+                /* Size — right-aligned */
+                {
+                    Clay_String sz_s = {false, (int32_t)strlen(size_bufs[bidx]), size_bufs[bidx]};
+                    CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {140, 140, 150, 255}, .fontSize = 16}));
+                }
+            }
+        }
+
+        (*row_id)++;
+
+        if (r->child && !(rid < MAX_TREE_NODES && tree_collapsed[rid])) {
+            profiler_tree_arena(r->child, depth + 1, row_id,
+                                base_offset + r->offset + (uint32_t)sizeof(arena),
+                                hover, color_id, click);
+        } else if (is_parent && rid < MAX_TREE_NODES && tree_collapsed[rid]) {
+            /* Skip children — advance both row_id and color_id to keep
+               them stable regardless of expand/collapse state */
+            *row_id += count_arena_records(r->child);
+            {
+                int skip_color = *color_id;
+                profiler_flatten_arena(r->child, 0, NULL, 0, &skip_color);
+                *color_id = skip_color;
+            }
+        }
+    }
 }
 
 /* Simple text measurement for Clay — uses pre-computed font advance table.
@@ -443,6 +534,9 @@ static void profiler_layout(memory *g) {
     static char title_buf[128];
     static FlatRecord flat[MAX_FLAT_RECORDS];
     int flat_color, flat_count;
+    uint32_t hover_offset, hover_size; /* byte range of hovered record (for range match) */
+    int have_hover;
+    int click;    /* snapshot of prof_click — consumed after layout */
     Clay_RenderCommandArray commands;
 
     if (!pctx) return;
@@ -478,6 +572,16 @@ static void profiler_layout(memory *g) {
         win_h = 600;
     }
     Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+
+    /* Feed Clay pointer + scroll state so scroll containers and hover work */
+    click = e->prof_click;   /* snapshot before layout — tree uses it for collapse toggle */
+    {
+        Clay_Vector2 mpos = {e->prof_mouse_x, e->prof_mouse_y};
+        Clay_Vector2 sdelta = {0, e->prof_scroll_y};
+        Clay_SetPointerState(mpos, (bool)e->prof_mouse_down);
+        Clay_UpdateScrollContainers(true, sdelta, g->dt);
+        e->prof_scroll_y = 0; /* consumed */
+    }
 
     Clay_BeginLayout();
 
@@ -536,26 +640,42 @@ static void profiler_layout(memory *g) {
                     CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
                 }
 
-                /* Arena root row */
-                {
-                    static char root_buf[64];
-                    snprintf(root_buf, sizeof(root_buf), "Arena  %s", format_bytes(a->capacity));
+                /* Scrollable tree content */
+                CLAY(CLAY_ID("PTreeScroll"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                        .childGap = 2,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+                }) {
+                    /* Arena root row */
                     {
-                        Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
-                        CLAY(CLAY_ID("TRootRow"), {
-                            .layout = {
-                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                                .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                        static char root_buf[64];
+                        snprintf(root_buf, sizeof(root_buf), "Arena  %s", format_bytes(a->capacity));
+                        {
+                            Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
+                            CLAY(CLAY_ID("TRootRow"), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                    .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                                }
+                            }) {
+                                CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
                             }
-                        }) {
-                            CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
                         }
                     }
-                }
 
-                {
-                    int row_id = 0;
-                    profiler_tree_arena(a, 1, &row_id);
+                    {
+                        HoverInfo hi = {0};
+                        int row_id = 0;
+                        int tree_color = 0;
+                        profiler_tree_arena(a, 1, &row_id, 0, &hi,
+                                            &tree_color, click);
+                        hover_offset = hi.offset;
+                        hover_size = hi.size;
+                        have_hover = hi.found;
+                    }
                 }
             }
 
@@ -585,9 +705,24 @@ static void profiler_layout(memory *g) {
                         float frac = (float)flat[bi].size / (float)a->capacity;
                         float bh = frac * block_total_h;
                         Clay_Color bcolor;
+                        int blk_hovered;
                         static char block_bufs[MAX_FLAT_RECORDS][48];
                         if (bh < 2.0f) bh = 2.0f;
                         bcolor = profiler_colors[flat[bi].color_idx % profiler_color_count];
+                        blk_hovered = have_hover &&
+                            flat[bi].offset >= hover_offset &&
+                            flat[bi].offset + flat[bi].size <= hover_offset + hover_size;
+                        if (have_hover) {
+                            if (blk_hovered) {
+                                bcolor.r = (float)(bcolor.r + (255 - bcolor.r) * 0.5f);
+                                bcolor.g = (float)(bcolor.g + (255 - bcolor.g) * 0.5f);
+                                bcolor.b = (float)(bcolor.b + (255 - bcolor.b) * 0.5f);
+                            } else {
+                                bcolor.r = (float)(bcolor.r * 0.3f);
+                                bcolor.g = (float)(bcolor.g * 0.3f);
+                                bcolor.b = (float)(bcolor.b * 0.3f);
+                            }
+                        }
                         snprintf(block_bufs[bi], sizeof(block_bufs[bi]), "%s", flat[bi].tag);
 
                         CLAY(CLAY_IDI("BlkEntry", (int32_t)bi), {
@@ -633,7 +768,7 @@ static void profiler_layout(memory *g) {
                 }
             }
 
-            /* ===== GRID PANEL (right) ===== */
+            /* ===== GRID PANEL (right) — single placeholder, pixels built below ===== */
             CLAY(CLAY_ID("PGrid"), {
                 .layout = {
                     .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
@@ -649,84 +784,40 @@ static void profiler_layout(memory *g) {
                     CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
                 }
 
-                /* Grid: each cell = 64KB of arena space */
-                {
-                    uint32_t cell_size = 64 * 1024;
-                    uint32_t total_cells = (a->capacity + cell_size - 1) / cell_size;
-                    int grid_cols = 16;
-                    int grid_rows = ((int)total_cells + grid_cols - 1) / grid_cols;
-                    int row;
+                /* Placeholder rect — sized by Clay, filled by GPU texture in externals */
+                CLAY(CLAY_ID("PGridTex"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) }
+                    },
+                    .backgroundColor = {50, 50, 55, 255}
+                }) {}
 
-                    for (row = 0; row < grid_rows; row++) {
-                        CLAY(CLAY_IDI("GRow", (int32_t)row), {
-                            .layout = {
-                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                                .childGap = 2,
-                                .layoutDirection = CLAY_LEFT_TO_RIGHT
-                            }
-                        }) {
-                            int col;
-                            for (col = 0; col < grid_cols; col++) {
-                                uint32_t cell_idx = (uint32_t)(row * grid_cols + col);
-                                uint32_t cell_start, cell_end;
-                                Clay_Color cell_color = {50, 50, 55, 255};
-                                int32_t cell_id;
-                                int fi;
-                                if (cell_idx >= total_cells) break;
-
-                                cell_start = cell_idx * cell_size;
-                                cell_end = cell_start + cell_size;
-                                if (cell_end > a->capacity) cell_end = a->capacity;
-
-                                /* Find which record owns this cell */
-                                for (fi = 0; fi < flat_count; fi++) {
-                                    uint32_t rec_start = flat[fi].offset;
-                                    uint32_t rec_end = flat[fi].offset + flat[fi].size;
-                                    if (rec_start < cell_end && rec_end > cell_start) {
-                                        cell_color = profiler_colors[flat[fi].color_idx % profiler_color_count];
-                                        break;
-                                    }
-                                }
-
-                                cell_id = (int32_t)(row * grid_cols + col);
-                                CLAY(CLAY_IDI("GCell", cell_id), {
-                                    .layout = {
-                                        .sizing = { CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18) }
-                                    },
-                                    .backgroundColor = cell_color,
-                                    .cornerRadius = CLAY_CORNER_RADIUS(2)
-                                }) {}
-                            }
-                        }
+                /* Legend */
+                CLAY(CLAY_ID("GLegend"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                        .padding = { .left = 0, .right = 0, .top = 8, .bottom = 0 },
+                        .childGap = 12,
+                        .layoutDirection = CLAY_LEFT_TO_RIGHT
                     }
-
-                    /* Legend */
-                    CLAY(CLAY_ID("GLegend"), {
-                        .layout = {
-                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                            .padding = { .left = 0, .right = 0, .top = 8, .bottom = 0 },
-                            .childGap = 12,
-                            .layoutDirection = CLAY_LEFT_TO_RIGHT
-                        }
-                    }) {
-                        CLAY(CLAY_ID("GLAllocBox"), {
-                            .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
-                            .backgroundColor = profiler_colors[0],
-                            .cornerRadius = CLAY_CORNER_RADIUS(1)
-                        }) {}
-                        {
-                            Clay_String ls = CLAY_STRING("= allocated");
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
-                        }
-                        CLAY(CLAY_ID("GLFreeBox"), {
-                            .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
-                            .backgroundColor = {50, 50, 55, 255},
-                            .cornerRadius = CLAY_CORNER_RADIUS(1)
-                        }) {}
-                        {
-                            Clay_String ls = CLAY_STRING("= free");
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
-                        }
+                }) {
+                    CLAY(CLAY_ID("GLAllocBox"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
+                        .backgroundColor = profiler_colors[0],
+                        .cornerRadius = CLAY_CORNER_RADIUS(1)
+                    }) {}
+                    {
+                        Clay_String ls = CLAY_STRING("= allocated");
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
+                    }
+                    CLAY(CLAY_ID("GLFreeBox"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
+                        .backgroundColor = {50, 50, 55, 255},
+                        .cornerRadius = CLAY_CORNER_RADIUS(1)
+                    }) {}
+                    {
+                        Clay_String ls = CLAY_STRING("= free");
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
                     }
                 }
             }
@@ -736,6 +827,100 @@ static void profiler_layout(memory *g) {
     commands = Clay_EndLayout();
     e->profiler_cmd_count = commands.length;
     e->profiler_cmd_array = commands.internalArray;
+    e->prof_click = 0;  /* consumed — zeroed after layout used it */
+
+    /* Export scroll data for scrollbar rendering */
+    {
+        Clay_ScrollContainerData sd = Clay_GetScrollContainerData(CLAY_ID("PTreeScroll"));
+        if (sd.found && sd.scrollPosition) {
+            e->prof_scroll_pos = sd.scrollPosition->y;
+            e->prof_content_h = sd.contentDimensions.height;
+            e->prof_container_h = sd.scrollContainerDimensions.height;
+        }
+        /* Export PTreeScroll bounding box for scrollbar track positioning */
+        {
+            Clay_ElementData ed = Clay_GetElementData(CLAY_ID("PTreeScroll"));
+            if (ed.found) {
+                e->prof_track_x = ed.boundingBox.x;
+                e->prof_track_y = ed.boundingBox.y;
+                e->prof_track_w = ed.boundingBox.width;
+                e->prof_track_h = ed.boundingBox.height;
+            }
+        }
+    }
+
+    /* Export PGridTex bounding box + build pixel buffer for GPU texture */
+    {
+        Clay_ElementData gd = Clay_GetElementData(CLAY_ID("PGridTex"));
+        if (gd.found) {
+            e->prof_grid_x  = gd.boundingBox.x;
+            e->prof_grid_y  = gd.boundingBox.y;
+            e->prof_grid_bw = gd.boundingBox.width;
+            e->prof_grid_bh = gd.boundingBox.height;
+        }
+
+        /* Build grid pixel buffer: each pixel = one 64KB arena cell */
+        {
+            uint32_t cell_size = 64 * 1024;
+            uint32_t total_cells = (a->capacity + cell_size - 1) / cell_size;
+            int grid_cols = 16;
+            int grid_rows = ((int)total_cells + grid_cols - 1) / grid_cols;
+            int row, col;
+
+            if (grid_cols > PROF_GRID_MAX_COLS) grid_cols = PROF_GRID_MAX_COLS;
+            if (grid_rows > PROF_GRID_MAX_ROWS) grid_rows = PROF_GRID_MAX_ROWS;
+
+            e->prof_grid_w = grid_cols;
+            e->prof_grid_h = grid_rows;
+
+            for (row = 0; row < grid_rows; row++) {
+                for (col = 0; col < grid_cols; col++) {
+                    uint32_t cell_idx = (uint32_t)(row * grid_cols + col);
+                    uint8_t cr = 50, cg = 50, cb = 55, ca = 255; /* free = dark gray */
+                    int pi = (row * grid_cols + col) * 4;
+                    int fi;
+
+                    if (cell_idx < total_cells) {
+                        uint32_t cell_start = cell_idx * cell_size;
+                        uint32_t cell_end = cell_start + cell_size;
+                        if (cell_end > a->capacity) cell_end = a->capacity;
+
+                        for (fi = 0; fi < flat_count; fi++) {
+                            uint32_t rec_start = flat[fi].offset;
+                            uint32_t rec_end = flat[fi].offset + flat[fi].size;
+                            if (rec_start < cell_end && rec_end > cell_start) {
+                                Clay_Color cc = profiler_colors[flat[fi].color_idx % profiler_color_count];
+                                int is_hovered = have_hover &&
+                                    flat[fi].offset >= hover_offset &&
+                                    flat[fi].offset + flat[fi].size <= hover_offset + hover_size;
+                                if (have_hover) {
+                                    if (is_hovered) {
+                                        cr = (uint8_t)(cc.r + (255 - cc.r) * 0.5f);
+                                        cg = (uint8_t)(cc.g + (255 - cc.g) * 0.5f);
+                                        cb = (uint8_t)(cc.b + (255 - cc.b) * 0.5f);
+                                    } else {
+                                        cr = (uint8_t)(cc.r * 0.3f);
+                                        cg = (uint8_t)(cc.g * 0.3f);
+                                        cb = (uint8_t)(cc.b * 0.3f);
+                                    }
+                                } else {
+                                    cr = (uint8_t)cc.r;
+                                    cg = (uint8_t)cc.g;
+                                    cb = (uint8_t)cc.b;
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    e->prof_grid_pixels[pi + 0] = cr;
+                    e->prof_grid_pixels[pi + 1] = cg;
+                    e->prof_grid_pixels[pi + 2] = cb;
+                    e->prof_grid_pixels[pi + 3] = ca;
+                }
+            }
+        }
+    }
 }
 
 EXPORT void update_editor(memory *g) {
@@ -1143,6 +1328,41 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
         ev->button.button == SDL_BUTTON_LEFT) {
         e->gizmo_active = 0;
     }
+
+    /* ── Profiler input: track mouse position + scroll for Clay scroll containers ── */
+    if (ev->type == SDL_EVENT_MOUSE_MOTION) {
+        evwin = SDL_GetWindowFromEvent(ev);
+        {
+            int pwin_idx;
+            int pnode = dock_find_leaf_for_panel_global(d, PANEL_PROFILER, &pwin_idx);
+            if (pnode >= 0 && pwin_idx >= 0 &&
+                evwin == (SDL_Window *)d->windows[pwin_idx].sdl_window) {
+                DockNode *pn = &d->nodes[pnode];
+                float density = SDL_GetWindowPixelDensity(evwin);
+                e->prof_mouse_x = ev->motion.x * density - pn->x;
+                e->prof_mouse_y = ev->motion.y * density - pn->y - DOCK_HEADER_HEIGHT;
+            }
+        }
+    }
+    if (ev->type == SDL_EVENT_MOUSE_WHEEL) {
+        evwin = SDL_GetWindowFromEvent(ev);
+        {
+            int pwin_idx;
+            int pnode = dock_find_leaf_for_panel_global(d, PANEL_PROFILER, &pwin_idx);
+            if (pnode >= 0 && pwin_idx >= 0 &&
+                evwin == (SDL_Window *)d->windows[pwin_idx].sdl_window) {
+                /* Accumulate — consumed and cleared by profiler_layout each frame.
+                   Clay internally multiplies by 10, so 3.0 → ~30px per tick. */
+                e->prof_scroll_y += ev->wheel.y * 3.0f;
+            }
+        }
+    }
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev->button.button == SDL_BUTTON_LEFT) {
+        e->prof_mouse_down = 1;
+        e->prof_click = 1;
+    }
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT)
+        e->prof_mouse_down = 0;
 
     return 0;
 }

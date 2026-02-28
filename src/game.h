@@ -44,12 +44,14 @@ typedef struct keyframe {
     int frame;
 } keyframe;
 
+/* Animation clip with duration */
 typedef struct {
     int frames[10];
     rect collider;
     keyframe keyframes[2];
     float frame_time;
     int frame_count;
+    float duration;  /* in seconds */
 } animation_clip;
 
 typedef struct animator {
@@ -160,13 +162,30 @@ typedef struct memory {
      Game Clay: for in-game UI (pause menu, HUD). Allocated from main arena.
      Editor Clay: for editor UI (profiler, panels). Allocated from editor_arena. */
   void *clay_game;
-  void *clay_editor;
+void *clay_editor;
 
-  /* Loaded 3D model — populated by engine init, read by externals for rendering */
-  GltfModel loaded_model;
-
-  /* Editor state — populated by editor.dll, read by externals for rendering */
-  editor_state editor;
+  /* Asset paths - can be overridden at runtime */
+/* Asset paths - loaded from config file at startup */
+  const char *default_model_path;
+  const char *default_animation_path;
+  const char *texture_player;
+  const char *texture_tiles;
+  const char *texture_slime;
+  const char *texture_health_bar;
+  const char *texture_health_fill;
+  const char *font_editor;
+  const char *shader_sprite_vs;
+  const char *shader_sprite_fs;
+  const char *shader_debug_lines_vs;
+  const char *shader_debug_lines_fs;
+  const char *shader_ui_rect_vs;
+  const char *shader_ui_rect_fs;
+  const char *shader_font_vs;
+  const char *shader_font_fs;
+  const char *shader_mesh_vs;
+  const char *shader_mesh_fs;
+  const char *shader_composite_vs;
+  const char *shader_composite_fs;
 } memory;
 
-#endif
+#endif /* GAME_H */

@@ -4,6 +4,7 @@
 
 int main() {
   while (1) {
+    copylibrary("externals", "externals_copy");
     copylibrary("core", "core_copy");
     void *lib = loadlibrary("core_copy");
     if (lib == NULL) {

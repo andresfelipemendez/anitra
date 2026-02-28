@@ -25,11 +25,13 @@ typedef void (*destroy)(struct memory *g);
 typedef void (*update)(struct memory *g);
 typedef int (*handle_event)(struct memory *g, void *event);
 
-#define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
-#define HOTRELOAD_EDITOR_EVENT_NAME "Global\\ReloadEditorEvent"
-#define HOTRELOAD_CORE_EVENT_NAME   "Global\\ReloadCoreEvent"
+/* Type aliases for hot-reload safe function pointers */
+typedef init init_func;
+typedef destroy destroy_func;
+typedef update update_func;
+typedef handle_event handle_event_func;
 
-#define DECLARE_FUNC_VOID(func)                                                \
+#define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
   EXPORT void func();                                                          \
   typedef void (*func##_func)();
 

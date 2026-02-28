@@ -1,7 +1,7 @@
 #include <externals.h>
 #include <game.h>
-#include <dock.h>
-#include <debug_render.h>
+#include "dock.h"
+#include "debug_render.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -85,6 +85,13 @@ static int panel_tex_h[PANEL_COUNT] = {0};
 static SDL_GPUGraphicsPipeline *composite_pipeline = NULL;
 static SDL_GPUSampler *composite_sampler = NULL;
 static SDL_GPUTextureFormat offscreen_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+
+// Grid texture pipeline (draws profiler grid texture into profiler render pass)
+static SDL_GPUGraphicsPipeline *grid_tex_pipeline = NULL;
+static SDL_GPUSampler *grid_sampler = NULL;
+static SDL_GPUTexture *grid_texture = NULL;
+static int grid_tex_w = 0, grid_tex_h = 0;
+static SDL_GPUBuffer *grid_quad_buf = NULL;  /* 6 composite_vertex for the textured quad */
 
 // Pre-rendered tab header textures (CPU-rasterized text, created once at init)
 static SDL_GPUTexture *header_textures[PANEL_COUNT] = {0};
@@ -373,6 +380,15 @@ static FontData editor_font;
 // Helper: compile HLSL -> SPIRV -> SDL_GPUShader
 // ---------------------------------------------------------------------------
 
+static void print_shader_stage_name(SDL_ShaderCross_ShaderStage stage, char* buf, size_t bufsize) {
+    switch(stage) {
+        case SDL_SHADERCROSS_SHADERSTAGE_VERTEX:   snprintf(buf, bufsize, "Vertex"); break;
+        case SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT: snprintf(buf, bufsize, "Fragment"); break;
+        case SDL_SHADERCROSS_SHADERSTAGE_COMPUTE:  snprintf(buf, bufsize, "Compute"); break;
+        default: snprintf(buf, bufsize, "Unknown(%d)", (int)stage);
+    }
+}
+
 static SDL_GPUShader* load_shader_from_spirv(
     const char* filename,
     const char* entrypoint,
@@ -382,18 +398,24 @@ static SDL_GPUShader* load_shader_from_spirv(
     size_t spirv_size = 0;
     void* spirv_bytecode = SDL_LoadFile(filename, &spirv_size);
     if (!spirv_bytecode) {
-        fprintf(stderr, "Failed to load SPIR-V file: %s (%s)\n", filename, SDL_GetError());
+        fprintf(stderr, "ERROR: Failed to load SPIR-V file: %s\n", filename);
+        fprintf(stderr, "       SDL Error: %s\n", SDL_GetError());
         return NULL;
     }
+    
+    printf("INFO: Loaded SPIR-V file: %s (%zu bytes)\n", filename, spirv_size);
 
     // Reflect to get resource info
     SDL_ShaderCross_GraphicsShaderMetadata* metadata =
         SDL_ShaderCross_ReflectGraphicsSPIRV((const Uint8*)spirv_bytecode, spirv_size, 0);
     if (!metadata) {
-        fprintf(stderr, "Failed to reflect SPIRV: %s (%s)\n", filename, SDL_GetError());
+        fprintf(stderr, "ERROR: Failed to reflect SPIR-V shader: %s\n", filename);
+        fprintf(stderr, "       SDL Error: %s\n", SDL_GetError());
         SDL_free(spirv_bytecode);
         return NULL;
     }
+    
+    printf("INFO: Reflected shader resources for: %s\n", filename);
 
     // Compile SPIRV -> GPU shader
     SDL_ShaderCross_SPIRV_Info spirv_info = {0};
@@ -406,16 +428,30 @@ static SDL_GPUShader* load_shader_from_spirv(
     SDL_GPUShader* shader = SDL_ShaderCross_CompileGraphicsShaderFromSPIRV(
         gpu_device, &spirv_info, &metadata->resource_info, 0);
 
+    // Cleanup before checking result (in case shader fails to compile)
     SDL_free(metadata);
     SDL_free(spirv_bytecode);
-
+    
     if (!shader) {
-        fprintf(stderr, "Failed to compile GPU shader: %s (%s)\n", filename, SDL_GetError());
+        char stage_name[32];
+        print_shader_stage_name(stage, stage_name, sizeof(stage_name));
+        
+        fprintf(stderr, "ERROR: Failed to compile GPU shader from SPIR-V: %s\n", filename);
+        fprintf(stderr, "       Stage: %s\n", stage_name);
+        fprintf(stderr, "       Entry point: %s\n", entrypoint);
+        
+        // Try to get more specific error info
+        const char* sdl_error = SDL_GetError();
+        if (sdl_error && strlen(sdl_error) > 0) {
+            fprintf(stderr, "       Error details: %s\n", sdl_error);
+        }
+        
+        return NULL;
     }
 
+    printf("INFO: Successfully compiled shader: %s\n", filename);
     return shader;
 }
-
 // ---------------------------------------------------------------------------
 // Helper: load texture via stb_image -> SDL_GPUTexture
 // ---------------------------------------------------------------------------
@@ -471,9 +507,17 @@ static SDL_GPUTexture* load_gpu_texture(const char* filepath) {
     stbi_image_free(data);
 
     // Upload via copy pass
+// Upload via copy pass
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
+    if (!cmd) {
+      fprintf(stderr, "Failed to acquire GPU command buffer for texture upload\n");
+      SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
+      SDL_ReleaseGPUTexture(gpu_device, texture);
+      stbi_image_free(data);
+      return NULL;
+    }
+    
     SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(cmd);
-
     SDL_GPUTextureTransferInfo src = {0};
     src.transfer_buffer = transfer_buf;
     src.offset = 0;
@@ -491,15 +535,20 @@ static SDL_GPUTexture* load_gpu_texture(const char* filepath) {
     dst.h = (Uint32)h;
     dst.d = 1;
 
-    SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
-    SDL_EndGPUCopyPass(copy_pass);
-    SDL_SubmitGPUCommandBuffer(cmd);
-
+SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
+    
+    // Always release transfer buffer even if command submission fails
     SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
+    
+    SDL_EndGPUCopyPass(copy_pass);
+    if (SDL_SubmitGPUCommandBuffer(cmd) != 0) {
+        fprintf(stderr, "Failed to submit GPU command buffer for texture upload: %s\n", filepath);
+        SDL_ReleaseGPUTexture(gpu_device, texture);
+        return NULL;
+    }
 
     printf("Loaded texture: %s (%dx%d)\n", filepath, w, h);
     return texture;
-}
 
 // ---------------------------------------------------------------------------
 // Font loading
@@ -684,17 +733,35 @@ static SDL_GPUBuffer* upload_storage_buffer(const void *data, uint32_t size) {
     buf_info.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
     buf_info.size = size;
     SDL_GPUBuffer *buf = SDL_CreateGPUBuffer(gpu_device, &buf_info);
+    
+    if (!buf) {
+        fprintf(stderr, "Failed to create storage buffer: %s\n", SDL_GetError());
+        return NULL;
+    }
 
     SDL_GPUTransferBufferCreateInfo xfer_info = {0};
     xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
     xfer_info.size = size;
     SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &xfer_info);
+    
+    if (!xfer) {
+        fprintf(stderr, "Failed to create transfer buffer for storage upload: %s\n", SDL_GetError());
+        SDL_ReleaseGPUBuffer(gpu_device, buf);
+        return NULL;
+    }
 
     void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
     memcpy(mapped, data, size);
     SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
 
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
+    if (!cmd) {
+        fprintf(stderr, "Failed to acquire GPU command buffer for storage upload: %s\n", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
+        SDL_ReleaseGPUBuffer(gpu_device, buf);
+        return NULL;
+    }
+    
     SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
 
     SDL_GPUTransferBufferLocation src = {0};
@@ -704,9 +771,16 @@ static SDL_GPUBuffer* upload_storage_buffer(const void *data, uint32_t size) {
     dst.size = size;
     SDL_UploadToGPUBuffer(copy, &src, &dst, false);
 
-    SDL_EndGPUCopyPass(copy);
-    SDL_SubmitGPUCommandBuffer(cmd);
+    // Always release transfer buffer even if command submission fails
     SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
+    
+    SDL_EndGPUCopyPass(copy);
+    if (SDL_SubmitGPUCommandBuffer(cmd) != 0) {
+        fprintf(stderr, "Failed to submit GPU command buffer for storage upload\n");
+        SDL_ReleaseGPUBuffer(gpu_device, buf);
+        return NULL;
+    }
+    
     return buf;
 }
 
@@ -928,6 +1002,12 @@ static UIRenderState ui_profiler = {0};
 // Build Clay render commands → vertex arrays (window-agnostic)
 // ---------------------------------------------------------------------------
 static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray commands) {
+    /* CPU-side scissor clipping: track active clip rect from SCISSOR_START/END.
+       Rects are clamped; text commands fully outside are skipped,
+       individual glyphs partially outside are clipped. */
+    int clipping = 0;
+    float clip_x0 = 0, clip_y0 = 0, clip_x1 = 99999, clip_y1 = 99999;
+
     ui->rect_vert_count = 0;
     ui->font_vert_count = 0;
 
@@ -936,6 +1016,18 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
         Clay_BoundingBox box = cmd->boundingBox;
 
         switch (cmd->commandType) {
+        case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: {
+            clipping = 1;
+            clip_x0 = box.x;
+            clip_y0 = box.y;
+            clip_x1 = box.x + box.width;
+            clip_y1 = box.y + box.height;
+            break;
+        }
+        case CLAY_RENDER_COMMAND_TYPE_SCISSOR_END: {
+            clipping = 0;
+            break;
+        }
         case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
             Clay_RectangleRenderData *rect = &cmd->renderData.rectangle;
             float r = rect->backgroundColor.r / 255.0f;
@@ -945,6 +1037,15 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
 
             float x0 = box.x, y0 = box.y;
             float x1 = box.x + box.width, y1 = box.y + box.height;
+
+            /* Clamp to scissor rect */
+            if (clipping) {
+                if (x0 < clip_x0) x0 = clip_x0;
+                if (y0 < clip_y0) y0 = clip_y0;
+                if (x1 > clip_x1) x1 = clip_x1;
+                if (y1 > clip_y1) y1 = clip_y1;
+                if (x0 >= x1 || y0 >= y1) break; /* fully clipped */
+            }
 
             if (ui->rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
                 ui_rect_vertex *v = &ui->rect_verts[ui->rect_vert_count];
@@ -965,6 +1066,13 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
             float b = text->textColor.b / 255.0f;
             float a = text->textColor.a / 255.0f;
             float font_size = (float)text->fontSize;
+
+            /* Skip entire text command if fully outside scissor */
+            if (clipping) {
+                if (box.x + box.width < clip_x0 || box.x > clip_x1 ||
+                    box.y + box.height < clip_y0 || box.y > clip_y1)
+                    break;
+            }
 
             hb_buffer_t *hb_buf = hb_buffer_create();
             hb_buffer_add_utf8(hb_buf, text->stringContents.chars,
@@ -999,12 +1107,17 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                     float glyph_w = (info->bbox_max_x - info->bbox_min_x) * font_size;
                     float glyph_h = (info->bbox_max_y - info->bbox_min_y) * font_size;
 
-                    // Snap X to pixel grid for consistent spacing; leave Y exact
-                    // so all glyphs share the same snapped baseline.
                     float gx = floorf(cursor_x + info->bbox_min_x * font_size + glyph_positions[gi].x_offset * scale);
                     float gy = baseline_y - info->bbox_max_y * font_size + glyph_positions[gi].y_offset * scale;
                     float gw = glyph_w;
                     float gh = glyph_h;
+
+                    /* Skip glyphs fully outside scissor rect */
+                    if (clipping && (gx + gw < clip_x0 || gx > clip_x1 ||
+                                     gy + gh < clip_y0 || gy > clip_y1)) {
+                        cursor_x += glyph_positions[gi].x_advance * scale;
+                        continue;
+                    }
 
                     if (ui->font_vert_count + 6 <= MAX_FONT_VERTICES) {
                         font_vertex *v = &ui->font_verts[ui->font_vert_count];
@@ -1118,7 +1231,156 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.internalArray = (Clay_RenderCommand *)g->editor.profiler_cmd_array;
 
     ui_build_vertices(&ui_profiler, commands);
+
+    /* Append scrollbar thumb as an extra rect.
+       Uses scroll data + PTreeScroll bounding box exported by profiler_layout. */
+    {
+        editor_state *e = &g->editor;
+        float content_h = e->prof_content_h;
+        float container_h = e->prof_container_h;
+        float track_h = e->prof_track_h;
+        if (content_h > container_h && track_h > 0) {
+            float sb_w = 6;  /* scrollbar width in pixels */
+            float thumb_frac = container_h / content_h;
+            float thumb_h = track_h * thumb_frac;
+            if (thumb_h < 20) thumb_h = 20;
+            float scroll_frac = (-e->prof_scroll_pos) / (content_h - container_h);
+            float thumb_y = e->prof_track_y + scroll_frac * (track_h - thumb_h);
+            float sb_x = e->prof_track_x + e->prof_track_w - sb_w - 2;
+
+            if (ui_profiler.rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
+                ui_rect_vertex *v = &ui_profiler.rect_verts[ui_profiler.rect_vert_count];
+                float r = 1.0f, g2 = 1.0f, b = 1.0f, a = 0.3f;
+                v[0] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
+                v[1] = (ui_rect_vertex){sb_x + sb_w, thumb_y,          r, g2, b, a};
+                v[2] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
+                v[3] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
+                v[4] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
+                v[5] = (ui_rect_vertex){sb_x,        thumb_y + thumb_h, r, g2, b, a};
+                ui_profiler.rect_vert_count += 6;
+            }
+        }
+    }
+
     ui_upload(cmd_buf, &ui_profiler);
+
+    /* Upload grid pixel buffer to GPU texture + build quad vertex buffer (copy pass) */
+    {
+        editor_state *e = &g->editor;
+        int gw = e->prof_grid_w, gh = e->prof_grid_h;
+        float panel_w = (float)panel_tex_w[PANEL_PROFILER];
+        float panel_h = (float)panel_tex_h[PANEL_PROFILER];
+
+        /* Release previous frame's quad buffer */
+        if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
+
+        if (gw > 0 && gh > 0 && panel_w > 0 && panel_h > 0 &&
+            e->prof_grid_bw > 0 && e->prof_grid_bh > 0) {
+            /* Recreate texture if dimensions changed */
+            if (grid_tex_w != gw || grid_tex_h != gh || !grid_texture) {
+                if (grid_texture) SDL_ReleaseGPUTexture(gpu_device, grid_texture);
+                SDL_GPUTextureCreateInfo ti = {0};
+                ti.type = SDL_GPU_TEXTURETYPE_2D;
+                ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+                ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                ti.width = (Uint32)gw;
+                ti.height = (Uint32)gh;
+                ti.layer_count_or_depth = 1;
+                ti.num_levels = 1;
+                ti.sample_count = SDL_GPU_SAMPLECOUNT_1;
+                grid_texture = SDL_CreateGPUTexture(gpu_device, &ti);
+                grid_tex_w = gw;
+                grid_tex_h = gh;
+            }
+
+            /* Upload pixels via transfer buffer */
+            {
+                Uint32 pixel_size = (Uint32)(gw * gh * 4);
+                SDL_GPUTransferBufferCreateInfo tbi = {0};
+                tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                tbi.size = pixel_size;
+                SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
+                void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
+                memcpy(mapped, e->prof_grid_pixels, pixel_size);
+                SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
+
+                SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd_buf);
+                SDL_GPUTextureTransferInfo src = {0};
+                src.transfer_buffer = xfer;
+                SDL_GPUTextureRegion dst = {0};
+                dst.texture = grid_texture;
+                dst.w = (Uint32)gw;
+                dst.h = (Uint32)gh;
+                dst.d = 1;
+                SDL_UploadToGPUTexture(copy, &src, &dst, false);
+                SDL_EndGPUCopyPass(copy);
+                SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
+            }
+
+            /* Build and upload quad vertex buffer (pixel → NDC) */
+            {
+                float x0 = e->prof_grid_x, y0 = e->prof_grid_y;
+                float x1 = x0 + e->prof_grid_bw, y1 = y0 + e->prof_grid_bh;
+                float nx0 = (x0 / panel_w) * 2.0f - 1.0f;
+                float ny0 = 1.0f - (y0 / panel_h) * 2.0f;
+                float nx1 = (x1 / panel_w) * 2.0f - 1.0f;
+                float ny1 = 1.0f - (y1 / panel_h) * 2.0f;
+
+                composite_vertex verts[6] = {
+                    {nx0, ny0, 0, 0, 1, 1, 1, 1},
+                    {nx1, ny0, 1, 0, 1, 1, 1, 1},
+                    {nx1, ny1, 1, 1, 1, 1, 1, 1},
+                    {nx0, ny0, 0, 0, 1, 1, 1, 1},
+                    {nx1, ny1, 1, 1, 1, 1, 1, 1},
+                    {nx0, ny1, 0, 1, 1, 1, 1, 1}
+                };
+
+                Uint32 vsize = sizeof(verts);
+                SDL_GPUTransferBufferCreateInfo vtbi = {0};
+                vtbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                vtbi.size = vsize;
+                SDL_GPUTransferBuffer *vxfer = SDL_CreateGPUTransferBuffer(gpu_device, &vtbi);
+                void *vmapped = SDL_MapGPUTransferBuffer(gpu_device, vxfer, false);
+                memcpy(vmapped, verts, vsize);
+                SDL_UnmapGPUTransferBuffer(gpu_device, vxfer);
+
+                SDL_GPUBufferCreateInfo vbi = {0};
+                vbi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+                vbi.size = vsize;
+                grid_quad_buf = SDL_CreateGPUBuffer(gpu_device, &vbi);
+
+                SDL_GPUCopyPass *vcopy = SDL_BeginGPUCopyPass(cmd_buf);
+                SDL_GPUTransferBufferLocation vsrc = {0};
+                vsrc.transfer_buffer = vxfer;
+                SDL_GPUBufferRegion vdst = {0};
+                vdst.buffer = grid_quad_buf;
+                vdst.size = vsize;
+                SDL_UploadToGPUBuffer(vcopy, &vsrc, &vdst, false);
+                SDL_EndGPUCopyPass(vcopy);
+                SDL_ReleaseGPUTransferBuffer(gpu_device, vxfer);
+            }
+        }
+    }
+}
+
+/* Draw the grid texture quad during the profiler render pass.
+   All GPU resources were prepared by profiler_prepare (copy phase). */
+static void grid_tex_draw(SDL_GPURenderPass *pass, SDL_GPUCommandBuffer *cmd_buf) {
+    if (!grid_texture || !grid_tex_pipeline || !grid_quad_buf || !grid_sampler)
+        return;
+
+    SDL_BindGPUGraphicsPipeline(pass, grid_tex_pipeline);
+
+    SDL_GPUBufferBinding vb = {0};
+    vb.buffer = grid_quad_buf;
+    SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+
+    SDL_GPUTextureSamplerBinding ts = {0};
+    ts.texture = grid_texture;
+    ts.sampler = grid_sampler;
+    SDL_BindGPUFragmentSamplers(pass, 0, &ts, 1);
+
+    SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
 }
 
 // Draw UI during render pass (works for any UIRenderState)
@@ -1211,14 +1473,14 @@ EXPORT int init_externals(struct memory *g) {
     offscreen_format = SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
 
     // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
+// 6. Compile sprite shaders (split files to avoid DXC including unused resources)
     SDL_GPUShader* sprite_vs = load_shader_from_spirv(
-        "assets/shaders/compiled/sprite_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        g->shader_sprite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* sprite_fs = load_shader_from_spirv(
-        "assets/shaders/compiled/sprite_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        g->shader_sprite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!sprite_vs || !sprite_fs) {
         fprintf(stderr, "Failed to compile sprite shaders\n");
         return -1;
-    }
 
     // 7. Create sprite pipeline
     {
@@ -1299,15 +1561,14 @@ EXPORT int init_externals(struct memory *g) {
     SDL_ReleaseGPUShader(gpu_device, sprite_vs);
     SDL_ReleaseGPUShader(gpu_device, sprite_fs);
 
-    // 8. Compile debug line shaders (split files)
+// 8. Compile debug line shaders (split files)
     SDL_GPUShader* line_vs = load_shader_from_spirv(
-        "assets/shaders/compiled/debug_lines_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        g->shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* line_fs = load_shader_from_spirv(
-        "assets/shaders/compiled/debug_lines_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        g->shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!line_vs || !line_fs) {
         fprintf(stderr, "Failed to compile debug line shaders\n");
         return -1;
-    }
 
     // 9. Create line pipeline
     {
@@ -1373,14 +1634,15 @@ EXPORT int init_externals(struct memory *g) {
 
     // 9b. Create 3D editor line pipeline (float3 position)
     {
+// 9b. Create 3D editor line pipeline (float3 position)
+    {
         SDL_GPUShader *ed_vs = load_shader_from_spirv(
-            "assets/shaders/compiled/editor_line_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g->shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *ed_fs = load_shader_from_spirv(
-            "assets/shaders/compiled/debug_lines_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g->shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!ed_vs || !ed_fs) {
             fprintf(stderr, "Failed to compile editor line shaders\n");
             return -1;
-        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -1436,14 +1698,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // 10. Compile and create UI rect pipeline
     {
+{
         SDL_GPUShader *ui_vs = load_shader_from_spirv(
-            "assets/shaders/compiled/ui_rect_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g->shader_ui_rect_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *ui_fs = load_shader_from_spirv(
-            "assets/shaders/compiled/ui_rect_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g->shader_ui_rect_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!ui_vs || !ui_fs) {
             fprintf(stderr, "Failed to compile UI rect shaders\n");
             return -1;
-        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -1505,14 +1767,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // 11. Compile and create font pipeline
     {
+{
         SDL_GPUShader *font_vs = load_shader_from_spirv(
-            "assets/shaders/compiled/font_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g->shader_font_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *font_fs = load_shader_from_spirv(
-            "assets/shaders/compiled/font_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g->shader_font_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!font_vs || !font_fs) {
             fprintf(stderr, "Failed to compile font shaders\n");
             return -1;
-        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -1586,14 +1848,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // 12. Compile and create mesh (3D skinned) pipeline
     {
+{
         SDL_GPUShader *mesh_vs = load_shader_from_spirv(
-            "assets/shaders/compiled/mesh_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g->shader_mesh_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *mesh_fs = load_shader_from_spirv(
-            "assets/shaders/compiled/mesh_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g->shader_mesh_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!mesh_vs || !mesh_fs) {
             fprintf(stderr, "Failed to compile mesh shaders\n");
             return -1;
-        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -1754,19 +2016,17 @@ EXPORT int init_externals(struct memory *g) {
         }
     }
 
-    // 11. Load textures
-    gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture("assets/char_spritesheet.png");
-    gpu_textures[TEXTURE_TILES]       = load_gpu_texture("assets/Dungeon_Tileset.png");
-    gpu_textures[TEXTURE_SLIME]       = load_gpu_texture("assets/pinkslime_spritesheet.png");
-    gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture("assets/health_bar_hud.png");
-    gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture("assets/health_hud.png");
+// 11. Load textures from config paths
+    gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture(g->texture_player);
+    gpu_textures[TEXTURE_TILES]       = load_gpu_texture(g->texture_tiles);
+    gpu_textures[TEXTURE_SLIME]       = load_gpu_texture(g->texture_slime);
+    gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture(g->texture_health_bar);
+    gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture(g->texture_health_fill);
 
     // Load editor font and upload to GPU
-    if (font_load(&editor_font, "assets/fonts/SourceCodePro-Regular.ttf") != 0) {
-        fprintf(stderr, "Failed to load editor font\n");
+    if (font_load(&editor_font, g->font_editor) != 0) {
+        fprintf(stderr, "Failed to load editor font from: %s\n", g->font_editor);
         return -1;
-    }
-    if (font_upload_to_gpu(&editor_font) != 0) {
         fprintf(stderr, "Failed to upload font to GPU\n");
         return -1;
     }
@@ -1789,14 +2049,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // Initialize arena (single allocation for all engine memory)
     {
-        uint32_t arena_size = 32 * 1024 * 1024; // 32 MB
+        uint32_t arena_size = 500 * 1024 * 1024; // 500 MB
         void *arena_mem = malloc(arena_size);
         arena_init(&g->arena, arena_mem, arena_size);
         printf("Arena initialized (%u bytes)\n", arena_size);
     }
 
     // Allocate editor sub-arena (dock state, editor-specific allocations)
-    g->editor_arena = arena_alloc_subarena(&g->arena, 10 * 1024 * 1024, 16, "editor");
+    g->editor_arena = arena_alloc_subarena(&g->arena, 50 * 1024 * 1024, 16, "editor");
     g->editor.dock = arena_alloc(g->editor_arena, sizeof(dock_state), 16, "dock_state");
     dock = (dock_state *)g->editor.dock;
 
@@ -1829,14 +2089,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // Create composite pipeline (draws panel textures into window)
     {
+{
         SDL_GPUShader *comp_vs = load_shader_from_spirv(
-            "assets/shaders/compiled/composite_vs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g->shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *comp_fs = load_shader_from_spirv(
-            "assets/shaders/compiled/composite_fs.spv", "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g->shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!comp_vs || !comp_fs) {
             fprintf(stderr, "Failed to compile composite shaders\n");
             return -1;
-        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -1900,6 +2160,73 @@ EXPORT int init_externals(struct memory *g) {
         si.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         composite_sampler = SDL_CreateGPUSampler(gpu_device, &si);
+    }
+
+    // Create grid texture pipeline (same shaders as composite, but with depth stencil
+    // so it can draw inside the profiler render pass which has a depth target)
+    {
+{
+        SDL_GPUShader *grid_vs = load_shader_from_spirv(
+            g->shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        SDL_GPUShader *grid_fs = load_shader_from_spirv(
+            g->shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+
+        SDL_GPUVertexBufferDescription vbuf_desc = {0};
+        SDL_GPUVertexBufferDescription vbuf_desc = {0};
+        vbuf_desc.slot = 0;
+        vbuf_desc.pitch = sizeof(composite_vertex);
+        vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+
+        SDL_GPUVertexAttribute attrs[3] = {0};
+        attrs[0].location = 0; attrs[0].buffer_slot = 0;
+        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; attrs[0].offset = 0;
+        attrs[1].location = 1; attrs[1].buffer_slot = 0;
+        attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; attrs[1].offset = sizeof(float)*2;
+        attrs[2].location = 2; attrs[2].buffer_slot = 0;
+        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; attrs[2].offset = sizeof(float)*4;
+
+        SDL_GPUColorTargetDescription ct = {0};
+        ct.format = offscreen_format;
+        ct.blend_state.enable_blend = true;
+        ct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        ct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+
+        SDL_GPUGraphicsPipelineCreateInfo pi = {0};
+        pi.vertex_shader = grid_vs;
+        pi.fragment_shader = grid_fs;
+        pi.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
+        pi.vertex_input_state.num_vertex_buffers = 1;
+        pi.vertex_input_state.vertex_attributes = attrs;
+        pi.vertex_input_state.num_vertex_attributes = 3;
+        pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+        pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        pi.target_info.color_target_descriptions = &ct;
+        pi.target_info.num_color_targets = 1;
+        pi.target_info.has_depth_stencil_target = true;
+        pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+
+        grid_tex_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pi);
+        if (!grid_tex_pipeline) {
+            fprintf(stderr, "Failed to create grid texture pipeline: %s\n", SDL_GetError());
+            return -1;
+        }
+        SDL_ReleaseGPUShader(gpu_device, grid_vs);
+        SDL_ReleaseGPUShader(gpu_device, grid_fs);
+
+        /* Nearest-neighbor sampler for crisp pixel cells */
+        SDL_GPUSamplerCreateInfo gsi = {0};
+        gsi.min_filter = SDL_GPU_FILTER_NEAREST;
+        gsi.mag_filter = SDL_GPU_FILTER_NEAREST;
+        gsi.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        gsi.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        gsi.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        grid_sampler = SDL_CreateGPUSampler(gpu_device, &gsi);
     }
 
     // Create pre-rendered tab header textures (once at init)
@@ -2768,6 +3095,7 @@ EXPORT void update_externals(struct memory *g) {
         memcpy(prof_uniforms.view, identity, sizeof(identity));
 
         ui_draw(prof_pass, cmd_buf, &prof_uniforms, &ui_profiler);
+        grid_tex_draw(prof_pass, cmd_buf);
 
         SDL_EndGPURenderPass(prof_pass);
     }
@@ -2935,6 +3263,7 @@ EXPORT void update_externals(struct memory *g) {
     }
     ui_release_buffers(&ui_game);
     ui_release_buffers(&ui_profiler);
+    if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
 
     TracyCZoneEnd(ctx_update);
     TracyCFrameMark;
@@ -2983,6 +3312,11 @@ EXPORT void end_externals(struct memory *g) {
     // Composite pipeline + sampler + header textures
     if (composite_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, composite_pipeline); composite_pipeline = NULL; }
     if (composite_sampler)  { SDL_ReleaseGPUSampler(gpu_device, composite_sampler); composite_sampler = NULL; }
+    // Grid texture pipeline + resources
+    if (grid_tex_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, grid_tex_pipeline); grid_tex_pipeline = NULL; }
+    if (grid_sampler)      { SDL_ReleaseGPUSampler(gpu_device, grid_sampler); grid_sampler = NULL; }
+    if (grid_texture)      { SDL_ReleaseGPUTexture(gpu_device, grid_texture); grid_texture = NULL; }
+    if (grid_quad_buf)     { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
     {
         int i;
         for (i = 0; i < PANEL_COUNT; i++) {

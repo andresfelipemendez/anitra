@@ -1,0 +1,43 @@
+# Anitra Engine Configuration Example
+# Copy this to game_config.toml and modify as needed
+
+[window]
+width = 1600
+height = 900
+title = "Anitra Engine"
+
+[assets]
+default_model_path = "assets/models/Knight.glb"
+default_animation_path = "assets/animations/Rig_Medium_General.glb"
+texture_player = "assets/char_spritesheet.png"
+texture_tiles = "assets/Dungeon_Tileset.png"
+texture_slime = "assets/pinkslime_spritesheet.png"
+texture_health_bar = "assets/health_bar_hud.png"
+texture_health_fill = "assets/health_hud.png"
+font_editor = "assets/fonts/SourceCodePro-Regular.ttf"
+
+[shaders]
+sprite_vs = "assets/shaders/compiled/sprite_vs.spv"
+sprite_fs = "assets/shaders/compiled/sprite_fs.spv"
+debug_lines_vs = "assets/shaders/compiled/debug_lines_vs.spv"
+debug_lines_fs = "assets/shaders/compiled/debug_lines_fs.spv"
+ui_rect_vs = "assets/shaders/compiled/ui_rect_vs.spv"
+ui_rect_fs = "assets/shaders/compiled/ui_rect_fs.spv"
+font_vs = "assets/shaders/compiled/font_vs.spv"
+font_fs = "assets/shaders/compiled/font_fs.spv"
+mesh_vs = "assets/shaders/compiled/mesh_vs.spv"
+mesh_fs = "assets/shaders/compiled/mesh_fs.spv"
+composite_vs = "assets/shaders/compiled/composite_vs.spv"
+composite_fs = "assets/shaders/compiled/composite_fs.spv"
+
+[game_loop]
+target_fps = 60.0
+vsync_enabled = true
+
+[hot_reload]
+enabled = true
+event_name = "Global\\ReloadEvent"
+
+[debug]
+show_debug_lines = true
+show_profiler = false

@@ -69,23 +69,48 @@ EXPORT int init_core() {
     memory g = {0};
     int reload;
 
-    /* Load engine DLL (copy first so engine.dll stays unlocked) */
+/* Load engine DLL (copy first so engine.dll stays unlocked) */
     copylibrary("engine", "engine_copy");
     engine_lib = loadlibrary("engine_copy");
-    assign_init((init)getfunction(engine_lib, "init_engine"));
-    assign_destroy((destroy)getfunction(engine_lib, "destroy_engine"));
-    assign_update((update)getfunction(engine_lib, "update_engine"));
+    if (!engine_lib) {
+      fprintf(stderr, "Failed to load engine_copy.dll\n");
+      return 1;
+    }
+    
+    init_func init_e = (init_func)getfunction(engine_lib, "init_engine");
+    destroy_func destroy_e = (destroy_func)getfunction(engine_lib, "destroy_engine");
+    update_func update_e = (update_func)getfunction(engine_lib, "update_engine");
+    
+    if (!init_e || !destroy_e || !update_e) {
+      fprintf(stderr, "Failed to get engine functions\n");
+      unloadlibrary(engine_lib);
+      return 1;
+    }
+    
+    assign_init(init_e);
+    assign_destroy(destroy_e);
+    assign_update(update_e);
 
     /* Load editor DLL (copy first so editor.dll stays unlocked) */
     copylibrary("editor", "editor_copy");
     editor_lib = loadlibrary("editor_copy");
     if (editor_lib) {
-      assign_editor_init((init)getfunction(editor_lib, "init_editor"));
-      assign_editor_destroy((destroy)getfunction(editor_lib, "destroy_editor"));
-      assign_editor_update((update)getfunction(editor_lib, "update_editor"));
-      assign_editor_handle_event((handle_event)getfunction(editor_lib, "editor_handle_event"));
+      init_func init_ed = (init_func)getfunction(editor_lib, "init_editor");
+      destroy_func destroy_ed = (destroy_func)getfunction(editor_lib, "destroy_editor");
+      update_func update_ed = (update_func)getfunction(editor_lib, "update_editor");
+      handle_event_func handle_ev = (handle_event_func)getfunction(editor_lib, "editor_handle_event");
+      
+      if (!init_ed || !destroy_ed || !update_ed) {
+        fprintf(stderr, "Warning: Editor functions not found - editor disabled\n");
+        unloadlibrary(editor_lib);
+        editor_lib = NULL;
+      } else {
+        assign_editor_init(init_ed);
+        assign_editor_destroy(destroy_ed);
+        assign_editor_update(update_ed);
+        assign_editor_handle_event(handle_ev);
+      }
     }
-
     init_externals(&g);
     init_engine(&g);
     init_editor(&g);
@@ -144,35 +169,80 @@ int begin_game_loop(memory *g) {
 
   while (g->play) {
 #ifdef _WIN32
-    if (reloadFlag) {
+if (reloadFlag) {
       reloadFlag = 0;
+      
+      /* Verify new DLL was loaded */
+      if (!engine_lib) {
+        fprintf(stderr, "Engine library is NULL - cannot reload\n");
+        continue;
+      }
+      
       destroy_engine(g);
       printf("Reloading engine...\n");
 
       unloadlibrary(engine_lib);
       copylibrary("engine", "engine_copy");
       engine_lib = loadlibrary("engine_copy");
-      assign_init((init)getfunction(engine_lib, "init_engine"));
-      assign_destroy((destroy)getfunction(engine_lib, "destroy_engine"));
-      assign_update((update)getfunction(engine_lib, "update_engine"));
+      if (!engine_lib) {
+        fprintf(stderr, "Failed to reload engine_copy.dll\n");
+        continue;
+      }
+      
+init_func new_init = (init_func)getfunction(engine_lib, "init_engine");
+      destroy_func new_destroy = (destroy_func)getfunction(engine_lib, "destroy_engine");
+      update_func new_update = (update_func)getfunction(engine_lib, "update_engine");
+
+      if (!new_init || !new_destroy || !new_update) {
+        fprintf(stderr, "Failed to get engine functions after reload\n");
+        unloadlibrary(engine_lib);
+        continue;
+      }
+
+      assign_init(new_init);
+      assign_destroy(new_destroy);
+      assign_update(new_update);
       init_engine(g);
     }
 
     if (editorReloadFlag) {
       editorReloadFlag = 0;
+      
+      /* Verify new DLL was loaded */
+      if (!editor_lib) {
+        fprintf(stderr, "Editor library is NULL - cannot reload\n");
+        continue;
+      }
+      
       destroy_editor(g);
       printf("Reloading editor...\n");
 
       unloadlibrary(editor_lib);
       copylibrary("editor", "editor_copy");
       editor_lib = loadlibrary("editor_copy");
-      assign_editor_init((init)getfunction(editor_lib, "init_editor"));
-      assign_editor_destroy((destroy)getfunction(editor_lib, "destroy_editor"));
-      assign_editor_update((update)getfunction(editor_lib, "update_editor"));
-      assign_editor_handle_event((handle_event)getfunction(editor_lib, "editor_handle_event"));
+      if (!editor_lib) {
+        fprintf(stderr, "Failed to reload editor_copy.dll\n");
+        continue;
+      }
+
+      init_func new_init_ed = (init_func)getfunction(editor_lib, "init_editor");
+      destroy_func new_destroy_ed = (destroy_func)getfunction(editor_lib, "destroy_editor");
+      update_func new_update_ed = (update_func)getfunction(editor_lib, "update_editor");
+      handle_event_func new_handle_ev = (handle_event_func)getfunction(editor_lib, "editor_handle_event");
+
+      if (!new_init_ed || !new_destroy_ed || !new_update_ed) {
+        fprintf(stderr, "Failed to get editor functions after reload\n");
+        unloadlibrary(editor_lib);
+        editor_lib = NULL;
+        continue;
+      }
+
+      assign_editor_init(new_init_ed);
+      assign_editor_destroy(new_destroy_ed);
+      assign_editor_update(new_update_ed);
+      assign_editor_handle_event(new_handle_ev);
       init_editor(g);
     }
-
     /* Core reload: poll with 0ms timeout (non-blocking) */
     if (hCoreEvent && WaitForSingleObject(hCoreEvent, 0) == WAIT_OBJECT_0) {
       printf("Core reload signal received — tearing down...\n");

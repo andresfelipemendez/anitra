@@ -4,20 +4,20 @@
 #include <math.h>
 #include <string.h>
 
-/* ── Types ──────────────────────────────────────────────────────── */
+/* ── 2D types for 2D gameplay code ─────────────────────────────── */
+typedef struct { float x, y; } vec2;
 
-typedef struct { float x, y, z; }    Vec3;
-typedef struct { float x, y, z, w; } Vec4;
-typedef struct { float x, y, z, w; } Quat;
-typedef struct { float m[16]; }      Mat4; /* column-major */
+static inline vec2 vec2_add(vec2 a, vec2 b)      { return (vec2){a.x + b.x, a.y + b.y}; }
+static inline vec2 vec2_sub(vec2 a, vec2 b)      { return (vec2){a.x - b.x, a.y - b.y}; }
+static inline vec2 vec2_scale(vec2 v, float s)   { return (vec2){v.x * s, v.y * s}; }
+static inline float vec2_dot(vec2 a, vec2 b)     { return a.x*b.x + a.y*b.y; }
+static inline float vec2_len(vec2 v)             { return sqrtf(vec2_dot(v,v)); }
+static inline vec2 vec2_normalize(vec2 v) {
+    float l = vec2_len(v);
+    return l > 1e-8f ? vec2_scale(v, 1.0f/l) : (vec2){0,0};
+}
 
-/* C vs C++ compound literal compatibility */
-#ifdef __cplusplus
-#define VEC3(x,y,z)       Vec3{x,y,z}
-#define QUAT(x,y,z,w)     Quat{x,y,z,w}
-#else
-#define VEC3(x,y,z)       (Vec3){x,y,z}
-#define QUAT(x,y,z,w)     (Quat){x,y,z,w}
+/* ── 3D types ───────────────────────────────────────────────────── */
 #endif
 
 /* ── Vec3 ───────────────────────────────────────────────────────── */

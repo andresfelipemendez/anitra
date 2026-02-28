@@ -686,7 +686,7 @@ static int build_externals(void)
 #ifdef _WIN32
     /* Generate .def for TCC linking (core.dll needs it) */
     generate_def_from_dll(DEBUG_DIR "/externals.dll",
-                          DEBUG_DIR "/externals.def", "externals.dll");
+                          DEBUG_DIR "/externals.def", "externals_copy.dll");
 #endif
 
     return 0;
@@ -711,7 +711,6 @@ static int build_externals(void)
     " src/engine/anim.c" \
     " src/engine/gltf_loader.c" \
     " build/Debug/SDL3.def"
-
 #define TCC_EDITOR_CMD \
     ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/editor.dll" \

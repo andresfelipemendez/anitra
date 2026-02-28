@@ -65,20 +65,18 @@ EXPORT void init_engine(memory *g) {
        Only runs on first init when no model is loaded yet. */
     if (g->loaded_model.mesh.primitive_count == 0 && g->gpu_device) {
         arena *model_arena = arena_alloc_subarena(&g->arena, 2 * 1024 * 1024, 16, "gltf_models");
-        if (model_arena) {
-            uint32_t jc;
-            gltf_set_gpu_device(g->gpu_device);
+gltf_set_gpu_device(g->gpu_device);
 
-            g->loaded_model = load_glb(
-                "C:/Users/andres/Downloads/KayKit_Adventurers_2.0_FREE/Characters/gltf/Knight.glb",
-                model_arena);
+            const char *model_path = g->default_model_path ?
+                g->default_model_path : "assets/models/Knight.glb";
+            const char *anim_path = g->default_animation_path ?
+                g->default_animation_path : "assets/animations/Rig_Medium_General.glb";
+
+            g->loaded_model = load_glb(model_path, model_arena);
 
             if (g->loaded_model.mesh.primitive_count > 0) {
                 if (g->loaded_model.clip_count == 0) {
-                    load_animations_glb(
-                        "C:/Users/andres/Downloads/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb",
-                        &g->loaded_model, model_arena);
-                }
+                    load_animations_glb(anim_path, &g->loaded_model, model_arena);
 
                 /* Populate g->mesh3d so engine can drive animation, externals can render */
                 jc = g->loaded_model.skeleton.joint_count;

@@ -2,6 +2,7 @@
 #define EDITOR_H
 
 #include "math3d.h"
+#include <stdint.h>
 
 /* ── Editor line vertex (matches externals pipeline: float3 pos + float3 color) ── */
 
@@ -10,6 +11,8 @@ typedef struct { float x, y, z, r, g, b; } editor_line_vert;
 /* ── Editor persistent state (lives in memory struct, survives hot-reload) ── */
 
 #define EDITOR_MAX_LINES 2048
+#define PROF_GRID_MAX_COLS 32
+#define PROF_GRID_MAX_ROWS 512
 
 typedef struct editor_state {
     /* Camera */
@@ -50,6 +53,27 @@ typedef struct editor_state {
     void *profiler_clay_ctx;       /* Clay_Context* in editor_arena */
     int   profiler_cmd_count;      /* number of Clay_RenderCommand items */
     void *profiler_cmd_array;      /* Clay_RenderCommand* in Clay arena memory */
+
+    /* Profiler input — accumulated per frame by event handler, consumed by profiler_layout */
+    float prof_mouse_x, prof_mouse_y; /* mouse position in profiler-local coords */
+    float prof_scroll_y;              /* scroll wheel delta this frame */
+    int   prof_mouse_down;            /* left button held */
+    int   prof_click;                 /* 1 on the frame left button was pressed */
+    int   prof_hover_record;          /* hovered flat record index, -1 = none */
+
+    /* Scrollbar data — set by profiler_layout after EndLayout, read by externals renderer */
+    float prof_scroll_pos;            /* current scroll Y offset (<=0) */
+    float prof_content_h;             /* total content height */
+    float prof_container_h;           /* visible container height */
+    float prof_track_x, prof_track_y; /* PTreeScroll bounding box origin (Clay coords) */
+    float prof_track_w, prof_track_h; /* PTreeScroll bounding box size */
+
+    /* Grid texture — CPU pixel buffer built by editor, uploaded by externals.
+       Each pixel = one 64KB arena cell. Nearest-neighbor sampled to panel size. */
+    uint8_t  prof_grid_pixels[PROF_GRID_MAX_COLS * PROF_GRID_MAX_ROWS * 4]; /* RGBA */
+    int      prof_grid_w, prof_grid_h;    /* actual pixel dimensions this frame */
+    float    prof_grid_x, prof_grid_y;    /* Clay bounding box origin */
+    float    prof_grid_bw, prof_grid_bh;  /* Clay bounding box size */
 
     /* Dock state — opaque, allocated from editor_arena.
        Actual type is dock_state* (defined in editor/dock.h). */
