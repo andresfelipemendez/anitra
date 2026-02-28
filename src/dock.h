@@ -160,6 +160,8 @@ static int  header_hit_test_node(dock_state *d, int root_node, float x, float y,
 static int  dock_collapse_empty(dock_state *d, int root_node);
 static void dock_collect_leaves(dock_state *d, int root_node,
                                 PanelId *out_panels, int *out_count, int max_count);
+static void dock_free_node(dock_state *d, int idx);
+static int  dock_find_parent(dock_state *d, int root, int target, int *out_slot);
 static void dock_free_subtree(dock_state *d, int root_node);
 static void dock_get_panel_rect(dock_state *d, int node_idx, int panel_idx,
                                 float *out_x, float *out_y, float *out_w, float *out_h);
@@ -218,11 +220,12 @@ static void dock_init_default(dock_state *d) {
     d->nodes[mid].panels[0] = PANEL_EDITOR;
     d->nodes[mid].panel_count = 1;
 
-    /* Right leaf: Profiler + Scene Tree tabs */
+    /* Right leaf: Profiler + Scene Tree + Inspector tabs */
     right = dock_alloc_node(d);
     d->nodes[right].panels[0] = PANEL_PROFILER;
     d->nodes[right].panels[1] = PANEL_SCENE_TREE;
-    d->nodes[right].panel_count = 2;
+    d->nodes[right].panels[2] = PANEL_INSPECTOR;
+    d->nodes[right].panel_count = 3;
     d->nodes[right].active_tab = 0;
 
     /* Wire up children */
@@ -262,7 +265,8 @@ static void dock_layout(dock_state *d, int window_idx, int win_w, int win_h) {
     if (window_idx < 0 || window_idx >= MAX_DOCK_WINDOWS) return;
     if (!d->windows[window_idx].in_use) return;
     dock_layout_node(d, d->windows[window_idx].root_node,
-                     0, 0, (float)win_w, (float)win_h);
+                     0, (float)MENU_BAR_HEIGHT,
+                     (float)win_w, (float)win_h - (float)MENU_BAR_HEIGHT);
 }
 
 /* ── Panel management ──────────────────────────────────────── */
@@ -581,6 +585,29 @@ static void dock_collect_leaves(dock_state *d, int idx,
 
     dock_collect_leaves(d, n->children[0], out_panels, out_count, max_count);
     dock_collect_leaves(d, n->children[1], out_panels, out_count, max_count);
+}
+
+static void dock_free_node(dock_state *d, int idx) {
+    if (idx < 0 || idx >= MAX_DOCK_NODES) return;
+    d->nodes[idx].in_use = 0;
+}
+
+static int dock_find_parent(dock_state *d, int root, int target, int *out_slot) {
+    DockNode *n;
+    int result;
+    if (root < 0 || root >= MAX_DOCK_NODES) return -1;
+    n = &d->nodes[root];
+    if (!n->in_use) return -1;
+    if (root == target) return -1;
+
+    if (n->type != DOCK_TABS) {
+        if (n->children[0] == target) { if (out_slot) *out_slot = 0; return root; }
+        if (n->children[1] == target) { if (out_slot) *out_slot = 1; return root; }
+        result = dock_find_parent(d, n->children[0], target, out_slot);
+        if (result >= 0) return result;
+        return dock_find_parent(d, n->children[1], target, out_slot);
+    }
+    return -1;
 }
 
 static void dock_free_subtree(dock_state *d, int idx) {

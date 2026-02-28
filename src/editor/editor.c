@@ -251,6 +251,7 @@ static const char *entity_type_name(entity_type type) {
 
 static int find_parent_component(const game_state *gs, int entity_index, int *out_parent_index) {
     int i;
+    if (!gs->parent_components) return 0;
     for (i = 0; i < gs->parent_component_count; i++) {
         parent_component *pc = &gs->parent_components[i];
         if (pc->entity_index == entity_index) {
@@ -263,6 +264,7 @@ static int find_parent_component(const game_state *gs, int entity_index, int *ou
 
 static int has_parent_transform_component(const game_state *gs, int entity_index) {
     int i;
+    if (!gs->parent_transform_components) return 0;
     for (i = 0; i < gs->parent_transform_component_count; i++) {
         parent_transform_component *pt = &gs->parent_transform_components[i];
         if (pt->entity_index == entity_index) return 1;
@@ -272,9 +274,23 @@ static int has_parent_transform_component(const game_state *gs, int entity_index
 
 static int has_parent_rotation_component(const game_state *gs, int entity_index) {
     int i;
+    if (!gs->parent_rotation_components) return 0;
     for (i = 0; i < gs->parent_rotation_component_count; i++) {
         parent_rotation_component *pr = &gs->parent_rotation_components[i];
         if (pr->entity_index == entity_index) return 1;
+    }
+    return 0;
+}
+
+static int has_mesh_component(const game_state *gs, int entity_index, int *out_visible) {
+    int i;
+    if (!gs->mesh_components) return 0;
+    for (i = 0; i < gs->mesh_component_count; i++) {
+        mesh_component *mc = &gs->mesh_components[i];
+        if (mc->entity_index == entity_index) {
+            if (out_visible) *out_visible = mc->visible;
+            return 1;
+        }
     }
     return 0;
 }
@@ -561,6 +577,9 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->gizmo_hovered = 0;
     e->gizmo_active  = 0;
     e->line_count = 0;
+    e->menu_open = -1;
+    e->menu_hover = -1;
+    e->scene_selected_entity = 0;
     e->initialized = 1;
 
     /* Create profiler Clay context (one-time, backed by editor_arena).
@@ -586,6 +605,30 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             Clay_ErrorHandler err = {0};
             e->scene_tree_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
             Clay_SetCurrentContext((Clay_Context *)e->scene_tree_clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+        }
+    }
+
+    if (!e->inspector_clay_ctx && es->editor_arena) {
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_inspector");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->inspector_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){420, 700}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->inspector_clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+        }
+    }
+
+    if (!e->menu_bar_clay_ctx && es->editor_arena) {
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_menu_bar");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->menu_bar_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){1600, MENU_BAR_HEIGHT}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->menu_bar_clay_ctx);
             Clay_SetMeasureTextFunction(profiler_measure_text, e);
         }
     }
@@ -921,10 +964,12 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     int scene_node;
     int win_w, win_h;
     int click;
+    int entity_count;
     static char title_buf[128];
     static char entity_label_bufs[SCENE_TREE_MAX_ENTITIES][96];
     static char entity_type_bufs[SCENE_TREE_MAX_ENTITIES][64];
     static char parent_comp_bufs[SCENE_TREE_MAX_ENTITIES][128];
+    static char mesh_comp_bufs[SCENE_TREE_MAX_ENTITIES][128];
     Clay_RenderCommandArray commands;
 
     if (!ctx) {
@@ -958,7 +1003,8 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
 
     Clay_BeginLayout();
 
-    snprintf(title_buf, sizeof(title_buf), "Scene Tree  (%d entities)", gs->scene_entity_count);
+    entity_count = gs->scene_entities ? gs->scene_entity_count : 0;
+    snprintf(title_buf, sizeof(title_buf), "Scene Tree  (%d entities)", entity_count);
     CLAY(CLAY_ID("STRoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
@@ -987,15 +1033,18 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
                 }
             }) {
                 int i;
-                for (i = 0; i < gs->scene_entity_count; i++) {
+                for (i = 0; i < entity_count; i++) {
                     entity *ent = &gs->scene_entities[i];
                     int bi = i % SCENE_TREE_MAX_ENTITIES;
                     int parent_idx = -1;
+                    int mesh_visible = 0;
+                    int has_mesh = has_mesh_component(gs, i, &mesh_visible);
                     int has_parent = find_parent_component(gs, i, &parent_idx);
                     int has_parent_transform = has_parent_transform_component(gs, i);
                     int has_parent_rotation = has_parent_rotation_component(gs, i);
-                    int has_children = has_parent || has_parent_transform || has_parent_rotation;
+                    int has_children = has_mesh || has_parent || has_parent_transform || has_parent_rotation;
                     int collapsed = (i < SCENE_TREE_MAX_ENTITIES) ? e->scene_tree_collapsed[i] : 0;
+                    int selected = (e->scene_selected_entity == i);
 
                     snprintf(entity_label_bufs[bi], sizeof(entity_label_bufs[bi]), "%s Entity %d",
                         has_children ? (collapsed ? ">" : "v") : "-", i);
@@ -1008,7 +1057,8 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
                             .childGap = 3,
                             .layoutDirection = CLAY_TOP_TO_BOTTOM
                         },
-                        .backgroundColor = {36, 42, 56, 255},
+                        .backgroundColor = selected ? ((Clay_Color){52, 62, 84, 255})
+                                                    : ((Clay_Color){36, 42, 56, 255}),
                         .cornerRadius = CLAY_CORNER_RADIUS(4)
                     }) {
                         CLAY(CLAY_IDI("STEntityHdr", (int32_t)i), {
@@ -1020,8 +1070,13 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
                                                               : ((Clay_Color){0, 0, 0, 0})
                         }) {
                             int hovered = Clay_Hovered();
-                            if (has_children && hovered && click && i < SCENE_TREE_MAX_ENTITIES)
-                                e->scene_tree_collapsed[i] = !e->scene_tree_collapsed[i];
+                            if (hovered && click) {
+                                if (has_children && i < SCENE_TREE_MAX_ENTITIES &&
+                                    e->scene_selected_entity == i) {
+                                    e->scene_tree_collapsed[i] = !e->scene_tree_collapsed[i];
+                                }
+                                e->scene_selected_entity = i;
+                            }
 
                             {
                                 Clay_String es = {false, (int32_t)strlen(entity_label_bufs[bi]), entity_label_bufs[bi]};
@@ -1054,6 +1109,14 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
                                         CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = 16}));
                                     }
                                 }
+                                if (has_mesh) {
+                                    snprintf(mesh_comp_bufs[bi], sizeof(mesh_comp_bufs[bi]),
+                                        "Component: Mesh (%s)", mesh_visible ? "visible" : "hidden");
+                                    {
+                                        Clay_String cs = {false, (int32_t)strlen(mesh_comp_bufs[bi]), mesh_comp_bufs[bi]};
+                                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
+                                    }
+                                }
                                 if (has_parent_transform) {
                                     Clay_String cs = CLAY_STRING("Component: Parent Transform");
                                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = 16}));
@@ -1074,6 +1137,135 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     e->scene_tree_cmd_count = commands.length;
     e->scene_tree_cmd_array = commands.internalArray;
     e->scene_tree_click = 0;
+}
+
+static void inspector_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    Clay_Context *ctx = (Clay_Context *)e->inspector_clay_ctx;
+    int insp_win_idx;
+    int insp_node;
+    int win_w, win_h;
+    int selected;
+    static char title_buf[96];
+    static char ent_buf[96];
+    static char mesh_buf[128];
+    static char parent_buf[128];
+    Clay_RenderCommandArray commands;
+
+    if (!ctx) {
+        e->inspector_cmd_count = 0;
+        e->inspector_cmd_array = NULL;
+        return;
+    }
+
+    Clay_SetCurrentContext(ctx);
+    insp_node = dock_find_leaf_for_panel_global(d, PANEL_INSPECTOR, &insp_win_idx);
+    if (insp_node < 0) {
+        e->inspector_cmd_count = 0;
+        e->inspector_cmd_array = NULL;
+        return;
+    }
+    {
+        DockNode *n = &d->nodes[insp_node];
+        win_w = (int)n->w;
+        win_h = (int)(n->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    }
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+
+    selected = e->scene_selected_entity;
+    if (!gs->scene_entities) selected = -1;
+    if (selected < 0 || selected >= gs->scene_entity_count) selected = -1;
+
+    snprintf(title_buf, sizeof(title_buf), "Inspector");
+    Clay_BeginLayout();
+
+    CLAY(CLAY_ID("INRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 8,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+        Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
+        CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 225, 235, 255}, .fontSize = 16}));
+
+        CLAY(CLAY_ID("INBody"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .padding = CLAY_PADDING_ALL(10),
+                .childGap = 6,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .backgroundColor = {36, 42, 56, 255},
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            if (selected < 0) {
+                Clay_String cs = CLAY_STRING("No entity selected.");
+                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = 16}));
+            } else {
+                entity *ent = &gs->scene_entities[selected];
+                int parent_idx = -1;
+                int mesh_visible = 0;
+                int has_mesh = has_mesh_component(gs, selected, &mesh_visible);
+                int has_parent = find_parent_component(gs, selected, &parent_idx);
+                int has_parent_transform = has_parent_transform_component(gs, selected);
+                int has_parent_rotation = has_parent_rotation_component(gs, selected);
+                int has_any = has_mesh || has_parent || has_parent_transform || has_parent_rotation;
+
+                snprintf(ent_buf, sizeof(ent_buf), "Entity %d", selected);
+                {
+                    Clay_String cs = {false, (int32_t)strlen(ent_buf), ent_buf};
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = 16}));
+                }
+                snprintf(ent_buf, sizeof(ent_buf), "Type: %s", entity_type_name(ent->type));
+                {
+                    Clay_String cs = {false, (int32_t)strlen(ent_buf), ent_buf};
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {176, 188, 205, 255}, .fontSize = 16}));
+                }
+
+                {
+                    Clay_String cs = CLAY_STRING("Components");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 200, 218, 255}, .fontSize = 16}));
+                }
+
+                if (!has_any) {
+                    Clay_String cs = CLAY_STRING("- (none)");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = 16}));
+                } else {
+                    if (has_mesh) {
+                        snprintf(mesh_buf, sizeof(mesh_buf), "- Mesh (visible=%d)", mesh_visible);
+                        {
+                            Clay_String cs = {false, (int32_t)strlen(mesh_buf), mesh_buf};
+                            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
+                        }
+                    }
+                    if (has_parent) {
+                        snprintf(parent_buf, sizeof(parent_buf), "- Parent (entity %d)", parent_idx);
+                        {
+                            Clay_String cs = {false, (int32_t)strlen(parent_buf), parent_buf};
+                            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = 16}));
+                        }
+                    }
+                    if (has_parent_transform) {
+                        Clay_String cs = CLAY_STRING("- Parent Transform");
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = 16}));
+                    }
+                    if (has_parent_rotation) {
+                        Clay_String cs = CLAY_STRING("- Parent Rotation");
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = 16}));
+                    }
+                }
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    e->inspector_cmd_count = commands.length;
+    e->inspector_cmd_array = commands.internalArray;
 }
 
 EXPORT void update_editor(game_state *gs, editor_state *es) {
@@ -1131,8 +1323,16 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     }
 
     /* ── Profiler Clay layout (produces render commands for externals) ── */
+    {
+        int scene_count = gs->scene_entities ? gs->scene_entity_count : 0;
+        if (e->scene_selected_entity >= scene_count)
+            e->scene_selected_entity = scene_count - 1;
+        if (e->scene_selected_entity < 0 && scene_count > 0)
+            e->scene_selected_entity = 0;
+    }
     profiler_layout(gs, es);
     scene_tree_layout(gs, es);
+    inspector_layout(gs, es);
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
     update_camera(gs, es);

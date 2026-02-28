@@ -100,6 +100,11 @@ typedef struct parent_rotation_component {
     int entity_index;
 } parent_rotation_component;
 
+typedef struct mesh_component {
+    int entity_index;
+    int visible;
+} mesh_component;
+
 typedef enum InputButton {
     INPUT_A = 1 << 0,
     INPUT_B = 1 << 1,
@@ -194,6 +199,9 @@ typedef struct game_state {
   parent_rotation_component *parent_rotation_components;
   int parent_rotation_component_count;
   int parent_rotation_component_capacity;
+  mesh_component *mesh_components;
+  int mesh_component_count;
+  int mesh_component_capacity;
 
   mesh3d_state mesh3d;
   lighting_state lighting;

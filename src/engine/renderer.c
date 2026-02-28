@@ -1,5 +1,4 @@
 #include "renderer.h"
-#include <scene.h>
 
 rect pixel_to_uv(pixel_rect p, sprite_sheet* s) {
     rect uv;
@@ -66,9 +65,11 @@ void update_animation(game_state* gs) {
     int i;
     if (!gs) return;
 
-    for (i = 0; i < scene.entity_count; i++) {
-        entity* e = &scene.entities[i];
+    for (i = 0; i < gs->scene_entity_count; i++) {
+        entity* e = &gs->scene_entities[i];
         animator* a = &e->current_animation;
+        if (a->animation.frame_time <= 0.0f || a->animation.frame_count <= 0)
+            continue;
         e->current_animation.timer += gs->dt;
 
         while (a->timer >= a->animation.frame_time) {
@@ -79,21 +80,14 @@ void update_animation(game_state* gs) {
 }
 
 void render_tile(game_state* gs, int tile, float x, float y) {
-    pixel_rect pixel_region = tiles.sprites[tile];
-    render_sprite_pixel_perfect(gs, TEXTURE_TILES, x, y,
-                               pixel_region, tiles.width, tiles.height);
+    (void)gs;
+    (void)tile;
+    (void)x;
+    (void)y;
 }
 
 void render_tiles(game_state* gs) {
-    int rows = sizeof(level) / sizeof(level[0]);
-    int cols = sizeof(level[0]) / sizeof(level[0][0]);
-    int y, x;
-    for (y = 0; y < rows; y++) {
-        for (x = 0; x < cols; x++) {
-            int tile = level[rows - 1 - y][cols - 1 - x];
-            render_tile(gs, tile, x * 64, y * 64);
-        }
-    }
+    (void)gs;
 }
 
 void render_health_bar(game_state* gs, float x, float y, float health, float max_health) {
@@ -125,14 +119,26 @@ void render_health_bar(game_state* gs, float x, float y, float health, float max
 
 void render_entities(game_state* gs) {
     int i;
-    if (!gs) return;
+    if (!gs || !gs->scene_entities) return;
 
-    for (i = 0; i < scene.entity_count; i++) {
-        entity* e = &scene.entities[i];
+    for (i = 0; i < gs->scene_entity_count; i++) {
+        entity* e = &gs->scene_entities[i];
         float x = e->pos.x;
         float y = e->pos.y;
-        int sprite_id = e->current_animation.animation.frames[e->current_animation.frame_index];
-        pixel_rect pixel_region = e->sprite_sheet.sprites[sprite_id];
+        int sprite_id;
+        pixel_rect pixel_region;
+
+        if (e->sprite_sheet.width <= 0 || e->sprite_sheet.height <= 0)
+            continue;
+        if (e->current_animation.animation.frame_count <= 0)
+            continue;
+        if (e->current_animation.frame_index < 0)
+            continue;
+
+        sprite_id = e->current_animation.animation.frames[e->current_animation.frame_index];
+        if (sprite_id < 0 || sprite_id >= 64)
+            continue;
+        pixel_region = e->sprite_sheet.sprites[sprite_id];
 
         render_sprite_pixel_perfect(gs, e->sprite_sheet.texture_id, x, y,
                                    pixel_region, e->sprite_sheet.width, e->sprite_sheet.height);

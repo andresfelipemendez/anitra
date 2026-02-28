@@ -16,6 +16,10 @@ typedef struct { float x, y, z, r, g, b; } editor_line_vert;
 #define PROFILER_TREE_MAX_NODES 65536
 #define SCENE_TREE_MAX_ENTITIES 512
 
+#ifndef MENU_BAR_HEIGHT
+#define MENU_BAR_HEIGHT 28
+#endif
+
 typedef struct editor_state {
     /* Arena pointers — set by externals init, used by editor for allocation */
     struct arena *root_arena;      /* pointer to memory.arena (for profiler arena display) */
@@ -67,10 +71,14 @@ typedef struct editor_state {
     void *scene_tree_clay_ctx;     /* Clay_Context* in editor_arena */
     int   scene_tree_cmd_count;    /* number of Clay_RenderCommand items */
     void *scene_tree_cmd_array;    /* Clay_RenderCommand* in Clay arena memory */
+    void *inspector_clay_ctx;      /* Clay_Context* in editor_arena */
+    int   inspector_cmd_count;     /* number of Clay_RenderCommand items */
+    void *inspector_cmd_array;     /* Clay_RenderCommand* in Clay arena memory */
 
     /* Hot-reload-persistent collapsed state */
     int profiler_tree_collapsed[PROFILER_TREE_MAX_NODES];
     int scene_tree_collapsed[SCENE_TREE_MAX_ENTITIES];
+    int scene_selected_entity;
 
     /* Profiler input — accumulated per frame by event handler, consumed by profiler_layout */
     float prof_mouse_x, prof_mouse_y; /* mouse position in profiler-local coords */
@@ -98,6 +106,17 @@ typedef struct editor_state {
     int      prof_grid_w, prof_grid_h;    /* actual pixel dimensions this frame */
     float    prof_grid_x, prof_grid_y;    /* Clay bounding box origin */
     float    prof_grid_bw, prof_grid_bh;  /* Clay bounding box size */
+
+    /* Menu bar Clay render output — written by editor each frame, read by externals. */
+    void *menu_bar_clay_ctx;       /* Clay_Context* in editor_arena */
+    int   menu_bar_cmd_count;      /* number of Clay_RenderCommand items */
+    void *menu_bar_cmd_array;      /* Clay_RenderCommand* in Clay arena memory */
+
+    /* Menu bar interaction state */
+    int   menu_open;               /* which top-level menu is open (-1 = none) */
+    int   menu_hover;              /* which submenu item is hovered (-1 = none) */
+    float menu_mouse_x, menu_mouse_y; /* mouse position in window coords */
+    int   menu_click;              /* 1 on the frame left button was pressed in menu bar area */
 
     /* Dock state — opaque, allocated from editor_arena.
        Actual type is dock_state* (defined in editor/dock.h). */

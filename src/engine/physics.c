@@ -2,7 +2,6 @@
 #include "game.h"
 #include "debug_render.h"
 #include <assert.h>
-#include <scene.h>
 
 static void sync_collider_to_pos(entity *e, vec2 pos) {
     e->collider.rect.x = pos.x;
@@ -51,14 +50,17 @@ bool bbox_collide(const rect* a, const rect* b) {
 }
 
 void collision(game_state* gs) {
-    entity* player = &scene.entities[0];
-    const animator* pa = &player->current_animation;
+    entity* player;
+    const animator* pa;
     int player_hitbox_active;
     rect player_hit_box = {0};
     vec2 player_pos;
     vec2 predicted_player_pos;
     float cross_size = 8.0f;
-    assert(player->type == PLAYER);
+    if (!gs || !gs->scene_entities || gs->scene_entity_count <= 0) return;
+    player = &gs->scene_entities[0];
+    pa = &player->current_animation;
+    assert(player->type == PLAYER || player->type == ENEMY);
 
     predicted_player_pos.x = player->pos.x + (player->velocity.x * gs->dt);
     predicted_player_pos.y = player->pos.y + (player->velocity.y * gs->dt);
@@ -81,8 +83,8 @@ void collision(game_state* gs) {
                         player_hit_box.w, player_hit_box.h, DEBUG_YELLOW);
     }
 
-    for (int i = 1; i < scene.entity_count; i++) {
-        entity* e = &scene.entities[i];
+    for (int i = 1; i < gs->scene_entity_count; i++) {
+        entity* e = &gs->scene_entities[i];
         animator* a = &e->current_animation;
         vec2 enemy_pos;
         debug_color color = DEBUG_GREEN;
@@ -124,8 +126,10 @@ void collision(game_state* gs) {
 }
 
 void apply_movement(game_state* gs) {
-    entity* player = &scene.entities[0];
-    assert(player->type == PLAYER);
+    entity* player;
+    if (!gs || !gs->scene_entities || gs->scene_entity_count <= 0) return;
+    player = &gs->scene_entities[0];
+    assert(player->type == PLAYER || player->type == ENEMY);
 
     vec2 new_pos = {
         player->pos.x + player->velocity.x * gs->dt,
@@ -136,8 +140,8 @@ void apply_movement(game_state* gs) {
 
     bool collision_detected = false;
 
-    for (int j = 1; j < scene.entity_count; j++) {
-        entity* other = &scene.entities[j];
+    for (int j = 1; j < gs->scene_entity_count; j++) {
+        entity* other = &gs->scene_entities[j];
         sync_collider_to_pos(other, other->pos);
 
         if (bbox_collide(&player->collider.rect, &other->collider.rect)) {

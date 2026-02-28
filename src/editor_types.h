@@ -15,4 +15,8 @@ typedef enum {
     PANEL_COUNT
 } PanelId;
 
+#ifndef MENU_BAR_HEIGHT
+#define MENU_BAR_HEIGHT 28
+#endif
+
 #endif /* EDITOR_TYPES_H */

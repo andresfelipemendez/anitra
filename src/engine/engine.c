@@ -1,9 +1,7 @@
 #include <game.h>
 #include <export.h>
-#include <scene.h>
 #include <stdio.h>
-#include "renderer.h"
-#include <physics.h>
+#include <string.h>
 #include <math.h>
 
 /* Animation functions (from anim.c, same DLL) */
@@ -21,52 +19,11 @@ GltfModel load_glb(const char *path, arena *a);
 void load_animations_glb(const char *path, GltfModel *model, arena *a);
 void gltf_set_gpu_device(void *dev);
 
-static void restore_scene_storage(game_state *gs) {
-    if (!scene.entities && gs->scene_entities) {
-        scene.entities = gs->scene_entities;
-        scene.entity_capacity = gs->scene_entity_capacity;
-    }
-    if (!scene.parent_components && gs->parent_components) {
-        scene.parent_components = gs->parent_components;
-        scene.parent_component_capacity = gs->parent_component_capacity;
-    }
-    if (!scene.parent_transform_components && gs->parent_transform_components) {
-        scene.parent_transform_components = gs->parent_transform_components;
-        scene.parent_transform_component_capacity = gs->parent_transform_component_capacity;
-    }
-    if (!scene.parent_rotation_components && gs->parent_rotation_components) {
-        scene.parent_rotation_components = gs->parent_rotation_components;
-        scene.parent_rotation_component_capacity = gs->parent_rotation_component_capacity;
-    }
-}
-
-static void sync_scene_views(game_state *gs) {
-    gs->scene_entities = scene.entities;
-    gs->scene_entity_count = scene.entity_count;
-    gs->scene_entity_capacity = scene.entity_capacity;
-    gs->parent_components = scene.parent_components;
-    gs->parent_component_count = scene.parent_component_count;
-    gs->parent_component_capacity = scene.parent_component_capacity;
-    gs->parent_transform_components = scene.parent_transform_components;
-    gs->parent_transform_component_count = scene.parent_transform_component_count;
-    gs->parent_transform_component_capacity = scene.parent_transform_component_capacity;
-    gs->parent_rotation_components = scene.parent_rotation_components;
-    gs->parent_rotation_component_count = scene.parent_rotation_component_count;
-    gs->parent_rotation_component_capacity = scene.parent_rotation_component_capacity;
-}
-
 void update_input(game_state* gs) {
-    entity* player;
-    const float move_speed = 200.0f;
     int attack_pressed;
     const float camera_speed = 300.0f;
     const float zoom_speed = 2.0f;
-    if (!gs || scene.entity_count == 0) return;
-
-    player = &scene.entities[0];
-
-    player->velocity.x = gs->input.horizontal * move_speed;
-    player->velocity.y = gs->input.vertical * move_speed;
+    if (!gs) return;
 
     attack_pressed = (gs->input.input_mask & INPUT_A);
     if (attack_pressed) {
@@ -87,39 +44,71 @@ void update_input(game_state* gs) {
 }
 
 EXPORT void init_engine(game_state *gs) {
-    restore_scene_storage(gs);
+    /* ECS storage for editor/runtime scene graph (survives hot reload via game_state). */
+    if (gs->scene_entity_capacity <= 0)
+        gs->scene_entity_capacity = 64;
+    if (!gs->scene_entities) {
+        gs->scene_entities = (entity *)arena_alloc(gs->gameplay,
+            (uint32_t)(gs->scene_entity_capacity * sizeof(entity)), 16, "entities");
+        gs->scene_entity_count = 0;
+    }
 
-    /* Allocate entity storage from the gameplay sub-arena (only on first init, survives hot reload) */
-    if (scene.entity_capacity <= 0) {
-        scene.entity_capacity = (gs->scene_entity_capacity > 0) ? gs->scene_entity_capacity : 64;
-    }
-    if (!scene.entities) {
-        scene.entities = (entity *)arena_alloc(gs->gameplay,
-            (uint32_t)(scene.entity_capacity * sizeof(entity)), 16, "entities");
-    }
-    if (!scene.parent_components) {
-        if (scene.parent_component_capacity <= 0)
-            scene.parent_component_capacity = scene.entity_capacity;
-        scene.parent_components = (parent_component *)arena_alloc(gs->gameplay,
-            (uint32_t)(scene.parent_component_capacity * sizeof(parent_component)),
+    if (gs->parent_component_capacity <= 0)
+        gs->parent_component_capacity = gs->scene_entity_capacity;
+    if (!gs->parent_components) {
+        gs->parent_components = (parent_component *)arena_alloc(gs->gameplay,
+            (uint32_t)(gs->parent_component_capacity * sizeof(parent_component)),
             16, "parent_components");
+        gs->parent_component_count = 0;
     }
-    if (!scene.parent_transform_components) {
-        if (scene.parent_transform_component_capacity <= 0)
-            scene.parent_transform_component_capacity = scene.entity_capacity;
-        scene.parent_transform_components = (parent_transform_component *)arena_alloc(gs->gameplay,
-            (uint32_t)(scene.parent_transform_component_capacity * sizeof(parent_transform_component)),
+
+    if (gs->parent_transform_component_capacity <= 0)
+        gs->parent_transform_component_capacity = gs->scene_entity_capacity;
+    if (!gs->parent_transform_components) {
+        gs->parent_transform_components = (parent_transform_component *)arena_alloc(gs->gameplay,
+            (uint32_t)(gs->parent_transform_component_capacity * sizeof(parent_transform_component)),
             16, "parent_transform_components");
+        gs->parent_transform_component_count = 0;
     }
-    if (!scene.parent_rotation_components) {
-        if (scene.parent_rotation_component_capacity <= 0)
-            scene.parent_rotation_component_capacity = scene.entity_capacity;
-        scene.parent_rotation_components = (parent_rotation_component *)arena_alloc(gs->gameplay,
-            (uint32_t)(scene.parent_rotation_component_capacity * sizeof(parent_rotation_component)),
+
+    if (gs->parent_rotation_component_capacity <= 0)
+        gs->parent_rotation_component_capacity = gs->scene_entity_capacity;
+    if (!gs->parent_rotation_components) {
+        gs->parent_rotation_components = (parent_rotation_component *)arena_alloc(gs->gameplay,
+            (uint32_t)(gs->parent_rotation_component_capacity * sizeof(parent_rotation_component)),
             16, "parent_rotation_components");
+        gs->parent_rotation_component_count = 0;
     }
-    scene_init();
-    sync_scene_views(gs);
+
+    if (gs->mesh_component_capacity <= 0)
+        gs->mesh_component_capacity = gs->scene_entity_capacity;
+    if (!gs->mesh_components) {
+        gs->mesh_components = (mesh_component *)arena_alloc(gs->gameplay,
+            (uint32_t)(gs->mesh_component_capacity * sizeof(mesh_component)),
+            16, "mesh_components");
+        gs->mesh_component_count = 0;
+    }
+
+    if (gs->scene_entities && gs->scene_entity_count != 1) {
+        memset(gs->scene_entities, 0, (size_t)gs->scene_entity_capacity * sizeof(entity));
+        gs->scene_entities[0].type = PLAYER;
+        gs->scene_entities[0].health = 100.0f;
+        gs->scene_entities[0].pos.x = 0.0f;
+        gs->scene_entities[0].pos.y = 0.0f;
+        gs->scene_entity_count = 1;
+        gs->parent_component_count = 0;
+        gs->parent_transform_component_count = 0;
+        gs->parent_rotation_component_count = 0;
+    }
+
+    if (gs->mesh_components && gs->mesh_component_capacity > 0) {
+        if (gs->mesh_component_count <= 0 ||
+            gs->mesh_components[0].entity_index != 0) {
+            gs->mesh_components[0].entity_index = 0;
+            gs->mesh_components[0].visible = 1;
+            gs->mesh_component_count = 1;
+        }
+    }
 
     /* Load 3D model assets.
        Only runs on first init when no model is loaded yet. */
@@ -202,20 +191,31 @@ static void update_mesh3d(game_state *gs) {
 
 EXPORT void update_engine(game_state *gs) {
     int i;
+    int mi;
+    int mesh_visible_set = 0;
     if (!gs) return;
-    sync_scene_views(gs);
 
     gs->dl.sprite_count = 0;
     gs->dl.line_count = 0;
     gs->dbg.current_line_count = 0;
 
     update_input(gs);
-    update_animation(gs);
-    render_tiles(gs);
-    collision(gs);
-    apply_movement(gs);
-    update_camera_matrix(&gs->camera, gs->dl.view_matrix);
-    render_entities(gs);
+    /* Legacy 2D scene systems removed: runtime rendering is mesh-component-driven. */
+
+    /* Drive runtime mesh visibility from ECS mesh component (entity 0 for now). */
+    if (gs->mesh_components) {
+        for (mi = 0; mi < gs->mesh_component_count; mi++) {
+            mesh_component *mc = &gs->mesh_components[mi];
+            if (mc->entity_index == 0) {
+                gs->mesh3d.visible = mc->visible ? 1 : 0;
+                mesh_visible_set = 1;
+                break;
+            }
+        }
+    }
+    if (!mesh_visible_set && gs->mesh3d.primitive_count > 0) {
+        gs->mesh3d.visible = 1;
+    }
 
     /* 3D mesh animation (driven by engine, rendered by externals) */
     update_mesh3d(gs);

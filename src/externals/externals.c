@@ -787,6 +787,7 @@ typedef struct UIRenderState {
 static UIRenderState ui_game = {0};
 static UIRenderState ui_profiler = {0};
 static UIRenderState ui_scene_tree = {0};
+static UIRenderState ui_inspector = {0};
 
 // ---------------------------------------------------------------------------
 // Build Clay render commands → vertex arrays (window-agnostic)
@@ -1187,6 +1188,18 @@ static void scene_tree_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
 
     ui_build_vertices(&ui_scene_tree, commands);
     ui_upload(cmd_buf, &ui_scene_tree);
+}
+
+static void inspector_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
+    if (g->editor.inspector_cmd_count <= 0 || !g->editor.inspector_cmd_array)
+        return;
+
+    Clay_RenderCommandArray commands;
+    commands.length = g->editor.inspector_cmd_count;
+    commands.internalArray = (Clay_RenderCommand *)g->editor.inspector_cmd_array;
+
+    ui_build_vertices(&ui_inspector, commands);
+    ui_upload(cmd_buf, &ui_inspector);
 }
 
 /* Draw the grid texture quad during the profiler render pass.
@@ -2654,6 +2667,11 @@ EXPORT void update_externals(struct memory *m) {
         scene_tree_prepare(cmd_buf, m);
     }
 
+    // --- Prepare Clay UI: inspector window (layout + upload) ---
+    if (panel_color[PANEL_INSPECTOR]) {
+        inspector_prepare(cmd_buf, m);
+    }
+
     // --- Upload editor 3D lines (populated by editor.dll) ---
     SDL_GPUBuffer *editor_line_gpu_buf = NULL;
     int editor_vert_count = m->editor.line_count * 2;
@@ -2964,6 +2982,46 @@ EXPORT void update_externals(struct memory *m) {
         SDL_EndGPURenderPass(st_pass);
     }
 
+    // --- INSPECTOR PANEL RENDER PASS (offscreen) ---
+    if (panel_color[PANEL_INSPECTOR] && panel_depth[PANEL_INSPECTOR]) {
+        Uint32 iw = (Uint32)panel_tex_w[PANEL_INSPECTOR];
+        Uint32 ih = (Uint32)panel_tex_h[PANEL_INSPECTOR];
+
+        SDL_GPUColorTargetInfo in_ct = {0};
+        in_ct.texture = panel_color[PANEL_INSPECTOR];
+        in_ct.clear_color = (SDL_FColor){0.09f, 0.12f, 0.16f, 1.0f};
+        in_ct.load_op = SDL_GPU_LOADOP_CLEAR;
+        in_ct.store_op = SDL_GPU_STOREOP_STORE;
+
+        SDL_GPUDepthStencilTargetInfo in_dt = {0};
+        in_dt.texture = panel_depth[PANEL_INSPECTOR];
+        in_dt.clear_depth = 1.0f;
+        in_dt.load_op = SDL_GPU_LOADOP_CLEAR;
+        in_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+        in_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        in_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+
+        SDL_GPURenderPass *in_pass = SDL_BeginGPURenderPass(cmd_buf, &in_ct, 1, &in_dt);
+
+        {
+            uniform_data in_uniforms;
+            float in_lw = (float)iw / display_density;
+            float in_lh = (float)ih / display_density;
+            float in_ortho[16] = {
+                2.0f/in_lw,    0,             0,     0,
+                0,            -2.0f/in_lh,    0,     0,
+                0,             0,            -1.0f,  0,
+               -1.0f,          1.0f,          0,     1.0f
+            };
+            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            memcpy(in_uniforms.projection, in_ortho, sizeof(in_ortho));
+            memcpy(in_uniforms.view, identity, sizeof(identity));
+            ui_draw(in_pass, cmd_buf, &in_uniforms, &ui_inspector);
+        }
+
+        SDL_EndGPURenderPass(in_pass);
+    }
+
     // --- EDITOR PANEL RENDER PASS (offscreen) ---
     if (m->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
         Uint32 ew = (Uint32)panel_tex_w[PANEL_EDITOR];
@@ -3128,6 +3186,7 @@ EXPORT void update_externals(struct memory *m) {
     ui_release_buffers(&ui_game);
     ui_release_buffers(&ui_profiler);
     ui_release_buffers(&ui_scene_tree);
+    ui_release_buffers(&ui_inspector);
     if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
 
     TracyCZoneEnd(ctx_update);

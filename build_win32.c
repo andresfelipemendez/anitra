@@ -23,7 +23,6 @@
     " src/engine/engine.c" \
     " src/engine/renderer.c" \
     " src/engine/physics.c" \
-    " src/engine/scene.c" \
     " src/engine/debug_render.c" \
     " src/engine/anim.c" \
     " src/engine/gltf_loader.c" \

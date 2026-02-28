@@ -154,9 +154,9 @@ TEST(layout_root_covers_full_window) {
     dock_layout(&d, 0, 1600, 900);
     root = &d.nodes[d.windows[0].root_node];
     ASSERT_FLOAT_EQ(root->x, 0.0f, 0.01f);
-    ASSERT_FLOAT_EQ(root->y, 0.0f, 0.01f);
+    ASSERT_FLOAT_EQ(root->y, (float)MENU_BAR_HEIGHT, 0.01f);
     ASSERT_FLOAT_EQ(root->w, 1600.0f, 0.01f);
-    ASSERT_FLOAT_EQ(root->h, 900.0f, 0.01f);
+    ASSERT_FLOAT_EQ(root->h, 900.0f - (float)MENU_BAR_HEIGHT, 0.01f);
 }
 
 TEST(layout_leaves_partition_width) {
@@ -180,9 +180,9 @@ TEST(layout_leaves_same_height) {
     e_leaf = dock_leaf_for_panel(&d, root, PANEL_EDITOR);
     g_leaf = dock_leaf_for_panel(&d, root, PANEL_GAME);
     p_leaf = dock_leaf_for_panel(&d, root, PANEL_PROFILER);
-    ASSERT_FLOAT_EQ(d.nodes[e_leaf].h, 900.0f, 0.01f);
-    ASSERT_FLOAT_EQ(d.nodes[g_leaf].h, 900.0f, 0.01f);
-    ASSERT_FLOAT_EQ(d.nodes[p_leaf].h, 900.0f, 0.01f);
+    ASSERT_FLOAT_EQ(d.nodes[e_leaf].h, 900.0f - (float)MENU_BAR_HEIGHT, 0.01f);
+    ASSERT_FLOAT_EQ(d.nodes[g_leaf].h, 900.0f - (float)MENU_BAR_HEIGHT, 0.01f);
+    ASSERT_FLOAT_EQ(d.nodes[p_leaf].h, 900.0f - (float)MENU_BAR_HEIGHT, 0.01f);
 }
 
 /* ── Tests: Node at point ─────────────────────────────────────────────── */
@@ -197,15 +197,15 @@ TEST(node_at_point_finds_correct_leaf) {
     g_leaf = dock_leaf_for_panel(&d, root, PANEL_GAME);
     p_leaf = dock_leaf_for_panel(&d, root, PANEL_PROFILER);
 
-    /* Editor is leftmost (25%) → x=0..400 */
+    /* Game is leftmost (25%) → x=0..400 */
     found = dock_node_at_point(&d, root, 100.0f, 450.0f);
-    ASSERT_EQ(found, e_leaf);
-
-    /* Game is middle → somewhere around x=600 */
-    found = dock_node_at_point(&d, root, 700.0f, 450.0f);
     ASSERT_EQ(found, g_leaf);
 
-    /* Profiler is rightmost → x near 1500 */
+    /* Editor is middle (400..1120) */
+    found = dock_node_at_point(&d, root, 700.0f, 450.0f);
+    ASSERT_EQ(found, e_leaf);
+
+    /* Profiler is rightmost (1120..1600) */
     found = dock_node_at_point(&d, root, 1500.0f, 450.0f);
     ASSERT_EQ(found, p_leaf);
 }
@@ -256,8 +256,8 @@ TEST(divider_hit_on_inner_split_line) {
     dock_state d = make_default_dock();
     dock_layout(&d, 0, 1600, 900);
     {
-        /* Hit the inner divider (at x~1200, y in range) */
-        int hit = dock_divider_at_point(&d, d.windows[0].root_node, 1200.0f, 450.0f);
+        /* Hit the inner divider (at x=400+1200*0.6=1120, y in range) */
+        int hit = dock_divider_at_point(&d, d.windows[0].root_node, 1120.0f, 450.0f);
         ASSERT(hit >= 0);
         ASSERT_EQ(d.nodes[hit].type, DOCK_SPLIT_H);
     }
@@ -292,10 +292,10 @@ TEST(divider_inner_takes_priority_over_outer) {
     dock_layout(&d, 0, 1600, 900);
     {
         /* The inner SPLIT_H is the right child of root.
-           Its x starts at 400, w = 1200, ratio = 0.667.
-           Divider at 400 + 1200*0.667 = 1200.4.
+           Its x starts at 400, w = 1200, ratio = 0.6.
+           Divider at 400 + 1200*0.6 = 1120.
            Root divider is at 1600*0.25 = 400. */
-        int hit_inner = dock_divider_at_point(&d, d.windows[0].root_node, 1200.0f, 450.0f);
+        int hit_inner = dock_divider_at_point(&d, d.windows[0].root_node, 1120.0f, 450.0f);
         ASSERT(hit_inner >= 0);
         ASSERT_EQ(hit_inner, inner);
     }
@@ -341,11 +341,13 @@ TEST(split_at_bottom_creates_vertical_split) {
     dock_split_at(&d, 0, leaf, PANEL_PROFILER, DROP_BOTTOM);
 
     root_idx = d.windows[0].root_node;
-    ASSERT(root_idx != leaf); /* root should be the new split */
+    /* dock_split_at converts the node in-place to a split */
+    ASSERT_EQ(root_idx, leaf);
     split = &d.nodes[root_idx];
     ASSERT_EQ(split->type, DOCK_SPLIT_V);
-    ASSERT_EQ(split->children[0], leaf); /* game on top */
+    ASSERT(split->children[0] >= 0);     /* game on top (copied to new node) */
     ASSERT(split->children[1] >= 0);     /* profiler on bottom */
+    ASSERT_EQ(d.nodes[split->children[0]].panels[0], PANEL_GAME);
     ASSERT_EQ(d.nodes[split->children[1]].panels[0], PANEL_PROFILER);
 }
 
@@ -365,9 +367,12 @@ TEST(split_at_right_new_panel_is_second_child) {
     dock_split_at(&d, 0, leaf, PANEL_EDITOR, DROP_RIGHT);
 
     root_idx = d.windows[0].root_node;
+    /* dock_split_at converts the node in-place to a split */
+    ASSERT_EQ(root_idx, leaf);
     split = &d.nodes[root_idx];
     ASSERT_EQ(split->type, DOCK_SPLIT_H);
-    ASSERT_EQ(split->children[0], leaf); /* game stays first */
+    ASSERT(split->children[0] >= 0);     /* game (copied to new node) */
+    ASSERT_EQ(d.nodes[split->children[0]].panels[0], PANEL_GAME);
     ASSERT_EQ(d.nodes[split->children[1]].panels[0], PANEL_EDITOR); /* editor second */
 }
 
@@ -471,10 +476,10 @@ TEST(header_hit_test_in_header_area) {
 
     dock_layout(&d, 0, 1600, 900);
 
-    /* Click in the editor header (leftmost panel, y < DOCK_HEADER_HEIGHT) */
-    ASSERT(header_hit_test_node(&d, root, 100.0f, 10.0f,
+    /* Click in the game header (leftmost panel, y in dock header area) */
+    ASSERT(header_hit_test_node(&d, root, 100.0f, (float)MENU_BAR_HEIGHT + 10.0f,
                                  &hit_node, &hit_panel, &hit_tab));
-    ASSERT_EQ(hit_panel, PANEL_EDITOR);
+    ASSERT_EQ(hit_panel, PANEL_GAME);
     ASSERT_EQ(hit_tab, 0);
 }
 
@@ -488,7 +493,7 @@ TEST(header_hit_test_below_header_misses) {
     dock_layout(&d, 0, 1600, 900);
 
     /* Click below header in the editor panel content area */
-    ASSERT(!header_hit_test_node(&d, root, 100.0f, 50.0f,
+    ASSERT(!header_hit_test_node(&d, root, 100.0f, (float)(MENU_BAR_HEIGHT + DOCK_HEADER_HEIGHT + 10),
                                   &hit_node, &hit_panel, &hit_tab));
 }
 
@@ -633,19 +638,23 @@ TEST(collect_leaves_gathers_all_panels) {
     int root = d.windows[0].root_node;
     PanelId collected[PANEL_COUNT];
     int count = 0;
-    int has_game = 0, has_editor = 0, has_prof = 0, i;
+    int has_game = 0, has_editor = 0, has_prof = 0, has_scene = 0, has_insp = 0, i;
 
     dock_collect_leaves(&d, root, collected, &count, PANEL_COUNT);
-    ASSERT_EQ(count, 3);
+    ASSERT_EQ(count, 5);
 
     for (i = 0; i < count; i++) {
         if (collected[i] == PANEL_GAME) has_game = 1;
         if (collected[i] == PANEL_EDITOR) has_editor = 1;
         if (collected[i] == PANEL_PROFILER) has_prof = 1;
+        if (collected[i] == PANEL_SCENE_TREE) has_scene = 1;
+        if (collected[i] == PANEL_INSPECTOR) has_insp = 1;
     }
     ASSERT(has_game);
     ASSERT(has_editor);
     ASSERT(has_prof);
+    ASSERT(has_scene);
+    ASSERT(has_insp);
 }
 
 /* ── Tests: Global panel search ───────────────────────────────────────── */
