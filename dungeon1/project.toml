@@ -1,0 +1,336 @@
+# Dungeon 1 — Anitra Engine Project
+# TOML chosen over JSON for distinct int/float types and readability
+
+[project]
+name = "Dungeon 1"
+version = 1
+
+# ── Asset declarations ────────────────────────────────────────────────────
+# Paths relative to engine root. Each asset gets an id for referencing below.
+
+[assets.models]
+knight      = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Knight.glb"
+barbarian   = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Barbarian.glb"
+mage        = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Mage.glb"
+rogue       = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Rogue.glb"
+rogue_hood  = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Rogue_Hooded.glb"
+ranger      = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Ranger.glb"
+
+[assets.animations]
+general     = "game_assets/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb"
+movement    = "game_assets/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_MovementBasic.glb"
+
+[assets.dungeon_pieces]
+# Structural
+wall                = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall.gltf"
+wall_corner         = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall_corner.gltf"
+wall_doorway        = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall_doorway.gltf"
+wall_arched         = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall_arched.gltf"
+wall_cracked        = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall_cracked.gltf"
+wall_broken         = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall_broken.gltf"
+wall_gated          = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall_gated.gltf"
+wall_shelves        = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall_shelves.gltf"
+wall_window_closed  = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall_window_closed.gltf"
+
+# Floors
+floor_tile_large    = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/floor_tile_large.gltf"
+floor_tile_small    = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/floor_tile_small.gltf"
+floor_dirt_large    = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/floor_dirt_large.gltf"
+floor_wood_large    = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/floor_wood_large.gltf"
+
+# Stairs
+stairs              = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/stairs.gltf"
+stairs_wide         = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/stairs_wide.gltf"
+
+# Props
+torch_lit           = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/torch_lit.gltf"
+torch_mounted       = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/torch_mounted.gltf"
+chest               = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/chest.gltf"
+chest_gold          = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/chest_gold.gltf"
+barrel_large        = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/barrel_large.gltf"
+barrel_small        = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/barrel_small.gltf"
+column              = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/column.gltf"
+pillar              = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/pillar.gltf"
+
+[assets.sprites]
+player_sheet    = "assets/char_spritesheet.png"
+slime_sheet     = "assets/pinkslime_spritesheet.png"
+health_bar      = "assets/health_bar_hud.png"
+health_fill     = "assets/health_hud.png"
+
+# ── Camera ────────────────────────────────────────────────────────────────
+
+[camera]
+eye    = [0.0, 8.0, 10.0]
+target = [0.0, 0.0, 0.0]
+up     = [0.0, 1.0, 0.0]
+fov    = 45.0
+
+# ── Lighting ──────────────────────────────────────────────────────────────
+
+[lighting]
+ambient = [0.15, 0.12, 0.18]
+
+[[lighting.point_lights]]
+position  = [0.0, 3.0, 0.0]
+color     = [1.0, 0.85, 0.6]
+intensity = 8.0
+radius    = 12.0
+
+[[lighting.point_lights]]
+position  = [-4.0, 3.0, 2.0]
+color     = [1.0, 0.7, 0.4]
+intensity = 5.0
+radius    = 8.0
+
+[[lighting.point_lights]]
+position  = [4.0, 3.0, -2.0]
+color     = [0.6, 0.8, 1.0]
+intensity = 4.0
+radius    = 6.0
+
+# ── Player ────────────────────────────────────────────────────────────────
+
+[player]
+model      = "knight"
+animations = "general"
+position   = [0.0, 0.0, 0.0]
+rotation   = 0.0
+health     = 100
+speed      = 3.5
+collider   = { half_extents = [0.4, 0.8, 0.4] }
+
+# ── Entities ──────────────────────────────────────────────────────────────
+# Each [[entities]] is one placed entity in the dungeon.
+
+[[entities]]
+id         = "slime_01"
+type       = "enemy"
+model      = "knight"          # placeholder until slime 3D model
+animations = "general"
+position   = [3.0, 0.0, -2.0]
+rotation   = 180.0
+health     = 50
+speed      = 1.5
+collider   = { half_extents = [0.3, 0.3, 0.3] }
+
+    [entities.ai]
+    behavior = "patrol"
+    patrol_points = [[3.0, 0.0, -2.0], [3.0, 0.0, 2.0]]
+    aggro_range = 5.0
+
+[[entities]]
+id         = "slime_02"
+type       = "enemy"
+model      = "knight"
+animations = "general"
+position   = [-3.0, 0.0, 1.0]
+rotation   = 90.0
+health     = 50
+speed      = 1.0
+collider   = { half_extents = [0.3, 0.3, 0.3] }
+
+    [entities.ai]
+    behavior = "idle"
+    aggro_range = 3.0
+
+[[entities]]
+id         = "chest_01"
+type       = "interactable"
+model      = "chest_gold"
+position   = [5.0, 0.0, -4.0]
+rotation   = 270.0
+collider   = { half_extents = [0.4, 0.3, 0.3] }
+
+    [entities.interaction]
+    type = "loot"
+    items = ["health_potion", "gold_50"]
+
+# ── Room geometry ─────────────────────────────────────────────────────────
+# Placed 3D pieces that form the dungeon. Each [[pieces]] references an
+# asset from [assets.dungeon_pieces] with position, rotation, scale.
+
+[[pieces]]
+asset    = "floor_tile_large"
+position = [0.0, 0.0, 0.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "floor_tile_large"
+position = [2.0, 0.0, 0.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "floor_tile_large"
+position = [-2.0, 0.0, 0.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "floor_tile_large"
+position = [0.0, 0.0, -2.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "floor_tile_large"
+position = [2.0, 0.0, -2.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "floor_tile_large"
+position = [-2.0, 0.0, -2.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "floor_dirt_large"
+position = [0.0, 0.0, 2.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "floor_dirt_large"
+position = [2.0, 0.0, 2.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "floor_dirt_large"
+position = [-2.0, 0.0, 2.0]
+rotation = 0.0
+scale    = 1.0
+
+# Back wall
+[[pieces]]
+asset    = "wall"
+position = [-3.0, 0.0, -3.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall"
+position = [-1.0, 0.0, -3.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall_arched"
+position = [1.0, 0.0, -3.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall_cracked"
+position = [3.0, 0.0, -3.0]
+rotation = 0.0
+scale    = 1.0
+
+# Left wall
+[[pieces]]
+asset    = "wall_corner"
+position = [-3.0, 0.0, -3.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall"
+position = [-3.0, 0.0, -1.0]
+rotation = 90.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall_shelves"
+position = [-3.0, 0.0, 1.0]
+rotation = 90.0
+scale    = 1.0
+
+# Right wall
+[[pieces]]
+asset    = "wall_corner"
+position = [5.0, 0.0, -3.0]
+rotation = 270.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall_gated"
+position = [5.0, 0.0, -1.0]
+rotation = 270.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall_window_closed"
+position = [5.0, 0.0, 1.0]
+rotation = 270.0
+scale    = 1.0
+
+# Front wall with doorway
+[[pieces]]
+asset    = "wall"
+position = [-3.0, 0.0, 3.0]
+rotation = 180.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall_doorway"
+position = [-1.0, 0.0, 3.0]
+rotation = 180.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall"
+position = [1.0, 0.0, 3.0]
+rotation = 180.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "wall"
+position = [3.0, 0.0, 3.0]
+rotation = 180.0
+scale    = 1.0
+
+# Props
+[[pieces]]
+asset    = "torch_mounted"
+position = [-3.0, 2.0, -1.0]
+rotation = 90.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "torch_mounted"
+position = [5.0, 2.0, -1.0]
+rotation = 270.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "column"
+position = [-1.0, 0.0, 0.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "column"
+position = [3.0, 0.0, 0.0]
+rotation = 0.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "barrel_large"
+position = [4.0, 0.0, 2.0]
+rotation = 15.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "barrel_small"
+position = [4.5, 0.0, 1.5]
+rotation = 45.0
+scale    = 1.0
+
+[[pieces]]
+asset    = "pillar"
+position = [-2.5, 0.0, -2.5]
+rotation = 0.0
+scale    = 1.0

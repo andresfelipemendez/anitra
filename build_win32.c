@@ -41,9 +41,10 @@
     ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/core.dll" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include" \
+    " -Ilib/SDL3/include -Ilib/toml-c" \
     " src/core/core.c" \
     " src/core/loadlibrary_windows.c" \
+    " src/project.c" \
     " build/Debug/SDL3.def" \
     " build/Debug/externals.def"
 

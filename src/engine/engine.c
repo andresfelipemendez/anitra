@@ -96,9 +96,11 @@ gltf_set_gpu_device(gs->gpu_device);
                 gs->mesh3d.visible = 1;
                 gs->mesh3d.active_clip = gs->loaded_model.clip_count > 6 ? 6 : 0;
                 gs->mesh3d.anim_time = 0.0f;
-                gs->mesh3d.camera_eye    = VEC3(0.0f, 1.0f, 3.0f);
-                gs->mesh3d.camera_target = VEC3(0.0f, 0.5f, 0.0f);
-                gs->mesh3d.camera_up     = VEC3(0.0f, 1.0f, 0.0f);
+                if (!gs->mesh3d.camera_set_by_project) {
+                    gs->mesh3d.camera_eye    = VEC3(0.0f, 1.0f, 3.0f);
+                    gs->mesh3d.camera_target = VEC3(0.0f, 0.5f, 0.0f);
+                    gs->mesh3d.camera_up     = VEC3(0.0f, 1.0f, 0.0f);
+                }
                 gs->mesh3d.model_transform = gs->loaded_model.armature_transform;
             } else {
                 fprintf(stderr, "Warning: Knight.glb loaded but has no primitives\n");

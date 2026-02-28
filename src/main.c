@@ -1,8 +1,31 @@
 #include "core/core.h"
 #include "core/loadlibrary.h"
 #include <stdio.h>
+#include <string.h>
 
-int main() {
+static const char *resolve_project_path(int argc, char **argv) {
+  int i;
+  const char *project_path = NULL;
+
+  for (i = 1; i < argc; i++) {
+    if ((strcmp(argv[i], "--include") == 0 || strcmp(argv[i], "-i") == 0) &&
+        i + 1 < argc) {
+      project_path = argv[i + 1];
+      i++;
+      continue;
+    }
+
+    if (argv[i][0] != '-' && project_path == NULL) {
+      project_path = argv[i];
+    }
+  }
+
+  return project_path;
+}
+
+int main(int argc, char **argv) {
+  const char *project_path = resolve_project_path(argc, argv);
+
   while (1) {
     copylibrary("externals", "externals_copy");
     copylibrary("core", "core_copy");
@@ -19,7 +42,7 @@ int main() {
       return 1;
     }
 
-    int result = init();
+    int result = init(project_path);
 
     if (result == 0) {
       /* Normal exit — do NOT FreeLibrary(core_copy.dll).

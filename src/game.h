@@ -105,6 +105,21 @@ typedef struct camera {
     float zoom;
 } camera;
 
+/* ── Lighting state ── */
+
+typedef struct point_light {
+    Vec3 position;
+    Vec3 color;
+    float intensity;
+    float radius;
+} point_light;
+
+typedef struct lighting_state {
+    Vec3 ambient;
+    point_light lights[8];
+    int light_count;
+} lighting_state;
+
 /* ── 3D mesh state (populated by externals, animated by engine) ── */
 
 typedef struct mesh3d_state {
@@ -126,10 +141,11 @@ typedef struct mesh3d_state {
     float    anim_time;
     int      visible;
 
-    /* Camera for 3D — set by engine */
+    /* Camera for 3D — set by engine, or by project file */
     Vec3 camera_eye;
     Vec3 camera_target;
     Vec3 camera_up;
+    int  camera_set_by_project;
 
     /* Model transform — set by engine */
     Mat4 model_transform;
@@ -153,6 +169,7 @@ typedef struct game_state {
   float dt;
 
   mesh3d_state mesh3d;
+  lighting_state lighting;
   GltfModel loaded_model;       /* loaded 3D model data */
 
   /* GPU device handle — set by externals, used by engine for asset loading */

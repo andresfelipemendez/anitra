@@ -1,8 +1,10 @@
 #include "core.h"
 #include "loadlibrary.h"
 #include <externals.h>
+#include <project.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -48,7 +50,7 @@ static DWORD WINAPI waitforeditorreloadsignal(LPVOID param) {
 }
 #endif
 
-EXPORT int init_core() {
+EXPORT int init_core(const char *project_path) {
   printf("Core initialized\n");
 
 #ifdef _WIN32
@@ -90,6 +92,75 @@ EXPORT int init_core() {
     g.game.shader_mesh_fs = "assets/shaders/compiled/mesh_fs.spv";
     g.game.shader_composite_vs = "assets/shaders/compiled/composite_vs.spv";
     g.game.shader_composite_fs = "assets/shaders/compiled/composite_fs.spv";
+
+    /* Load project file if provided */
+    if (project_path) {
+        static project_data project;
+        if (project_load(project_path, &project) == 0) {
+            /* Override camera from project */
+            if (project.has_camera) {
+                g.game.mesh3d.camera_eye = VEC3(project.camera.eye[0],
+                    project.camera.eye[1], project.camera.eye[2]);
+                g.game.mesh3d.camera_target = VEC3(project.camera.target[0],
+                    project.camera.target[1], project.camera.target[2]);
+                g.game.mesh3d.camera_up = VEC3(project.camera.up[0],
+                    project.camera.up[1], project.camera.up[2]);
+                g.game.mesh3d.camera_set_by_project = 1;
+            }
+
+            /* Resolve player model path from asset registry */
+            if (project.entity_count > 0) {
+                int pi;
+                project_entity *player = &project.entities[0];
+                for (pi = 0; pi < project.model_count; pi++) {
+                    if (strcmp(project.model_keys[pi], player->model) == 0) {
+                        g.game.default_model_path = project.model_paths[pi];
+                        break;
+                    }
+                }
+                for (pi = 0; pi < project.animation_count; pi++) {
+                    if (strcmp(project.animation_keys[pi], player->animations) == 0) {
+                        g.game.default_animation_path = project.animation_paths[pi];
+                        break;
+                    }
+                }
+            }
+
+            /* Override sprite/texture paths from project assets */
+            {
+                int si;
+                for (si = 0; si < project.sprite_count; si++) {
+                    if (strcmp(project.sprite_keys[si], "player_sheet") == 0)
+                        g.game.texture_player = project.sprite_paths[si];
+                    else if (strcmp(project.sprite_keys[si], "slime_sheet") == 0)
+                        g.game.texture_slime = project.sprite_paths[si];
+                    else if (strcmp(project.sprite_keys[si], "health_bar") == 0)
+                        g.game.texture_health_bar = project.sprite_paths[si];
+                    else if (strcmp(project.sprite_keys[si], "health_fill") == 0)
+                        g.game.texture_health_fill = project.sprite_paths[si];
+                }
+            }
+
+            /* Populate lighting from project */
+            if (project.has_lighting) {
+                int li;
+                g.game.lighting.ambient = VEC3(
+                    project.lighting.ambient[0],
+                    project.lighting.ambient[1],
+                    project.lighting.ambient[2]);
+                g.game.lighting.light_count = project.lighting.point_light_count;
+                for (li = 0; li < project.lighting.point_light_count; li++) {
+                    project_point_light *src = &project.lighting.point_lights[li];
+                    g.game.lighting.lights[li].position = VEC3(
+                        src->position[0], src->position[1], src->position[2]);
+                    g.game.lighting.lights[li].color = VEC3(
+                        src->color[0], src->color[1], src->color[2]);
+                    g.game.lighting.lights[li].intensity = src->intensity;
+                    g.game.lighting.lights[li].radius = src->radius;
+                }
+            }
+        }
+    }
 
 /* Load engine DLL (copy first so engine.dll stays unlocked) */
     copylibrary("engine", "engine_copy");

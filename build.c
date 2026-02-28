@@ -4,9 +4,7 @@
  * Compile:  tcc -Blib/tcc-windows -o builder.exe build.c             (Windows)
  *           ./tcc -Blib/tcc-linux -o builder build.c                (Linux)
  *           lib/tcc/macos/tcc -Blib/tcc/macos -o builder build.c    (macOS)
- * Usage:    builder [target]
- *
- * Targets:  all (default), run, tracy, sdl3, spirvcross, shadercross, shaders, harfbuzz, externals, core, engine, editor, test, exe, watch, clean
+ * Usage:    builder
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes the platform's native toolchain directly via system().
@@ -74,6 +72,8 @@
 #define OBJ_SDL3_DIR        "build/obj/sdl3"
 #define OBJ_SPIRVCROSS_DIR  "build/obj/spirvcross"
 #define OBJ_SHADERCROSS_DIR "build/obj/shadercross"
+#define PROJECT_INCLUDE_FILE "project.txt"
+#define DEFAULT_PROJECT_TOML "dungeon1/project.toml"
 
 /* Common include paths used by externals, core, engine, and exe targets */
 #ifdef _WIN32
@@ -370,6 +370,81 @@ static int ensure_dirs(void)
     if (ensure_dir(OBJ_SDL3_DIR))       return 1;
     if (ensure_dir(OBJ_SPIRVCROSS_DIR)) return 1;
     if (ensure_dir(OBJ_SHADERCROSS_DIR)) return 1;
+    return 0;
+}
+
+static int file_exists_regular(const char *path)
+{
+#ifdef _WIN32
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES) return 0;
+    if (attr & FILE_ATTRIBUTE_DIRECTORY) return 0;
+    return 1;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISREG(st.st_mode) ? 1 : 0;
+#endif
+}
+
+static int parse_project_include_line(char *line, char *out_path, size_t out_size)
+{
+    char *start;
+    char *end;
+
+    start = line;
+    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n')
+        start++;
+
+    if (*start == '\0' || *start == '#') return 0;
+
+    if (strncmp(start, "--include", 9) == 0 &&
+        (start[9] == ' ' || start[9] == '\t' || start[9] == '=')) {
+        start += 9;
+    } else if (strncmp(start, "include", 7) == 0 &&
+               (start[7] == ' ' || start[7] == '\t' || start[7] == '=')) {
+        start += 7;
+    }
+
+    while (*start == ' ' || *start == '\t' || *start == '=') start++;
+
+    end = start + strlen(start);
+    while (end > start &&
+           (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+        end--;
+    }
+    *end = '\0';
+
+    if (*start == '"' && end > start + 1 && end[-1] == '"') {
+        start++;
+        end[-1] = '\0';
+    }
+
+    if (*start == '\0') return 0;
+
+    snprintf(out_path, out_size, "%s", start);
+    return 1;
+}
+
+static int read_project_include_path(char *out_path, size_t out_size)
+{
+    FILE *fp;
+    char line[PATH_SIZE];
+
+    if (!out_path || out_size == 0) return 0;
+    out_path[0] = '\0';
+
+    fp = fopen(PROJECT_INCLUDE_FILE, "r");
+    if (!fp) return 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        if (parse_project_include_line(line, out_path, out_size)) {
+            fclose(fp);
+            return 1;
+        }
+    }
+
+    fclose(fp);
     return 0;
 }
 
@@ -1534,10 +1609,28 @@ static int build_all(void)
 /* ------- run ------------------------------------------------------------ */
 static int build_and_run(void)
 {
+    char project_path[PATH_SIZE];
+    const char *project_include;
+
     printf("=== Building and running engine ===\n\n");
     
     /* First build everything */
     if (build_all() != 0) return 1;
+
+    project_include = NULL;
+    project_path[0] = '\0';
+    if (read_project_include_path(project_path, sizeof(project_path))) {
+        project_include = project_path;
+        printf("   Using project include from %s: %s\n",
+               PROJECT_INCLUDE_FILE, project_include);
+    } else if (file_exists_regular(DEFAULT_PROJECT_TOML)) {
+        snprintf(project_path, sizeof(project_path), "%s", DEFAULT_PROJECT_TOML);
+        project_include = project_path;
+        printf("   Using default project include: %s\n", project_include);
+    } else {
+        printf("   No project include found (checked %s and %s)\n",
+               PROJECT_INCLUDE_FILE, DEFAULT_PROJECT_TOML);
+    }
     
     printf("\n=== Launching engine and starting watch mode ===\n");
 
@@ -1546,14 +1639,23 @@ static int build_and_run(void)
     STARTUPINFOA si = {0};
     PROCESS_INFORMATION pi = {0};
     char engine_path[PATH_SIZE];
+    char engine_cmdline[CMD_MAX];
     
     si.cb = sizeof(si);
     
     snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine.exe", DEBUG_DIR);
+    if (project_include) {
+        snprintf(engine_cmdline, sizeof(engine_cmdline),
+                 "\"%s\" --include \"%s\"",
+                 engine_path, project_include);
+    } else {
+        snprintf(engine_cmdline, sizeof(engine_cmdline),
+                 "\"%s\"", engine_path);
+    }
     
     if (!CreateProcessA(
             engine_path,
-            NULL,
+            engine_cmdline,
             NULL,
             NULL,
             FALSE,
@@ -1589,7 +1691,11 @@ static int build_and_run(void)
         /* Child process: run the engine */
         char engine_path[PATH_SIZE];
         snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
-        execl(engine_path, "AnitraEngine", NULL);
+        if (project_include) {
+            execl(engine_path, "AnitraEngine", "--include", project_include, NULL);
+        } else {
+            execl(engine_path, "AnitraEngine", NULL);
+        }
         printf("!! Failed to exec engine\n");
         exit(1);
     }
@@ -1600,103 +1706,12 @@ static int build_and_run(void)
 #endif
 }
 
-/* ------- clean ---------------------------------------------------------- */
-static int build_clean(void)
-{
-    printf("=== Cleaning build directory ===\n");
-#ifdef _WIN32
-    return run_cmd("if exist build rmdir /s /q build");
-#else
-    return run_cmd("rm -rf build");
-#endif
-}
-
 /* ========================================================================= */
 /* main                                                                       */
 /* ========================================================================= */
 
-static void print_usage(void)
+int main(void)
 {
-#ifdef _WIN32
-    printf("Usage: build.exe [target]\n");
-#else
-    printf("Usage: ./builder [target]\n");
-#endif
-    printf("\n");
-    printf("Targets:\n");
-    printf("  run          Build everything, launch engine, and watch for changes (default)\n");
-    printf("  all          Build everything\n");
-    printf("  tracy        Build TracyClient static library\n");
-    printf("  sdl3         Build SDL3 shared library\n");
-    printf("  spirvcross   Build SPIRV-Cross shared library\n");
-    printf("  shadercross  Build SDL_shadercross shared library\n");
-    printf("  shaders      Compile GLSL shaders to SPIR-V\n");
-    printf("  harfbuzz     Build HarfBuzz object file\n");
-    printf("  externals    Build externals shared library\n");
-    printf("  core         Build core shared library\n");
-    printf("  engine       Build engine shared library\n");
-    printf("  editor       Build editor shared library\n");
-    printf("  test         Build and run unit tests\n");
-    printf("  exe          Build AnitraEngine executable\n");
-    printf("  watch        Watch src/engine + src/editor and recompile on change (forge)\n");
-    printf("  clean        Delete build directory\n");
-    printf("  help         Show this message\n");
-}
-
-int main(int argc, char *argv[])
-{
-    const char *target;
-    int rc;
-
     if (find_tools() != 0) return 1;
-
-    if (argc < 2) {
-        target = "run";
-    } else {
-        target = argv[1];
-    }
-
-    if (strcmp(target, "all") == 0) {
-        rc = build_all();
-    } else if (strcmp(target, "run") == 0) {
-        rc = build_and_run();
-    } else if (strcmp(target, "tracy") == 0) {
-        rc = build_tracy();
-    } else if (strcmp(target, "sdl3") == 0) {
-        rc = build_sdl3();
-    } else if (strcmp(target, "spirvcross") == 0) {
-        rc = build_spirvcross();
-    } else if (strcmp(target, "shadercross") == 0) {
-        rc = build_shadercross();
-    } else if (strcmp(target, "shaders") == 0) {
-        rc = build_shaders();
-    } else if (strcmp(target, "harfbuzz") == 0) {
-        rc = build_harfbuzz();
-    } else if (strcmp(target, "externals") == 0) {
-        rc = build_externals();
-    } else if (strcmp(target, "core") == 0) {
-        rc = build_core();
-    } else if (strcmp(target, "engine") == 0) {
-        rc = build_engine();
-    } else if (strcmp(target, "editor") == 0) {
-        rc = build_editor();
-    } else if (strcmp(target, "test") == 0) {
-        rc = build_test();
-    } else if (strcmp(target, "exe") == 0) {
-        rc = build_exe();
-    } else if (strcmp(target, "watch") == 0) {
-        rc = watch_and_rebuild();
-    } else if (strcmp(target, "clean") == 0) {
-        rc = build_clean();
-    } else if (strcmp(target, "help") == 0 || strcmp(target, "-h") == 0 ||
-               strcmp(target, "--help") == 0 || strcmp(target, "/?") == 0) {
-        print_usage();
-        rc = 0;
-    } else {
-        printf("Unknown target: %s\n\n", target);
-        print_usage();
-        rc = 1;
-    }
-
-    return rc;
+    return build_and_run();
 }

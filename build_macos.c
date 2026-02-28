@@ -36,9 +36,10 @@
     TCC_MACOS_DEFS \
     " -o build/Debug/libcore.dylib" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include" \
+    " -Ilib/SDL3/include -Ilib/toml-c" \
     " src/core/core.c" \
     " src/core/loadlibrary_macos.c" \
+    " src/project.c" \
     " -Lbuild/Debug -lexternals"
 
 #define TCC_EXE_CMD \
