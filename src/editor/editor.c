@@ -935,7 +935,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
         for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
             int ww, wh;
             if (!d->windows[wi].in_use || !d->windows[wi].sdl_window) continue;
-            SDL_GetWindowSizeInPixels((SDL_Window *)d->windows[wi].sdl_window, &ww, &wh);
+            SDL_GetWindowSize((SDL_Window *)d->windows[wi].sdl_window, &ww, &wh);
             dock_layout(d, wi, ww, wh);
         }
     }
@@ -951,7 +951,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
             if (gs->height < 1) gs->height = 1;
         } else {
             int dw2, dh2;
-            SDL_GetWindowSizeInPixels((SDL_Window *)d->windows[0].sdl_window, &dw2, &dh2);
+            SDL_GetWindowSize((SDL_Window *)d->windows[0].sdl_window, &dw2, &dh2);
             gs->width = dw2;
             gs->height = dh2;
         }
@@ -970,7 +970,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
             e->window = (ed_win_idx >= 0) ? d->windows[ed_win_idx].sdl_window : d->windows[0].sdl_window;
         } else {
             int dw3, dh3;
-            SDL_GetWindowSizeInPixels((SDL_Window *)d->windows[0].sdl_window, &dw3, &dh3);
+            SDL_GetWindowSize((SDL_Window *)d->windows[0].sdl_window, &dw3, &dh3);
             e->panel_x = 0; e->panel_y = 0;
             e->panel_w = (float)dw3; e->panel_h = (float)dh3;
             e->window = d->windows[0].sdl_window;
@@ -1006,9 +1006,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         {
             int win_idx = dock_window_for_sdl(d, evwin);
             if (win_idx >= 0) {
-                float density = SDL_GetWindowPixelDensity(evwin);
-                float pmx = ev->button.x * density;
-                float pmy = ev->button.y * density;
+                float pmx = ev->button.x;
+                float pmy = ev->button.y;
                 int hit = dock_divider_at_point(d, d->windows[win_idx].root_node, pmx, pmy);
                 if (hit >= 0) {
                     DockNode *sn = &d->nodes[hit];
@@ -1026,9 +1025,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     /* ── Dock: Divider resize — mouse motion to update ratio ── */
     if (ev->type == SDL_EVENT_MOUSE_MOTION && resize->active) {
         SDL_Window *rwin = (SDL_Window *)d->windows[resize->window].sdl_window;
-        float density = SDL_GetWindowPixelDensity(rwin);
-        float pmx = ev->motion.x * density;
-        float pmy = ev->motion.y * density;
+        float pmx = ev->motion.x;
+        float pmy = ev->motion.y;
         DockNode *sn = &d->nodes[resize->node];
         float mouse_pos = (sn->type == DOCK_SPLIT_H) ? pmx : pmy;
         float extent    = (sn->type == DOCK_SPLIT_H) ? sn->w : sn->h;
@@ -1062,9 +1060,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         {
             int win_idx = dock_window_for_sdl(d, evwin);
             if (win_idx >= 0) {
-                float density = SDL_GetWindowPixelDensity(evwin);
-                float mx = ev->button.x * density;  /* logical → pixel */
-                float my = ev->button.y * density;
+                float mx = ev->button.x;
+                float my = ev->button.y;
                 int hit_node = -1;
                 PanelId hit_panel = PANEL_GAME;
                 int hit_tab_idx = -1;
@@ -1142,16 +1139,13 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 drag->phase = DRAG_IDLE;
             } else {
                 /* Mouse inside source window — track hover for drop zones.
-                   Convert logical mouse coords to pixel space to match
-                   dock_layout which uses SDL_GetWindowSizeInPixels. */
-                float density = SDL_GetWindowPixelDensity(src_win);
-                float pmx = mx * density;
-                float pmy = my * density;
+                   dock_layout now uses SDL_GetWindowSize (logical coords),
+                   so mouse coords can be used directly. */
                 int root = d->windows[drag->source_window].root_node;
-                int hover = dock_node_at_point(d, root, pmx, pmy);
+                int hover = dock_node_at_point(d, root, mx, my);
                 if (hover >= 0) {
                     DockNode *hn = &d->nodes[hover];
-                    DropZone zone = dock_drop_zone(hn, pmx, pmy);
+                    DropZone zone = dock_drop_zone(hn, mx, my);
                     drag->hover_node = hover;
                     drag->hover_window = drag->source_window;
                     drag->hover_zone = zone;
@@ -1220,9 +1214,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 static SDL_Cursor *cur_default = NULL;
                 static SDL_Cursor *cur_sizewe  = NULL;
                 static SDL_Cursor *cur_sizens  = NULL;
-                float density = SDL_GetWindowPixelDensity(evwin);
-                float pmx = ev->motion.x * density;
-                float pmy = ev->motion.y * density;
+                float pmx = ev->motion.x;
+                float pmy = ev->motion.y;
                 int hit = dock_divider_at_point(d, d->windows[win_idx].root_node, pmx, pmy);
                 if (!cur_default) cur_default = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_DEFAULT);
                 if (!cur_sizewe)  cur_sizewe  = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
@@ -1338,9 +1331,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             if (pnode >= 0 && pwin_idx >= 0 &&
                 evwin == (SDL_Window *)d->windows[pwin_idx].sdl_window) {
                 DockNode *pn = &d->nodes[pnode];
-                float density = SDL_GetWindowPixelDensity(evwin);
-                e->prof_mouse_x = ev->motion.x * density - pn->x;
-                e->prof_mouse_y = ev->motion.y * density - pn->y - DOCK_HEADER_HEIGHT;
+                e->prof_mouse_x = ev->motion.x - pn->x;
+                e->prof_mouse_y = ev->motion.y - pn->y - DOCK_HEADER_HEIGHT;
             }
         }
     }

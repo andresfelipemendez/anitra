@@ -18,6 +18,8 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
+#include "msdf_gen.h"
+
 #include <hb.h>
 #include <hb-ot.h>
 
@@ -55,11 +57,9 @@ static SDL_GPUTexture *white_texture = NULL;
 
 #define MAX_BONES 128
 
-// Font GPU storage buffers
-static SDL_GPUBuffer *font_curve_buffer = NULL;
-static SDL_GPUBuffer *font_glyph_buffer = NULL;
-static SDL_GPUBuffer *font_grid_cell_buffer = NULL;
-static SDL_GPUBuffer *font_grid_index_buffer = NULL;
+// Font MSDF atlas
+static SDL_GPUTexture *font_atlas_texture = NULL;
+static SDL_GPUSampler *font_atlas_sampler = NULL;
 
 // HarfBuzz
 static hb_font_t *hb_editor_font = NULL;
@@ -80,6 +80,7 @@ static SDL_GPUTexture *panel_color[PANEL_COUNT] = {0};
 static SDL_GPUTexture *panel_depth[PANEL_COUNT] = {0};
 static int panel_tex_w[PANEL_COUNT] = {0};
 static int panel_tex_h[PANEL_COUNT] = {0};
+static float display_density = 1.0f;  /* pixel density (2.0 on Retina) */
 
 // Composite pipeline (draws panel textures into window swapchain)
 static SDL_GPUGraphicsPipeline *composite_pipeline = NULL;
@@ -134,9 +135,8 @@ typedef struct ui_rect_vertex {
 
 typedef struct font_vertex {
     float x, y;       // screen position
-    float u, v;        // UV within glyph bbox [0,1]
+    float u, v;        // UV into MSDF atlas
     float r, g, b, a;  // text color
-    uint32_t glyph_id; // glyph index
 } font_vertex;
 
 typedef struct composite_vertex {
@@ -322,59 +322,14 @@ typedef struct mesh_uniform_data {
 } mesh_uniform_data;
 
 // ---------------------------------------------------------------------------
-// Font data structures
+// Font data (MSDF atlas)
 // ---------------------------------------------------------------------------
 
-typedef struct BezierCurve {
-    float p0x, p0y;  // start
-    float p1x, p1y;  // control
-    float p2x, p2y;  // end
-} BezierCurve;
-
-typedef struct GpuGridCell {
-    uint16_t index_offset;
-    uint16_t index_count;
-} GpuGridCell;
-
-typedef struct GlyphInfo {
-    uint32_t curve_offset;
-    uint32_t curve_count;
-    float bbox_min_x, bbox_min_y;
-    float bbox_max_x, bbox_max_y;
-    float advance_width;
-    float left_bearing;
-    uint32_t grid_offset;  // into grid cell buffer
-    uint32_t grid_cols;
-    uint32_t grid_rows;
-} GlyphInfo;
-
-#define MAX_CURVES      32768
-#define MAX_GRID_CELLS  (256 * 64)   // 256 glyphs * 8x8 grid
-#define MAX_GRID_INDICES (256 * 64 * 8) // avg 8 curves per cell
-#define GRID_COLS 8
-#define GRID_ROWS 8
-
-typedef struct FontData {
-    stbtt_fontinfo stb_info;
-    unsigned char *ttf_buffer;
-    size_t ttf_size;
-
-    // CPU-side data (also uploaded to GPU)
-    BezierCurve curves[MAX_CURVES];
-    uint32_t curve_count;
-
-    GlyphInfo glyphs[256];  // ASCII range
-
-    GpuGridCell grid_cells[MAX_GRID_CELLS];
-    uint32_t grid_cell_count;
-
-    uint16_t grid_indices[MAX_GRID_INDICES];
-    uint32_t grid_index_count;
-
-    float ascent, descent, line_gap;
-} FontData;
-
-static FontData editor_font;
+static stbtt_fontinfo font_stb_info;
+static unsigned char *font_ttf_buffer = NULL;
+static size_t font_ttf_size = 0;
+static msdf_glyph font_glyphs[128];
+static float font_ascent, font_descent, font_line_gap;
 
 // ---------------------------------------------------------------------------
 // Helper: compile HLSL -> SPIRV -> SDL_GPUShader
@@ -552,256 +507,94 @@ SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
 }
 
 // ---------------------------------------------------------------------------
-// Font loading
+// Font loading (MSDF atlas)
 // ---------------------------------------------------------------------------
 
-static int bezier_intersects_rect(BezierCurve *c,
-    float min_x, float min_y, float max_x, float max_y)
-{
-    float cx_min = fminf(fminf(c->p0x, c->p1x), c->p2x);
-    float cx_max = fmaxf(fmaxf(c->p0x, c->p1x), c->p2x);
-    float cy_min = fminf(fminf(c->p0y, c->p1y), c->p2y);
-    float cy_max = fmaxf(fmaxf(c->p0y, c->p1y), c->p2y);
-    return !(cx_max < min_x || cx_min > max_x ||
-             cy_max < min_y || cy_min > max_y);
-}
-
-static int font_load(FontData *font, const char *path) {
+static int font_load_msdf(const char *path) {
     size_t size = 0;
-    font->ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
-    if (!font->ttf_buffer) {
+    font_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
+    if (!font_ttf_buffer) {
         fprintf(stderr, "Failed to load font: %s\n", path);
         return -1;
     }
-    font->ttf_size = size;
+    font_ttf_size = size;
 
-    if (!stbtt_InitFont(&font->stb_info, font->ttf_buffer, 0)) {
+    if (!stbtt_InitFont(&font_stb_info, font_ttf_buffer, 0)) {
         fprintf(stderr, "stbtt_InitFont failed for %s\n", path);
         return -1;
     }
 
-    // Get font metrics
-    int ascent, descent, line_gap;
-    stbtt_GetFontVMetrics(&font->stb_info, &ascent, &descent, &line_gap);
-    float scale = stbtt_ScaleForPixelHeight(&font->stb_info, 1.0f);
-    font->ascent = ascent * scale;
-    font->descent = descent * scale;
-    font->line_gap = line_gap * scale;
-
-    font->curve_count = 0;
-    font->grid_cell_count = 0;
-    font->grid_index_count = 0;
-
-    // Extract glyphs for ASCII 32-126
-    for (int codepoint = 32; codepoint < 127; codepoint++) {
-        int glyph_index = stbtt_FindGlyphIndex(&font->stb_info, codepoint);
-        GlyphInfo *gi = &font->glyphs[codepoint];
-
-        // Metrics
-        int advance, lsb;
-        stbtt_GetGlyphHMetrics(&font->stb_info, glyph_index, &advance, &lsb);
-        gi->advance_width = advance * scale;
-        gi->left_bearing = lsb * scale;
-
-        // Bounding box
-        int x0, y0, x1, y1;
-        stbtt_GetGlyphBox(&font->stb_info, glyph_index, &x0, &y0, &x1, &y1);
-        gi->bbox_min_x = x0 * scale;
-        gi->bbox_min_y = y0 * scale;
-        gi->bbox_max_x = x1 * scale;
-        gi->bbox_max_y = y1 * scale;
-
-        // Extract shape
-        stbtt_vertex *vertices = NULL;
-        int num_verts = stbtt_GetGlyphShape(&font->stb_info, glyph_index, &vertices);
-
-        gi->curve_offset = font->curve_count;
-        gi->curve_count = 0;
-
-        float cx = 0, cy = 0;
-        for (int v = 0; v < num_verts; v++) {
-            stbtt_vertex *vert = &vertices[v];
-            float vx = vert->x * scale;
-            float vy = vert->y * scale;
-
-            if (vert->type == STBTT_vmove) {
-                cx = vx; cy = vy;
-            } else if (vert->type == STBTT_vline) {
-                BezierCurve *c = &font->curves[font->curve_count++];
-                c->p0x = cx; c->p0y = cy;
-                c->p1x = (cx + vx) * 0.5f;
-                c->p1y = (cy + vy) * 0.5f;
-                c->p2x = vx; c->p2y = vy;
-                gi->curve_count++;
-                cx = vx; cy = vy;
-            } else if (vert->type == STBTT_vcurve) {
-                BezierCurve *c = &font->curves[font->curve_count++];
-                c->p0x = cx; c->p0y = cy;
-                c->p1x = vert->cx * scale;
-                c->p1y = vert->cy * scale;
-                c->p2x = vx; c->p2y = vy;
-                gi->curve_count++;
-                cx = vx; cy = vy;
-            } else if (vert->type == STBTT_vcubic) {
-                // Cubic P0(cx,cy), P1(c1), P2(c2), P3(vx,vy)
-                // Standard N=2 cubic-to-quadratic conversion:
-                //   Q0 = P0
-                //   Q1 = (P0 + 3*P1) / 4
-                //   Q2 = (P1 + P2) / 2        (split point)
-                //   Q3 = (3*P2 + P3) / 4
-                //   Q4 = P3
-                float c1x = vert->cx * scale, c1y = vert->cy * scale;
-                float c2x = vert->cx1 * scale, c2y = vert->cy1 * scale;
-
-                float splitx = (c1x + c2x) * 0.5f;
-                float splity = (c1y + c2y) * 0.5f;
-
-                BezierCurve *c_a = &font->curves[font->curve_count++];
-                c_a->p0x = cx;   c_a->p0y = cy;
-                c_a->p1x = (cx + 3.0f * c1x) * 0.25f;
-                c_a->p1y = (cy + 3.0f * c1y) * 0.25f;
-                c_a->p2x = splitx; c_a->p2y = splity;
-                gi->curve_count++;
-
-                BezierCurve *c_b = &font->curves[font->curve_count++];
-                c_b->p0x = splitx; c_b->p0y = splity;
-                c_b->p1x = (3.0f * c2x + vx) * 0.25f;
-                c_b->p1y = (3.0f * c2y + vy) * 0.25f;
-                c_b->p2x = vx;    c_b->p2y = vy;
-                gi->curve_count++;
-
-                cx = vx; cy = vy;
-            }
-        }
-        stbtt_FreeShape(&font->stb_info, vertices);
-
-        // Build 8x8 grid acceleration
-        gi->grid_offset = font->grid_cell_count;
-        gi->grid_cols = GRID_COLS;
-        gi->grid_rows = GRID_ROWS;
-
-        float gw = gi->bbox_max_x - gi->bbox_min_x;
-        float gh = gi->bbox_max_y - gi->bbox_min_y;
-
-        if (gw < 0.001f || gh < 0.001f || gi->curve_count == 0) {
-            for (int cell = 0; cell < GRID_COLS * GRID_ROWS; cell++) {
-                font->grid_cells[font->grid_cell_count + cell].index_offset = (uint16_t)font->grid_index_count;
-                font->grid_cells[font->grid_cell_count + cell].index_count = 0;
-            }
-            font->grid_cell_count += GRID_COLS * GRID_ROWS;
-            continue;
-        }
-
-        float cell_w = gw / GRID_COLS;
-        float cell_h = gh / GRID_ROWS;
-
-        for (int row = 0; row < GRID_ROWS; row++) {
-            for (int col = 0; col < GRID_COLS; col++) {
-                float cmin_x = gi->bbox_min_x + col * cell_w;
-                float cmin_y = gi->bbox_min_y + row * cell_h;
-                float cmax_x = cmin_x + cell_w;
-                float cmax_y = cmin_y + cell_h;
-
-                GpuGridCell *cell = &font->grid_cells[font->grid_cell_count];
-                cell->index_offset = (uint16_t)font->grid_index_count;
-                cell->index_count = 0;
-
-                for (uint32_t ci = 0; ci < gi->curve_count; ci++) {
-                    BezierCurve *curve = &font->curves[gi->curve_offset + ci];
-                    if (bezier_intersects_rect(curve, cmin_x, cmin_y, cmax_x, cmax_y)) {
-                        font->grid_indices[font->grid_index_count++] = (uint16_t)ci;
-                        cell->index_count++;
-                    }
-                }
-
-                font->grid_cell_count++;
-            }
-        }
+    msdf_atlas atlas;
+    if (msdf_build_atlas(&font_stb_info, font_glyphs, 32, 127, &atlas,
+                          &font_ascent, &font_descent, &font_line_gap) != 0) {
+        fprintf(stderr, "Failed to build MSDF atlas\n");
+        return -1;
     }
 
-    printf("Font loaded: %d curves, %d grid cells, %d grid indices\n",
-           font->curve_count, font->grid_cell_count, font->grid_index_count);
+    /* Upload atlas to GPU texture */
+    {
+        SDL_GPUTextureCreateInfo tex_info = {0};
+        tex_info.type = SDL_GPU_TEXTURETYPE_2D;
+        tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        tex_info.width = (Uint32)atlas.width;
+        tex_info.height = (Uint32)atlas.height;
+        tex_info.layer_count_or_depth = 1;
+        tex_info.num_levels = 1;
+        tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        font_atlas_texture = SDL_CreateGPUTexture(gpu_device, &tex_info);
+        if (!font_atlas_texture) {
+            fprintf(stderr, "Failed to create font atlas texture: %s\n", SDL_GetError());
+            msdf_atlas_free(&atlas);
+            return -1;
+        }
 
-    return 0;
-}
+        Uint32 pixel_size = (Uint32)(atlas.width * atlas.height * 4);
+        SDL_GPUTransferBufferCreateInfo tbi = {0};
+        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tbi.size = pixel_size;
+        SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
+        void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
+        memcpy(mapped, atlas.pixels, pixel_size);
+        SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
 
-// ---------------------------------------------------------------------------
-// Font GPU upload
-// ---------------------------------------------------------------------------
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
+        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
 
-static SDL_GPUBuffer* upload_storage_buffer(const void *data, uint32_t size) {
-    SDL_GPUBufferCreateInfo buf_info = {0};
-    buf_info.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
-    buf_info.size = size;
-    SDL_GPUBuffer *buf = SDL_CreateGPUBuffer(gpu_device, &buf_info);
-    
-    if (!buf) {
-        fprintf(stderr, "Failed to create storage buffer: %s\n", SDL_GetError());
-        return NULL;
-    }
+        SDL_GPUTextureTransferInfo src = {0};
+        src.transfer_buffer = xfer;
+        src.pixels_per_row = (Uint32)atlas.width;
+        src.rows_per_layer = (Uint32)atlas.height;
 
-    SDL_GPUTransferBufferCreateInfo xfer_info = {0};
-    xfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    xfer_info.size = size;
-    SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &xfer_info);
-    
-    if (!xfer) {
-        fprintf(stderr, "Failed to create transfer buffer for storage upload: %s\n", SDL_GetError());
-        SDL_ReleaseGPUBuffer(gpu_device, buf);
-        return NULL;
-    }
+        SDL_GPUTextureRegion dst = {0};
+        dst.texture = font_atlas_texture;
+        dst.w = (Uint32)atlas.width;
+        dst.h = (Uint32)atlas.height;
+        dst.d = 1;
 
-    void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-    memcpy(mapped, data, size);
-    SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
-
-    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
-    if (!cmd) {
-        fprintf(stderr, "Failed to acquire GPU command buffer for storage upload: %s\n", SDL_GetError());
+        SDL_UploadToGPUTexture(copy, &src, &dst, false);
+        SDL_EndGPUCopyPass(copy);
+        SDL_SubmitGPUCommandBuffer(cmd);
         SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
-        SDL_ReleaseGPUBuffer(gpu_device, buf);
-        return NULL;
     }
-    
-    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
 
-    SDL_GPUTransferBufferLocation src = {0};
-    src.transfer_buffer = xfer;
-    SDL_GPUBufferRegion dst = {0};
-    dst.buffer = buf;
-    dst.size = size;
-    SDL_UploadToGPUBuffer(copy, &src, &dst, false);
-
-    // Always release transfer buffer even if command submission fails
-    SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
-    
-    SDL_EndGPUCopyPass(copy);
-    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
-        fprintf(stderr, "Failed to submit GPU command buffer for storage upload\n");
-        SDL_ReleaseGPUBuffer(gpu_device, buf);
-        return NULL;
+    /* Create sampler for MSDF atlas (linear filtering is essential for SDF) */
+    {
+        SDL_GPUSamplerCreateInfo samp_info = {0};
+        samp_info.min_filter = SDL_GPU_FILTER_LINEAR;
+        samp_info.mag_filter = SDL_GPU_FILTER_LINEAR;
+        samp_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        samp_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        samp_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        samp_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        font_atlas_sampler = SDL_CreateGPUSampler(gpu_device, &samp_info);
+        if (!font_atlas_sampler) {
+            fprintf(stderr, "Failed to create font atlas sampler: %s\n", SDL_GetError());
+            msdf_atlas_free(&atlas);
+            return -1;
+        }
     }
-    
-    return buf;
-}
 
-static int font_upload_to_gpu(FontData *font) {
-    font_curve_buffer = upload_storage_buffer(
-        font->curves,
-        font->curve_count * sizeof(BezierCurve));
-
-    font_glyph_buffer = upload_storage_buffer(
-        font->glyphs,
-        256 * sizeof(GlyphInfo));
-
-    font_grid_cell_buffer = upload_storage_buffer(
-        font->grid_cells,
-        font->grid_cell_count * sizeof(GpuGridCell));
-
-    font_grid_index_buffer = upload_storage_buffer(
-        font->grid_indices,
-        font->grid_index_count * sizeof(uint16_t));
-
+    msdf_atlas_free(&atlas);
     return 0;
 }
 
@@ -811,9 +604,9 @@ static int font_upload_to_gpu(FontData *font) {
 
 static unsigned int hb_scale = 0;  // units per em used for HarfBuzz
 
-static int harfbuzz_init(FontData *font) {
-    hb_editor_blob = hb_blob_create((const char*)font->ttf_buffer,
-        (unsigned int)font->ttf_size, HB_MEMORY_MODE_READONLY, NULL, NULL);
+static int harfbuzz_init(void) {
+    hb_editor_blob = hb_blob_create((const char*)font_ttf_buffer,
+        (unsigned int)font_ttf_size, HB_MEMORY_MODE_READONLY, NULL, NULL);
     hb_editor_face = hb_face_create(hb_editor_blob, 0);
     hb_editor_font = hb_font_create(hb_editor_face);
     hb_ot_font_set_funcs(hb_editor_font);
@@ -823,7 +616,7 @@ static int harfbuzz_init(FontData *font) {
     return 0;
 }
 
-static float font_measure_width(FontData *font, const char *text, uint32_t len, float font_size) {
+static float font_measure_width(const char *text, uint32_t len, float font_size) {
     hb_buffer_t *buf = hb_buffer_create();
     hb_buffer_add_utf8(buf, text, (int)len, 0, (int)len);
     hb_buffer_set_direction(buf, HB_DIRECTION_LTR);
@@ -850,10 +643,10 @@ static float font_measure_width(FontData *font, const char *text, uint32_t len, 
 // ---------------------------------------------------------------------------
 
 static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
-    int header_w = 1600;
-    int header_h = DOCK_HEADER_HEIGHT;
-    float font_size = 14.0f;
-    float scale = stbtt_ScaleForPixelHeight(&editor_font.stb_info, font_size);
+    int header_w = (int)(1600 * display_density);
+    int header_h = (int)(DOCK_HEADER_HEIGHT * display_density);
+    float font_size = 14.0f * display_density;
+    float scale = stbtt_ScaleForPixelHeight(&font_stb_info, font_size);
     int ascent_i, descent_i, line_gap_i;
     int x_cursor, ch, i;
     unsigned char *pixels;
@@ -867,7 +660,7 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     SDL_GPUTextureTransferInfo transfer_info;
     void *mapped;
 
-    stbtt_GetFontVMetrics(&editor_font.stb_info, &ascent_i, &descent_i, &line_gap_i);
+    stbtt_GetFontVMetrics(&font_stb_info, &ascent_i, &descent_i, &line_gap_i);
 
     pixels = (unsigned char *)calloc((size_t)(header_w * header_h * 4), 1);
     if (!pixels) return NULL;
@@ -881,7 +674,7 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     }
 
     /* Rasterize each character and composite onto the header */
-    x_cursor = 8; /* left padding */
+    x_cursor = (int)(8 * display_density); /* left padding */
     {
         int baseline = (int)(ascent_i * scale) + (header_h - (int)(font_size)) / 2;
         const char *p = text;
@@ -889,8 +682,8 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
             int advance, lsb, bw, bh, x0, y0, gx, gy;
             unsigned char *bitmap;
 
-            stbtt_GetCodepointHMetrics(&editor_font.stb_info, ch, &advance, &lsb);
-            bitmap = stbtt_GetCodepointBitmap(&editor_font.stb_info, 0, scale, ch, &bw, &bh, &x0, &y0);
+            stbtt_GetCodepointHMetrics(&font_stb_info, ch, &advance, &lsb);
+            bitmap = stbtt_GetCodepointBitmap(&font_stb_info, 0, scale, ch, &bw, &bh, &x0, &y0);
 
             if (bitmap) {
                 for (gy = 0; gy < bh; gy++) {
@@ -912,7 +705,7 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
 
             x_cursor += (int)(advance * scale);
             if (*p) {
-                x_cursor += (int)(stbtt_GetCodepointKernAdvance(&editor_font.stb_info, ch, (unsigned char)*p) * scale);
+                x_cursor += (int)(stbtt_GetCodepointKernAdvance(&font_stb_info, ch, (unsigned char)*p) * scale);
             }
         }
     }
@@ -958,7 +751,7 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     SDL_ReleaseGPUTransferBuffer(gpu_device, transfer);
 
     free(pixels);
-    *out_w = x_cursor + 8; /* text width + right padding */
+    *out_w = (int)((x_cursor + 8) / display_density); /* text width + padding, in logical pixels */
     return tex;
 }
 
@@ -968,9 +761,9 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
 
 static Clay_Dimensions clay_measure_text(Clay_StringSlice text, Clay_TextElementConfig *config, void *userData) {
     (void)userData;
-    float width = font_measure_width(&editor_font, text.chars, text.length, (float)config->fontSize);
+    float width = font_measure_width(text.chars, text.length, (float)config->fontSize);
     // Ceil to account for pixel snapping in the renderer (prevents glyph clipping)
-    float height = ceilf((float)config->fontSize * (editor_font.ascent - editor_font.descent + editor_font.line_gap));
+    float height = ceilf((float)config->fontSize * (font_ascent - font_descent + font_line_gap));
     return (Clay_Dimensions){ceilf(width + 1.0f), height};
 }
 
@@ -1083,8 +876,8 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
             hb_glyph_position_t *glyph_positions = hb_buffer_get_glyph_positions(hb_buf, &glyph_count);
 
             float cursor_x = floorf(box.x);
-            float baseline_y = floorf(box.y + font_size * editor_font.ascent);
-            float scale = font_size / (float)hb_scale;
+            float baseline_y = floorf(box.y + font_size * font_ascent);
+            float hb_to_px = font_size / (float)hb_scale;
 
             for (unsigned int gi = 0; gi < glyph_count; gi++) {
                 uint32_t cluster = glyph_infos[gi].cluster;
@@ -1093,41 +886,39 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                     cp = (uint32_t)(unsigned char)text->stringContents.chars[cluster];
 
                 if (cp < 32 || cp >= 127) {
-                    cursor_x += glyph_positions[gi].x_advance * scale;
+                    cursor_x += glyph_positions[gi].x_advance * hb_to_px;
                     continue;
                 }
 
-                GlyphInfo *info = &editor_font.glyphs[cp];
+                msdf_glyph *mg = &font_glyphs[cp];
 
-                if (info->curve_count > 0) {
-                    float glyph_w = (info->bbox_max_x - info->bbox_min_x) * font_size;
-                    float glyph_h = (info->bbox_max_y - info->bbox_min_y) * font_size;
+                if (mg->width > 0 && mg->height > 0) {
+                    float glyph_w = (float)mg->width * (font_size / (float)MSDF_SOURCE_SIZE);
+                    float glyph_h = (float)mg->height * (font_size / (float)MSDF_SOURCE_SIZE);
 
-                    float gx = floorf(cursor_x + info->bbox_min_x * font_size + glyph_positions[gi].x_offset * scale);
-                    float gy = baseline_y - info->bbox_max_y * font_size + glyph_positions[gi].y_offset * scale;
-                    float gw = glyph_w;
-                    float gh = glyph_h;
+                    float gx = floorf(cursor_x + mg->xoff * font_size + glyph_positions[gi].x_offset * hb_to_px);
+                    float gy = baseline_y + mg->yoff * font_size + glyph_positions[gi].y_offset * hb_to_px;
 
                     /* Skip glyphs fully outside scissor rect */
-                    if (clipping && (gx + gw < clip_x0 || gx > clip_x1 ||
-                                     gy + gh < clip_y0 || gy > clip_y1)) {
-                        cursor_x += glyph_positions[gi].x_advance * scale;
+                    if (clipping && (gx + glyph_w < clip_x0 || gx > clip_x1 ||
+                                     gy + glyph_h < clip_y0 || gy > clip_y1)) {
+                        cursor_x += glyph_positions[gi].x_advance * hb_to_px;
                         continue;
                     }
 
                     if (ui->font_vert_count + 6 <= MAX_FONT_VERTICES) {
                         font_vertex *v = &ui->font_verts[ui->font_vert_count];
-                        v[0] = (font_vertex){gx,      gy,      0, 0, r, g, b, a, cp};
-                        v[1] = (font_vertex){gx + gw, gy,      1, 0, r, g, b, a, cp};
-                        v[2] = (font_vertex){gx + gw, gy + gh, 1, 1, r, g, b, a, cp};
-                        v[3] = (font_vertex){gx,      gy,      0, 0, r, g, b, a, cp};
-                        v[4] = (font_vertex){gx + gw, gy + gh, 1, 1, r, g, b, a, cp};
-                        v[5] = (font_vertex){gx,      gy + gh, 0, 1, r, g, b, a, cp};
+                        v[0] = (font_vertex){gx,            gy,            mg->u0, mg->v0, r, g, b, a};
+                        v[1] = (font_vertex){gx + glyph_w,  gy,            mg->u1, mg->v0, r, g, b, a};
+                        v[2] = (font_vertex){gx + glyph_w,  gy + glyph_h,  mg->u1, mg->v1, r, g, b, a};
+                        v[3] = (font_vertex){gx,            gy,            mg->u0, mg->v0, r, g, b, a};
+                        v[4] = (font_vertex){gx + glyph_w,  gy + glyph_h,  mg->u1, mg->v1, r, g, b, a};
+                        v[5] = (font_vertex){gx,            gy + glyph_h,  mg->u0, mg->v1, r, g, b, a};
                         ui->font_vert_count += 6;
                     }
                 }
 
-                cursor_x += glyph_positions[gi].x_advance * scale;
+                cursor_x += glyph_positions[gi].x_advance * hb_to_px;
             }
             hb_buffer_destroy(hb_buf);
             break;
@@ -1199,11 +990,11 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
 static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     Clay_SetCurrentContext(clay_context);
 
-    int win_w = panel_tex_w[PANEL_GAME];
-    int win_h = panel_tex_h[PANEL_GAME];
+    float win_w = (float)panel_tex_w[PANEL_GAME] / display_density;
+    float win_h = (float)panel_tex_h[PANEL_GAME] / display_density;
     if (win_w <= 0) win_w = 800;
     if (win_h <= 0) win_h = 600;
-    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+    Clay_SetLayoutDimensions((Clay_Dimensions){win_w, win_h});
 
     Clay_BeginLayout();
     /* (game HUD elements will go here later) */
@@ -1264,8 +1055,8 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     {
         editor_state *e = &g->editor;
         int gw = e->prof_grid_w, gh = e->prof_grid_h;
-        float panel_w = (float)panel_tex_w[PANEL_PROFILER];
-        float panel_h = (float)panel_tex_h[PANEL_PROFILER];
+        float panel_w = (float)panel_tex_w[PANEL_PROFILER] / display_density;
+        float panel_h = (float)panel_tex_h[PANEL_PROFILER] / display_density;
 
         /* Release previous frame's quad buffer */
         if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
@@ -1393,15 +1184,14 @@ static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_bu
     }
 
     if (ui->font_vert_count > 0 && ui->font_gpu_buf &&
-        font_curve_buffer && font_glyph_buffer && font_grid_cell_buffer && font_grid_index_buffer) {
+        font_atlas_texture && font_atlas_sampler) {
         SDL_BindGPUGraphicsPipeline(render_pass, font_pipeline);
         SDL_PushGPUVertexUniformData(cmd_buf, 0, uniforms, sizeof(*uniforms));
 
-        SDL_GPUBuffer *storage_bufs[4] = {
-            font_curve_buffer, font_glyph_buffer,
-            font_grid_cell_buffer, font_grid_index_buffer
-        };
-        SDL_BindGPUFragmentStorageBuffers(render_pass, 0, storage_bufs, 4);
+        SDL_GPUTextureSamplerBinding sampler_binding = {0};
+        sampler_binding.texture = font_atlas_texture;
+        sampler_binding.sampler = font_atlas_sampler;
+        SDL_BindGPUFragmentSamplers(render_pass, 0, &sampler_binding, 1);
 
         SDL_GPUBufferBinding vbuf_binding = {0};
         vbuf_binding.buffer = ui->font_gpu_buf;
@@ -1441,11 +1231,13 @@ EXPORT int init_externals(struct memory *m) {
     }
 
     // 3. Create single docked window (all panels inside)
-    window = SDL_CreateWindow("Anitra", 1600, 900, SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow("Anitra", 1600, 900, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         return -1;
     }
+
+    display_density = SDL_GetWindowPixelDensity(window);
 
     // 4. Create GPU device
     gpu_device = SDL_CreateGPUDevice(
@@ -1779,7 +1571,7 @@ EXPORT int init_externals(struct memory *m) {
         vbuf_desc.pitch = sizeof(font_vertex);
         vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
-        SDL_GPUVertexAttribute attrs[4] = {0};
+        SDL_GPUVertexAttribute attrs[3] = {0};
         // position (float2)
         attrs[0].location = 0;
         attrs[0].buffer_slot = 0;
@@ -1795,11 +1587,6 @@ EXPORT int init_externals(struct memory *m) {
         attrs[2].buffer_slot = 0;
         attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
         attrs[2].offset = sizeof(float) * 4;
-        // glyph_id (uint)
-        attrs[3].location = 3;
-        attrs[3].buffer_slot = 0;
-        attrs[3].format = SDL_GPU_VERTEXELEMENTFORMAT_UINT;
-        attrs[3].offset = sizeof(float) * 8;
 
         SDL_GPUColorTargetBlendState blend = {0};
         blend.enable_blend = true;
@@ -1823,7 +1610,7 @@ EXPORT int init_externals(struct memory *m) {
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
-        pipe_info.vertex_input_state.num_vertex_attributes = 4;
+        pipe_info.vertex_input_state.num_vertex_attributes = 3;
         pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         pipe_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
         pipe_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -2021,26 +1808,26 @@ EXPORT int init_externals(struct memory *m) {
     gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture(m->game.texture_health_bar);
     gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture(m->game.texture_health_fill);
 
-    // Load editor font and upload to GPU
-    if (font_load(&editor_font, m->game.font_editor) != 0) {
+    // Load editor font (MSDF atlas) and upload to GPU
+    if (font_load_msdf(m->game.font_editor) != 0) {
         fprintf(stderr, "Failed to load editor font from: %s\n", m->game.font_editor);
         return -1;
     }
-    if (harfbuzz_init(&editor_font) != 0) {
+    if (harfbuzz_init() != 0) {
         fprintf(stderr, "Failed to init HarfBuzz\n");
         return -1;
     }
 
     // Pre-compute ASCII advance table for editor.dll's Clay text measurement
     {
-        float scale1 = stbtt_ScaleForPixelHeight(&editor_font.stb_info, 1.0f);
+        float scale1 = stbtt_ScaleForPixelHeight(&font_stb_info, 1.0f);
         int ch;
         for (ch = 0; ch < 128; ch++) {
             int advance, lsb;
-            stbtt_GetCodepointHMetrics(&editor_font.stb_info, ch, &advance, &lsb);
+            stbtt_GetCodepointHMetrics(&font_stb_info, ch, &advance, &lsb);
             m->editor.font_advances[ch] = (float)advance * scale1;
         }
-        m->editor.font_line_height = editor_font.ascent - editor_font.descent + editor_font.line_gap;
+        m->editor.font_line_height = font_ascent - font_descent + font_line_gap;
     }
 
     // Initialize arena (single allocation for all engine memory)
@@ -2261,7 +2048,7 @@ EXPORT int init_externals(struct memory *m) {
     // Create initial panel textures (dock layout → panel rects → offscreen textures)
     {
         int win_w, win_h;
-        SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
+        SDL_GetWindowSize(window, &win_w, &win_h);
         dock_layout(dock, 0, win_w, win_h);
         ensure_panel_textures(dock);
     }
@@ -2427,8 +2214,8 @@ static void ensure_panel_textures(dock_state *d)
             if (!n->in_use || n->type != DOCK_TABS || n->panel_count == 0) continue;
             {
                 PanelId pid = n->panels[n->active_tab];
-                int pw = (int)n->w;
-                int ph = (int)n->h - DOCK_HEADER_HEIGHT;
+                int pw = (int)(n->w * display_density);
+                int ph = (int)((n->h - DOCK_HEADER_HEIGHT) * display_density);
                 if (ph < 1) ph = 1;
                 ensure_panel_texture((int)pid, pw, ph);
             }
@@ -2544,7 +2331,7 @@ EXPORT void update_externals(struct memory *m) {
         }
         if (new_win_idx >= 0) {
             SDL_Window *new_win = SDL_CreateWindow(panel_names[tp],
-                                                    600, 500, SDL_WINDOW_RESIZABLE);
+                                                    600, 500, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
             if (new_win) {
                 int new_root;
                 int src_win_idx;
@@ -2886,7 +2673,7 @@ EXPORT void update_externals(struct memory *m) {
                 total_quads_count++;
             if (total_quads_count <= 0) continue;
 
-            SDL_GetWindowSizeInPixels((SDL_Window *)dock->windows[cwi].sdl_window, &ww, &wh);
+            SDL_GetWindowSize((SDL_Window *)dock->windows[cwi].sdl_window, &ww, &wh);
 
             total_quads = (Uint32)total_quads_count;
             comp_buf_size = total_quads * 6 * (Uint32)sizeof(composite_vertex);
@@ -3043,8 +2830,8 @@ EXPORT void update_externals(struct memory *m) {
         // Game Clay UI overlay
         {
             uniform_data ui_uniforms;
-            float ui_w = (float)gw;
-            float ui_h = (float)gh;
+            float ui_w = (float)gw / display_density;
+            float ui_h = (float)gh / display_density;
             float ui_ortho[16] = {
                 2.0f/ui_w,  0,          0,     0,
                 0,         -2.0f/ui_h,  0,     0,
@@ -3082,9 +2869,11 @@ EXPORT void update_externals(struct memory *m) {
         SDL_GPURenderPass *prof_pass = SDL_BeginGPURenderPass(cmd_buf, &prof_ct, 1, &prof_dt);
 
         uniform_data prof_uniforms;
+        float prof_lw = (float)pw / display_density;
+        float prof_lh = (float)ph / display_density;
         float prof_ortho[16] = {
-            2.0f/(float)pw,  0,               0,     0,
-            0,              -2.0f/(float)ph,   0,     0,
+            2.0f/prof_lw,    0,               0,     0,
+            0,              -2.0f/prof_lh,     0,     0,
             0,               0,              -1.0f,  0,
            -1.0f,            1.0f,             0,     1.0f
         };
@@ -3331,11 +3120,9 @@ EXPORT void end_externals(struct memory *m) {
     if (hb_editor_face) { hb_face_destroy(hb_editor_face); hb_editor_face = NULL; }
     if (hb_editor_blob) { hb_blob_destroy(hb_editor_blob); hb_editor_blob = NULL; }
 
-    // Release font GPU buffers
-    if (font_curve_buffer) { SDL_ReleaseGPUBuffer(gpu_device, font_curve_buffer); font_curve_buffer = NULL; }
-    if (font_glyph_buffer) { SDL_ReleaseGPUBuffer(gpu_device, font_glyph_buffer); font_glyph_buffer = NULL; }
-    if (font_grid_cell_buffer) { SDL_ReleaseGPUBuffer(gpu_device, font_grid_cell_buffer); font_grid_cell_buffer = NULL; }
-    if (font_grid_index_buffer) { SDL_ReleaseGPUBuffer(gpu_device, font_grid_index_buffer); font_grid_index_buffer = NULL; }
+    // Release font MSDF atlas
+    if (font_atlas_texture) { SDL_ReleaseGPUTexture(gpu_device, font_atlas_texture); font_atlas_texture = NULL; }
+    if (font_atlas_sampler) { SDL_ReleaseGPUSampler(gpu_device, font_atlas_sampler); font_atlas_sampler = NULL; }
 
     // Release pipelines
     if (sprite_pipeline) {
