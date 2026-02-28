@@ -48,6 +48,54 @@ typedef struct project_lighting {
     int point_light_count;
 } project_lighting;
 
+#define PROJECT_SCENE_MAX_ENTITIES 512
+
+typedef struct project_scene_component {
+    int has_transform;
+    float transform_position[3];
+
+    int has_rotation;
+    float rotation_y;
+
+    int has_scale;
+    float scale[3];
+
+    int has_parent_transform;
+    int parent_transform_entity;
+
+    int has_parent_rotation;
+
+    int has_mesh;
+    char mesh_model[64];
+    char mesh_kind[32];
+    int mesh_visible;
+
+    int has_animation;
+    char animation_asset[64];
+    int animation_playing;
+    int animation_clip;
+    float animation_time;
+    float animation_speed;
+
+    int has_velocity;
+    float velocity[2];
+
+    int has_health;
+    float health_current;
+    float health_max;
+
+    int has_collider;
+    char collider_type[32];
+    float collider_half_extents[3];
+
+    int has_camera;
+    float camera_fov;
+    float camera_near;
+    float camera_far;
+    float camera_target[3];
+    float camera_up[3];
+} project_scene_component;
+
 typedef struct project_data {
     char name[128];
     int version;
@@ -72,6 +120,10 @@ typedef struct project_data {
     char sprite_paths[16][256];
     char sprite_keys[16][64];
     int sprite_count;
+
+    char scene_entity_names[PROJECT_SCENE_MAX_ENTITIES][64];
+    int scene_entity_count;
+    project_scene_component scene_components[PROJECT_SCENE_MAX_ENTITIES];
 } project_data;
 
 int project_load(const char *path, project_data *out);

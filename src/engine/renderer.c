@@ -1,5 +1,125 @@
 #include "renderer.h"
 
+#define RENDER_QUERY_MAX_RESULTS 256
+
+typedef struct sprite_render_item {
+    int texture_id;
+    float x;
+    float y;
+    pixel_rect pixel_region;
+    int texture_width;
+    int texture_height;
+    int has_health;
+    float health;
+    float max_health;
+} sprite_render_item;
+
+static transform_component *find_transform_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->transform_components) return NULL;
+    for (i = 0; i < gs->transform_component_count; i++) {
+        transform_component *tc = &gs->transform_components[i];
+        if (tc->entity_index == entity_index) return tc;
+    }
+    return NULL;
+}
+
+static parent_transform_component *find_parent_transform_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->parent_transform_components) return NULL;
+    for (i = 0; i < gs->parent_transform_component_count; i++) {
+        parent_transform_component *pt = &gs->parent_transform_components[i];
+        if (pt->entity_index == entity_index) return pt;
+    }
+    return NULL;
+}
+
+static Vec3 resolve_world_position(game_state *gs, int entity_index) {
+    Vec3 world = VEC3(0.0f, 0.0f, 0.0f);
+    int current = entity_index;
+    int guard = 0;
+    if (!gs || !gs->scene_entities || !gs->transform_components) return world;
+
+    while (guard <= gs->scene_entity_count && current >= 0 && current < gs->scene_entity_count) {
+        transform_component *tc = find_transform_component(gs, current);
+        parent_transform_component *pt;
+        if (tc) {
+            world = vec3_add(world, tc->position);
+        }
+
+        pt = find_parent_transform_component(gs, current);
+        if (!pt) break;
+        if (pt->parent_entity_index == current) break;
+        current = pt->parent_entity_index;
+        guard++;
+    }
+
+    return world;
+}
+
+static health_component *find_health_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->health_components) return NULL;
+    for (i = 0; i < gs->health_component_count; i++) {
+        health_component *hc = &gs->health_components[i];
+        if (hc->entity_index == entity_index) return hc;
+    }
+    return NULL;
+}
+
+static int query_sprite_render_items(game_state *gs, sprite_render_item *out_items, int max_items) {
+    int i;
+    int count = 0;
+    if (!gs || !out_items || max_items <= 0 || !gs->scene_entities || !gs->mesh_components) return 0;
+
+    for (i = 0; i < gs->mesh_component_count && count < max_items; i++) {
+        mesh_component *mc = &gs->mesh_components[i];
+        int entity_index = mc->entity_index;
+        transform_component *tc;
+        health_component *hc;
+        entity *e;
+        int sprite_id;
+        sprite_render_item *item;
+        Vec3 world_pos;
+
+        if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+        if (mc->kind != MESH_KIND_SKINNED) continue;
+        if (!mc->visible) continue;
+
+        tc = find_transform_component(gs, entity_index);
+        if (!tc) continue;
+        world_pos = resolve_world_position(gs, entity_index);
+
+        e = &gs->scene_entities[entity_index];
+        if (e->sprite_sheet.width <= 0 || e->sprite_sheet.height <= 0) continue;
+        if (e->current_animation.animation.frame_count <= 0) continue;
+        if (e->current_animation.frame_index < 0) continue;
+
+        sprite_id = e->current_animation.animation.frames[e->current_animation.frame_index];
+        if (sprite_id < 0 || sprite_id >= 64) continue;
+
+        hc = find_health_component(gs, entity_index);
+        item = &out_items[count++];
+        item->texture_id = e->sprite_sheet.texture_id;
+        item->x = world_pos.x;
+        item->y = world_pos.y;
+        item->pixel_region = e->sprite_sheet.sprites[sprite_id];
+        item->texture_width = e->sprite_sheet.width;
+        item->texture_height = e->sprite_sheet.height;
+        if (hc) {
+            item->has_health = 1;
+            item->health = hc->health;
+            item->max_health = hc->max_health;
+        } else {
+            item->has_health = 0;
+            item->health = 0.0f;
+            item->max_health = 0.0f;
+        }
+    }
+
+    return count;
+}
+
 rect pixel_to_uv(pixel_rect p, sprite_sheet* s) {
     rect uv;
     uv.x = (float)p.x / (float)s->width;
@@ -118,31 +238,19 @@ void render_health_bar(game_state* gs, float x, float y, float health, float max
 }
 
 void render_entities(game_state* gs) {
+    sprite_render_item items[RENDER_QUERY_MAX_RESULTS];
+    int item_count;
     int i;
     if (!gs || !gs->scene_entities) return;
 
-    for (i = 0; i < gs->scene_entity_count; i++) {
-        entity* e = &gs->scene_entities[i];
-        float x = e->pos.x;
-        float y = e->pos.y;
-        int sprite_id;
-        pixel_rect pixel_region;
+    item_count = query_sprite_render_items(gs, items, RENDER_QUERY_MAX_RESULTS);
+    for (i = 0; i < item_count; i++) {
+        const sprite_render_item *item = &items[i];
+        render_sprite_pixel_perfect(gs, item->texture_id, item->x, item->y,
+                                   item->pixel_region, item->texture_width, item->texture_height);
 
-        if (e->sprite_sheet.width <= 0 || e->sprite_sheet.height <= 0)
-            continue;
-        if (e->current_animation.animation.frame_count <= 0)
-            continue;
-        if (e->current_animation.frame_index < 0)
-            continue;
-
-        sprite_id = e->current_animation.animation.frames[e->current_animation.frame_index];
-        if (sprite_id < 0 || sprite_id >= 64)
-            continue;
-        pixel_region = e->sprite_sheet.sprites[sprite_id];
-
-        render_sprite_pixel_perfect(gs, e->sprite_sheet.texture_id, x, y,
-                                   pixel_region, e->sprite_sheet.width, e->sprite_sheet.height);
-
-        render_health_bar(gs, x, y, e->health, 100.0f);
+        if (item->has_health) {
+            render_health_bar(gs, item->x, item->y, item->health, item->max_health);
+        }
     }
 }

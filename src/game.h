@@ -6,6 +6,7 @@
 #include "draw_list.h"
 #include "gltf_types.h"
 #include "editor/editor.h"
+#include "project.h"
 
 #ifndef __cplusplus
 #include <stdbool.h>
@@ -62,14 +63,15 @@ typedef struct animator {
 } animator;
 
 typedef enum {
-    COLLIDER
+    COLLIDER_BOX
 } collider_type;
 
 
 typedef enum {
-    ENEMY,
-    PLAYER,
-} entity_type;
+    MESH_KIND_SKINNED,
+    MESH_KIND_STATIC,
+    MESH_KIND_FLOOR,
+} mesh_kind;
 
 typedef struct collider {
     rect rect;
@@ -79,12 +81,7 @@ typedef struct collider {
 typedef struct entity {
     sprite_sheet sprite_sheet;
     animator current_animation;
-    collider collider;
     sprite spr;
-    vec2 pos;
-    vec2 velocity;
-    float health;
-    entity_type type;
 } entity;
 
 typedef struct parent_component {
@@ -94,6 +91,7 @@ typedef struct parent_component {
 
 typedef struct parent_transform_component {
     int entity_index;
+    int parent_entity_index;
 } parent_transform_component;
 
 typedef struct parent_rotation_component {
@@ -103,7 +101,58 @@ typedef struct parent_rotation_component {
 typedef struct mesh_component {
     int entity_index;
     int visible;
+    mesh_kind kind;
+    int model_asset_index;
 } mesh_component;
+
+typedef struct transform_component {
+    int entity_index;
+    Vec3 position;
+} transform_component;
+
+typedef struct rotation_component {
+    int entity_index;
+    float rotation_y_deg;
+} rotation_component;
+
+typedef struct scale_component {
+    int entity_index;
+    Vec3 scale;
+} scale_component;
+
+typedef struct velocity_component {
+    int entity_index;
+    vec2 velocity;
+} velocity_component;
+
+typedef struct health_component {
+    int entity_index;
+    float health;
+    float max_health;
+} health_component;
+
+typedef struct collider_component {
+    int entity_index;
+    rect rect;
+    collider_type type;
+} collider_component;
+
+typedef struct animation_component {
+    int entity_index;
+    int playing;
+    int active_clip;
+    float anim_time;
+    float speed;
+} animation_component;
+
+typedef struct camera_component {
+    int entity_index;
+    float fov_deg;
+    float near_plane;
+    float far_plane;
+    Vec3 target;
+    Vec3 up;
+} camera_component;
 
 typedef enum InputButton {
     INPUT_A = 1 << 0,
@@ -163,11 +212,26 @@ typedef struct mesh3d_state {
     Vec3 camera_eye;
     Vec3 camera_target;
     Vec3 camera_up;
+    float camera_fov_deg;
+    float camera_near;
+    float camera_far;
     int  camera_set_by_project;
 
     /* Model transform — set by engine */
     Mat4 model_transform;
 } mesh3d_state;
+
+#define SCENE_MODEL_ASSET_MAX 64
+
+typedef struct scene_model_asset {
+    char key[64];
+    char path[256];
+    char animation_path[256];
+    int has_animation_path;
+    int loaded;
+    int has_skeleton;
+    GltfModel model;
+} scene_model_asset;
 
 typedef struct game_state {
   struct arena *root_arena;     /* pointer to memory.arena */
@@ -199,13 +263,44 @@ typedef struct game_state {
   parent_rotation_component *parent_rotation_components;
   int parent_rotation_component_count;
   int parent_rotation_component_capacity;
+  transform_component *transform_components;
+  int transform_component_count;
+  int transform_component_capacity;
+  rotation_component *rotation_components;
+  int rotation_component_count;
+  int rotation_component_capacity;
+  scale_component *scale_components;
+  int scale_component_count;
+  int scale_component_capacity;
+  velocity_component *velocity_components;
+  int velocity_component_count;
+  int velocity_component_capacity;
+  health_component *health_components;
+  int health_component_count;
+  int health_component_capacity;
+  collider_component *collider_components;
+  int collider_component_count;
+  int collider_component_capacity;
   mesh_component *mesh_components;
   int mesh_component_count;
   int mesh_component_capacity;
+  animation_component *animation_components;
+  int animation_component_count;
+  int animation_component_capacity;
+  camera_component *camera_components;
+  int camera_component_count;
+  int camera_component_capacity;
 
   mesh3d_state mesh3d;
   lighting_state lighting;
   GltfModel loaded_model;       /* loaded 3D model data */
+  GltfModel loaded_floor_model; /* loaded floor tile model data */
+  scene_model_asset scene_model_assets[SCENE_MODEL_ASSET_MAX];
+  int scene_model_asset_count;
+  int scene_primary_skinned_entity;
+  int scene_camera_entity;
+  project_data project;
+  int project_loaded;
 
   /* GPU device handle — set by externals, used by engine for asset loading */
   void *gpu_device;
@@ -217,6 +312,7 @@ typedef struct game_state {
   /* Asset paths — loaded from config file at startup */
   const char *default_model_path;
   const char *default_animation_path;
+  const char *default_floor_model_path;
   const char *texture_player;
   const char *texture_tiles;
   const char *texture_slime;

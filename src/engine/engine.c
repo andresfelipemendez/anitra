@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <ctype.h>
 
 /* Animation functions (from anim.c, same DLL) */
 void init_pose_from_bind(Skeleton *skel, Vec3 *trans, Quat *rot, Vec3 *scale);
@@ -10,8 +11,8 @@ void sample_clip(AnimClip *clip, float time,
                  Vec3 *out_trans, Quat *out_rot, Vec3 *out_scale,
                  uint32_t joint_count);
 void compute_world_transforms(Skeleton *skel,
-                               Vec3 *trans, Quat *rot, Vec3 *scales,
-                               Mat4 *out_world);
+                              Vec3 *trans, Quat *rot, Vec3 *scales,
+                              Mat4 *out_world);
 void compute_skinning_matrices(Skeleton *skel, Mat4 *world, Mat4 *out_skinning);
 
 /* Asset loading (from gltf_loader.c, same DLL) */
@@ -19,11 +20,880 @@ GltfModel load_glb(const char *path, arena *a);
 void load_animations_glb(const char *path, GltfModel *model, arena *a);
 void gltf_set_gpu_device(void *dev);
 
+#define SCENE_MIN_CAPACITY 32
+#define MODEL_ARENA_BYTES (64 * 1024 * 1024)
+#define WORLD_CHAIN_MAX 512
+
+typedef struct camera_query_result {
+    int entity_index;
+    transform_component *transform;
+    camera_component *camera;
+} camera_query_result;
+
+static int str_ieq(const char *a, const char *b) {
+    unsigned char ca, cb;
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        ca = (unsigned char)*a++;
+        cb = (unsigned char)*b++;
+        if (tolower(ca) != tolower(cb)) return 0;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+static int str_icontains(const char *haystack, const char *needle) {
+    int i, j;
+    if (!haystack || !needle || !needle[0]) return 0;
+    for (i = 0; haystack[i]; i++) {
+        for (j = 0; needle[j]; j++) {
+            unsigned char ch = (unsigned char)haystack[i + j];
+            if (!ch) return 0;
+            if (tolower(ch) != tolower((unsigned char)needle[j])) break;
+        }
+        if (!needle[j]) return 1;
+    }
+    return 0;
+}
+
+static Quat quat_from_y_deg(float degrees) {
+    float half = (degrees * 3.14159265f / 180.0f) * 0.5f;
+    return QUAT(0.0f, sinf(half), 0.0f, cosf(half));
+}
+
+static Vec3 normalize_scale(Vec3 s) {
+    if (s.x == 0.0f) s.x = 1.0f;
+    if (s.y == 0.0f) s.y = 1.0f;
+    if (s.z == 0.0f) s.z = 1.0f;
+    return s;
+}
+
+static transform_component *find_transform_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->transform_components) return NULL;
+    for (i = 0; i < gs->transform_component_count; i++) {
+        transform_component *tc = &gs->transform_components[i];
+        if (tc->entity_index == entity_index) return tc;
+    }
+    return NULL;
+}
+
+static rotation_component *find_rotation_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->rotation_components) return NULL;
+    for (i = 0; i < gs->rotation_component_count; i++) {
+        rotation_component *rc = &gs->rotation_components[i];
+        if (rc->entity_index == entity_index) return rc;
+    }
+    return NULL;
+}
+
+static scale_component *find_scale_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->scale_components) return NULL;
+    for (i = 0; i < gs->scale_component_count; i++) {
+        scale_component *sc = &gs->scale_components[i];
+        if (sc->entity_index == entity_index) return sc;
+    }
+    return NULL;
+}
+
+static parent_transform_component *find_parent_transform_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->parent_transform_components) return NULL;
+    for (i = 0; i < gs->parent_transform_component_count; i++) {
+        parent_transform_component *pt = &gs->parent_transform_components[i];
+        if (pt->entity_index == entity_index) return pt;
+    }
+    return NULL;
+}
+
+static mesh_component *find_mesh_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->mesh_components) return NULL;
+    for (i = 0; i < gs->mesh_component_count; i++) {
+        mesh_component *mc = &gs->mesh_components[i];
+        if (mc->entity_index == entity_index) return mc;
+    }
+    return NULL;
+}
+
+static scene_model_asset *find_scene_model_asset(game_state *gs, int asset_index) {
+    if (!gs || asset_index < 0 || asset_index >= gs->scene_model_asset_count) return NULL;
+    return &gs->scene_model_assets[asset_index];
+}
+
+static Mat4 local_transform_matrix(game_state *gs, int entity_index) {
+    transform_component *tc;
+    rotation_component *rc;
+    scale_component *sc;
+    Vec3 position = VEC3(0.0f, 0.0f, 0.0f);
+    float rotation_y = 0.0f;
+    Vec3 scale = VEC3(1.0f, 1.0f, 1.0f);
+    Quat rot;
+    if (!gs) return mat4_identity();
+
+    tc = find_transform_component(gs, entity_index);
+    if (tc) position = tc->position;
+
+    rc = find_rotation_component(gs, entity_index);
+    if (rc) rotation_y = rc->rotation_y_deg;
+
+    sc = find_scale_component(gs, entity_index);
+    if (sc) scale = normalize_scale(sc->scale);
+
+    rot = quat_from_y_deg(rotation_y);
+    return mat4_from_trs(position, rot, scale);
+}
+
+static Mat4 resolve_world_transform(game_state *gs, int entity_index) {
+    int chain[WORLD_CHAIN_MAX];
+    int chain_count = 0;
+    int current = entity_index;
+    int guard = 0;
+    Mat4 world = mat4_identity();
+    if (!gs || !gs->scene_entities) return world;
+
+    while (guard < WORLD_CHAIN_MAX &&
+           current >= 0 && current < gs->scene_entity_count) {
+        parent_transform_component *pt;
+        chain[chain_count++] = current;
+        pt = find_parent_transform_component(gs, current);
+        if (!pt) break;
+        if (pt->parent_entity_index == current) break;
+        current = pt->parent_entity_index;
+        guard++;
+    }
+
+    while (chain_count > 0) {
+        int idx = chain[--chain_count];
+        world = mat4_mul(world, local_transform_matrix(gs, idx));
+    }
+
+    return world;
+}
+
+static Vec3 resolve_world_position(game_state *gs, int entity_index) {
+    Vec3 world = VEC3(0.0f, 0.0f, 0.0f);
+    int current = entity_index;
+    int guard = 0;
+    if (!gs || !gs->scene_entities) return world;
+
+    while (guard <= gs->scene_entity_count && current >= 0 && current < gs->scene_entity_count) {
+        transform_component *tc = find_transform_component(gs, current);
+        parent_transform_component *pt;
+        if (tc) {
+            world = vec3_add(world, tc->position);
+        }
+
+        pt = find_parent_transform_component(gs, current);
+        if (!pt) break;
+        if (pt->parent_entity_index == current) break;
+        current = pt->parent_entity_index;
+        guard++;
+    }
+    return world;
+}
+
+static int query_active_camera(game_state *gs, camera_query_result *out_camera) {
+    int i;
+    if (!gs || !out_camera || !gs->scene_entities || !gs->camera_components) return 0;
+
+    for (i = 0; i < gs->camera_component_count; i++) {
+        camera_component *cc = &gs->camera_components[i];
+        int entity_index = cc->entity_index;
+        transform_component *tc;
+
+        if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+        tc = find_transform_component(gs, entity_index);
+        if (!tc) continue;
+
+        out_camera->entity_index = entity_index;
+        out_camera->transform = tc;
+        out_camera->camera = cc;
+        return 1;
+    }
+
+    return 0;
+}
+
+static mesh_component *query_primary_mesh_component(game_state *gs) {
+    int i;
+    if (!gs || !gs->scene_entities || !gs->mesh_components) return NULL;
+    for (i = 0; i < gs->mesh_component_count; i++) {
+        mesh_component *mc = &gs->mesh_components[i];
+        if (mc->entity_index < 0 || mc->entity_index >= gs->scene_entity_count) continue;
+        if (mc->kind == MESH_KIND_SKINNED) return mc;
+    }
+    for (i = 0; i < gs->mesh_component_count; i++) {
+        mesh_component *mc = &gs->mesh_components[i];
+        if (mc->entity_index < 0 || mc->entity_index >= gs->scene_entity_count) continue;
+        return mc;
+    }
+    return NULL;
+}
+
+static animation_component *query_primary_animation_component_for_mesh(game_state *gs) {
+    int i;
+    if (!gs || !gs->scene_entities || !gs->animation_components) return NULL;
+
+    for (i = 0; i < gs->animation_component_count; i++) {
+        animation_component *ac = &gs->animation_components[i];
+        int entity_index = ac->entity_index;
+        mesh_component *mc;
+        if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+        mc = find_mesh_component(gs, entity_index);
+        if (mc && mc->kind == MESH_KIND_SKINNED) return ac;
+    }
+
+    return NULL;
+}
+
+static void sync_mesh_camera_from_components(game_state *gs) {
+    camera_query_result camera_view;
+    Vec3 world_eye;
+    Vec3 parent_offset;
+    if (!query_active_camera(gs, &camera_view)) return;
+
+    world_eye = resolve_world_position(gs, camera_view.entity_index);
+    parent_offset = vec3_sub(world_eye, camera_view.transform->position);
+    gs->mesh3d.camera_eye = world_eye;
+    gs->mesh3d.camera_target = vec3_add(camera_view.camera->target, parent_offset);
+    gs->mesh3d.camera_up = camera_view.camera->up;
+    gs->mesh3d.camera_fov_deg = camera_view.camera->fov_deg;
+    gs->mesh3d.camera_near = camera_view.camera->near_plane;
+    gs->mesh3d.camera_far = camera_view.camera->far_plane;
+}
+
+static int resolve_project_model_path(const project_data *project,
+                                      const char *key,
+                                      const char **out_path) {
+    int i;
+    if (!project || !key || !key[0] || !out_path) return 0;
+
+    for (i = 0; i < project->model_count; i++) {
+        if (strcmp(project->model_keys[i], key) == 0) {
+            *out_path = project->model_paths[i];
+            return 1;
+        }
+    }
+
+    for (i = 0; i < project->dungeon_piece_count; i++) {
+        if (strcmp(project->dungeon_piece_keys[i], key) == 0) {
+            *out_path = project->dungeon_piece_paths[i];
+            return 1;
+        }
+    }
+
+    if (strstr(key, ".glb") || strstr(key, ".gltf") || strchr(key, '/')) {
+        *out_path = key;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int resolve_project_animation_path(const project_data *project,
+                                          const char *key,
+                                          const char **out_path) {
+    int i;
+    if (!project || !key || !key[0] || !out_path) return 0;
+
+    for (i = 0; i < project->animation_count; i++) {
+        if (strcmp(project->animation_keys[i], key) == 0) {
+            *out_path = project->animation_paths[i];
+            return 1;
+        }
+    }
+
+    if (strstr(key, ".glb") || strstr(key, ".gltf") || strchr(key, '/')) {
+        *out_path = key;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int register_scene_model_asset(game_state *gs,
+                                      const char *key,
+                                      const char *path,
+                                      const char *animation_path) {
+    int i;
+    scene_model_asset *asset;
+    if (!gs || !path || !path[0]) return -1;
+
+    for (i = 0; i < gs->scene_model_asset_count; i++) {
+        asset = &gs->scene_model_assets[i];
+        if (strcmp(asset->path, path) == 0) {
+            if (animation_path && animation_path[0] && !asset->has_animation_path) {
+                snprintf(asset->animation_path, sizeof(asset->animation_path), "%s", animation_path);
+                asset->has_animation_path = 1;
+            }
+            return i;
+        }
+    }
+
+    if (gs->scene_model_asset_count >= SCENE_MODEL_ASSET_MAX) {
+        fprintf(stderr, "Warning: scene model asset limit (%d) reached\n", SCENE_MODEL_ASSET_MAX);
+        return -1;
+    }
+
+    i = gs->scene_model_asset_count++;
+    asset = &gs->scene_model_assets[i];
+    memset(asset, 0, sizeof(*asset));
+    if (key && key[0]) {
+        snprintf(asset->key, sizeof(asset->key), "%s", key);
+    } else {
+        snprintf(asset->key, sizeof(asset->key), "asset_%d", i);
+    }
+    snprintf(asset->path, sizeof(asset->path), "%s", path);
+    if (animation_path && animation_path[0]) {
+        snprintf(asset->animation_path, sizeof(asset->animation_path), "%s", animation_path);
+        asset->has_animation_path = 1;
+    }
+    return i;
+}
+
+static int asset_key_is_floor(const char *asset_key) {
+    return str_icontains(asset_key, "floor");
+}
+
+static rect collider_rect_from_half_extents(const float half_extents[3], float fallback_half_extent) {
+    float hx = fallback_half_extent;
+    float hz = fallback_half_extent;
+    rect r;
+    if (half_extents) {
+        if (half_extents[0] > 0.0f) hx = half_extents[0];
+        if (half_extents[2] > 0.0f) hz = half_extents[2];
+        else if (half_extents[1] > 0.0f) hz = half_extents[1];
+    }
+    r.x = 0.0f;
+    r.y = 0.0f;
+    r.w = hx * 2.0f;
+    r.h = hz * 2.0f;
+    return r;
+}
+
+static void *reserve_array(arena *a, void *ptr, int *capacity, int needed, size_t elem_size, const char *tag) {
+    int old_capacity;
+    int new_capacity;
+    void *new_ptr;
+    size_t copy_count;
+    if (!a || !capacity) return ptr;
+    old_capacity = *capacity;
+    if (ptr && old_capacity >= needed) return ptr;
+
+    new_capacity = old_capacity > 0 ? old_capacity : SCENE_MIN_CAPACITY;
+    while (new_capacity < needed) new_capacity *= 2;
+
+    new_ptr = arena_alloc(a, (uint32_t)(new_capacity * (int)elem_size), 16, tag);
+    if (!new_ptr) {
+        fprintf(stderr, "Warning: arena alloc failed for %s (%d items)\n", tag, new_capacity);
+        return ptr;
+    }
+
+    if (ptr && old_capacity > 0) {
+        copy_count = (size_t)old_capacity * elem_size;
+        memcpy(new_ptr, ptr, copy_count);
+    }
+    *capacity = new_capacity;
+    return new_ptr;
+}
+
+static int ensure_scene_storage(game_state *gs, int needed_entities) {
+    if (!gs || !gs->gameplay) return 0;
+    if (needed_entities < SCENE_MIN_CAPACITY) needed_entities = SCENE_MIN_CAPACITY;
+
+    gs->scene_entities = (entity *)reserve_array(gs->gameplay, gs->scene_entities,
+                                                 &gs->scene_entity_capacity, needed_entities,
+                                                 sizeof(entity), "entities");
+    gs->parent_components = (parent_component *)reserve_array(gs->gameplay, gs->parent_components,
+                                                              &gs->parent_component_capacity, needed_entities,
+                                                              sizeof(parent_component), "parent_components");
+    gs->parent_transform_components = (parent_transform_component *)reserve_array(
+        gs->gameplay, gs->parent_transform_components,
+        &gs->parent_transform_component_capacity, needed_entities,
+        sizeof(parent_transform_component), "parent_transform_components");
+    gs->parent_rotation_components = (parent_rotation_component *)reserve_array(
+        gs->gameplay, gs->parent_rotation_components,
+        &gs->parent_rotation_component_capacity, needed_entities,
+        sizeof(parent_rotation_component), "parent_rotation_components");
+    gs->transform_components = (transform_component *)reserve_array(gs->gameplay, gs->transform_components,
+                                                                    &gs->transform_component_capacity, needed_entities,
+                                                                    sizeof(transform_component), "transform_components");
+    gs->rotation_components = (rotation_component *)reserve_array(gs->gameplay, gs->rotation_components,
+                                                                  &gs->rotation_component_capacity, needed_entities,
+                                                                  sizeof(rotation_component), "rotation_components");
+    gs->scale_components = (scale_component *)reserve_array(gs->gameplay, gs->scale_components,
+                                                            &gs->scale_component_capacity, needed_entities,
+                                                            sizeof(scale_component), "scale_components");
+    gs->velocity_components = (velocity_component *)reserve_array(gs->gameplay, gs->velocity_components,
+                                                                  &gs->velocity_component_capacity, needed_entities,
+                                                                  sizeof(velocity_component), "velocity_components");
+    gs->health_components = (health_component *)reserve_array(gs->gameplay, gs->health_components,
+                                                              &gs->health_component_capacity, needed_entities,
+                                                              sizeof(health_component), "health_components");
+    gs->collider_components = (collider_component *)reserve_array(gs->gameplay, gs->collider_components,
+                                                                  &gs->collider_component_capacity, needed_entities,
+                                                                  sizeof(collider_component), "collider_components");
+    gs->mesh_components = (mesh_component *)reserve_array(gs->gameplay, gs->mesh_components,
+                                                          &gs->mesh_component_capacity, needed_entities,
+                                                          sizeof(mesh_component), "mesh_components");
+    gs->animation_components = (animation_component *)reserve_array(gs->gameplay, gs->animation_components,
+                                                                    &gs->animation_component_capacity, needed_entities,
+                                                                    sizeof(animation_component), "animation_components");
+    gs->camera_components = (camera_component *)reserve_array(gs->gameplay, gs->camera_components,
+                                                              &gs->camera_component_capacity, needed_entities,
+                                                              sizeof(camera_component), "camera_components");
+
+    if (!gs->scene_entities || !gs->transform_components || !gs->mesh_components || !gs->camera_components) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static void clear_scene_storage(game_state *gs) {
+    if (!gs) return;
+    if (gs->scene_entities && gs->scene_entity_capacity > 0) {
+        memset(gs->scene_entities, 0, (size_t)gs->scene_entity_capacity * sizeof(entity));
+    }
+    if (gs->parent_components && gs->parent_component_capacity > 0) {
+        memset(gs->parent_components, 0, (size_t)gs->parent_component_capacity * sizeof(parent_component));
+    }
+    if (gs->parent_transform_components && gs->parent_transform_component_capacity > 0) {
+        memset(gs->parent_transform_components, 0,
+               (size_t)gs->parent_transform_component_capacity * sizeof(parent_transform_component));
+    }
+    if (gs->parent_rotation_components && gs->parent_rotation_component_capacity > 0) {
+        memset(gs->parent_rotation_components, 0,
+               (size_t)gs->parent_rotation_component_capacity * sizeof(parent_rotation_component));
+    }
+    if (gs->transform_components && gs->transform_component_capacity > 0) {
+        memset(gs->transform_components, 0, (size_t)gs->transform_component_capacity * sizeof(transform_component));
+    }
+    if (gs->rotation_components && gs->rotation_component_capacity > 0) {
+        memset(gs->rotation_components, 0, (size_t)gs->rotation_component_capacity * sizeof(rotation_component));
+    }
+    if (gs->scale_components && gs->scale_component_capacity > 0) {
+        memset(gs->scale_components, 0, (size_t)gs->scale_component_capacity * sizeof(scale_component));
+    }
+    if (gs->velocity_components && gs->velocity_component_capacity > 0) {
+        memset(gs->velocity_components, 0, (size_t)gs->velocity_component_capacity * sizeof(velocity_component));
+    }
+    if (gs->health_components && gs->health_component_capacity > 0) {
+        memset(gs->health_components, 0, (size_t)gs->health_component_capacity * sizeof(health_component));
+    }
+    if (gs->collider_components && gs->collider_component_capacity > 0) {
+        memset(gs->collider_components, 0, (size_t)gs->collider_component_capacity * sizeof(collider_component));
+    }
+    if (gs->mesh_components && gs->mesh_component_capacity > 0) {
+        memset(gs->mesh_components, 0, (size_t)gs->mesh_component_capacity * sizeof(mesh_component));
+    }
+    if (gs->animation_components && gs->animation_component_capacity > 0) {
+        memset(gs->animation_components, 0,
+               (size_t)gs->animation_component_capacity * sizeof(animation_component));
+    }
+    if (gs->camera_components && gs->camera_component_capacity > 0) {
+        memset(gs->camera_components, 0, (size_t)gs->camera_component_capacity * sizeof(camera_component));
+    }
+
+    gs->scene_entity_count = 0;
+    gs->parent_component_count = 0;
+    gs->parent_transform_component_count = 0;
+    gs->parent_rotation_component_count = 0;
+    gs->transform_component_count = 0;
+    gs->rotation_component_count = 0;
+    gs->scale_component_count = 0;
+    gs->velocity_component_count = 0;
+    gs->health_component_count = 0;
+    gs->collider_component_count = 0;
+    gs->mesh_component_count = 0;
+    gs->animation_component_count = 0;
+    gs->camera_component_count = 0;
+    gs->scene_model_asset_count = 0;
+    gs->scene_primary_skinned_entity = -1;
+    gs->scene_camera_entity = -1;
+}
+
+static void push_transform_component(game_state *gs, int entity_index, Vec3 position) {
+    int i;
+    if (!gs || !gs->transform_components) return;
+    if (gs->transform_component_count >= gs->transform_component_capacity) return;
+    i = gs->transform_component_count++;
+    gs->transform_components[i].entity_index = entity_index;
+    gs->transform_components[i].position = position;
+}
+
+static void push_rotation_component(game_state *gs, int entity_index, float rotation_y_deg) {
+    int i;
+    if (!gs || !gs->rotation_components) return;
+    if (gs->rotation_component_count >= gs->rotation_component_capacity) return;
+    i = gs->rotation_component_count++;
+    gs->rotation_components[i].entity_index = entity_index;
+    gs->rotation_components[i].rotation_y_deg = rotation_y_deg;
+}
+
+static void push_scale_component(game_state *gs, int entity_index, Vec3 scale) {
+    int i;
+    if (!gs || !gs->scale_components) return;
+    if (gs->scale_component_count >= gs->scale_component_capacity) return;
+    i = gs->scale_component_count++;
+    gs->scale_components[i].entity_index = entity_index;
+    gs->scale_components[i].scale = normalize_scale(scale);
+}
+
+static void push_parent_transform_component(game_state *gs, int entity_index, int parent_entity_index) {
+    int i;
+    if (!gs || !gs->parent_transform_components) return;
+    if (gs->parent_transform_component_count >= gs->parent_transform_component_capacity) return;
+    i = gs->parent_transform_component_count++;
+    gs->parent_transform_components[i].entity_index = entity_index;
+    gs->parent_transform_components[i].parent_entity_index = parent_entity_index;
+}
+
+static void push_parent_rotation_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->parent_rotation_components) return;
+    if (gs->parent_rotation_component_count >= gs->parent_rotation_component_capacity) return;
+    i = gs->parent_rotation_component_count++;
+    gs->parent_rotation_components[i].entity_index = entity_index;
+}
+
+static void push_velocity_component(game_state *gs, int entity_index, vec2 velocity) {
+    int i;
+    if (!gs || !gs->velocity_components) return;
+    if (gs->velocity_component_count >= gs->velocity_component_capacity) return;
+    i = gs->velocity_component_count++;
+    gs->velocity_components[i].entity_index = entity_index;
+    gs->velocity_components[i].velocity = velocity;
+}
+
+static void push_health_component(game_state *gs, int entity_index, float health, float max_health) {
+    int i;
+    if (!gs || !gs->health_components) return;
+    if (gs->health_component_count >= gs->health_component_capacity) return;
+    i = gs->health_component_count++;
+    gs->health_components[i].entity_index = entity_index;
+    gs->health_components[i].health = health;
+    gs->health_components[i].max_health = max_health;
+}
+
+static void push_collider_component(game_state *gs, int entity_index, rect box) {
+    int i;
+    if (!gs || !gs->collider_components) return;
+    if (gs->collider_component_count >= gs->collider_component_capacity) return;
+    i = gs->collider_component_count++;
+    gs->collider_components[i].entity_index = entity_index;
+    gs->collider_components[i].rect = box;
+    gs->collider_components[i].type = COLLIDER_BOX;
+}
+
+static void push_mesh_component(game_state *gs, int entity_index, mesh_kind kind, int asset_index) {
+    int i;
+    if (!gs || !gs->mesh_components) return;
+    if (gs->mesh_component_count >= gs->mesh_component_capacity) return;
+    i = gs->mesh_component_count++;
+    gs->mesh_components[i].entity_index = entity_index;
+    gs->mesh_components[i].visible = 1;
+    gs->mesh_components[i].kind = kind;
+    gs->mesh_components[i].model_asset_index = asset_index;
+}
+
+static void push_animation_component(game_state *gs, int entity_index, int active_clip) {
+    int i;
+    if (!gs || !gs->animation_components) return;
+    if (gs->animation_component_count >= gs->animation_component_capacity) return;
+    i = gs->animation_component_count++;
+    gs->animation_components[i].entity_index = entity_index;
+    gs->animation_components[i].playing = 1;
+    gs->animation_components[i].active_clip = active_clip;
+    gs->animation_components[i].anim_time = 0.0f;
+    gs->animation_components[i].speed = 1.0f;
+}
+
+static void push_camera_component(game_state *gs, int entity_index, float fov, float near_plane, float far_plane,
+                                  Vec3 target, Vec3 up) {
+    int i;
+    if (!gs || !gs->camera_components) return;
+    if (gs->camera_component_count >= gs->camera_component_capacity) return;
+    i = gs->camera_component_count++;
+    gs->camera_components[i].entity_index = entity_index;
+    gs->camera_components[i].fov_deg = fov;
+    gs->camera_components[i].near_plane = near_plane;
+    gs->camera_components[i].far_plane = far_plane;
+    gs->camera_components[i].target = target;
+    gs->camera_components[i].up = up;
+}
+
+static mesh_kind mesh_kind_from_string(const char *kind) {
+    if (!kind || !kind[0]) return MESH_KIND_STATIC;
+    if (str_ieq(kind, "skinned")) return MESH_KIND_SKINNED;
+    if (str_ieq(kind, "floor")) return MESH_KIND_FLOOR;
+    return MESH_KIND_STATIC;
+}
+
+static void build_fallback_scene(game_state *gs) {
+    const char *model_path = NULL;
+    const char *anim_path = NULL;
+    int player_asset = -1;
+    int entity_index = 0;
+    int camera_index;
+
+    if (!gs) return;
+
+    resolve_project_model_path(&gs->project, "knight", &model_path);
+    if (!model_path) model_path = gs->default_model_path;
+    resolve_project_animation_path(&gs->project, "general", &anim_path);
+    if (!anim_path) anim_path = gs->default_animation_path;
+
+    player_asset = register_scene_model_asset(gs, "player", model_path, anim_path);
+
+    push_transform_component(gs, entity_index, VEC3(0.0f, 0.0f, 0.0f));
+    push_velocity_component(gs, entity_index, (vec2){0.0f, 0.0f});
+    push_health_component(gs, entity_index, 100.0f, 100.0f);
+    push_collider_component(gs, entity_index, (rect){0.0f, 0.0f, 0.8f, 0.8f});
+    push_mesh_component(gs, entity_index, MESH_KIND_SKINNED, player_asset);
+    push_animation_component(gs, entity_index, 0);
+    gs->scene_primary_skinned_entity = entity_index;
+    entity_index++;
+
+    camera_index = entity_index;
+    push_transform_component(gs, camera_index, VEC3(0.0f, 1.0f, 3.0f));
+    push_camera_component(gs, camera_index, 60.0f, 0.1f, 100.0f,
+                          VEC3(0.0f, 0.5f, 0.0f), VEC3(0.0f, 1.0f, 0.0f));
+    gs->scene_camera_entity = camera_index;
+    entity_index++;
+
+    gs->scene_entity_count = entity_index;
+}
+
+static void build_scene_from_project(game_state *gs) {
+    const project_data *project;
+    int i;
+    if (!gs) return;
+
+    project = &gs->project;
+    if (project->scene_entity_count <= 0) {
+        build_fallback_scene(gs);
+        return;
+    }
+
+    gs->scene_entity_count = project->scene_entity_count;
+    if (gs->scene_entity_count > gs->scene_entity_capacity) {
+        gs->scene_entity_count = gs->scene_entity_capacity;
+    }
+
+    for (i = 0; i < gs->scene_entity_count; i++) {
+        const char *model_path = NULL;
+        const char *anim_path = NULL;
+        const project_scene_component *comp = &project->scene_components[i];
+        int model_asset = -1;
+        mesh_kind kind = MESH_KIND_STATIC;
+
+        if (comp->has_transform) {
+            push_transform_component(gs, i,
+                                     VEC3(comp->transform_position[0],
+                                          comp->transform_position[1],
+                                          comp->transform_position[2]));
+        }
+
+        if (comp->has_rotation) {
+            push_rotation_component(gs, i, comp->rotation_y);
+        }
+
+        if (comp->has_scale) {
+            push_scale_component(gs, i,
+                                 VEC3(comp->scale[0],
+                                      comp->scale[1],
+                                      comp->scale[2]));
+        }
+
+        if (comp->has_parent_transform) {
+            push_parent_transform_component(gs, i, comp->parent_transform_entity);
+        }
+
+        if (comp->has_parent_rotation) {
+            push_parent_rotation_component(gs, i);
+        }
+
+        if (comp->has_velocity) {
+            push_velocity_component(gs, i, (vec2){comp->velocity[0], comp->velocity[1]});
+        }
+
+        if (comp->has_health) {
+            push_health_component(gs, i, comp->health_current, comp->health_max);
+        }
+
+        if (comp->has_collider) {
+            rect collider_box = collider_rect_from_half_extents(comp->collider_half_extents, 0.5f);
+            push_collider_component(gs, i, collider_box);
+        }
+
+        if (comp->has_mesh) {
+            if (resolve_project_model_path(project, comp->mesh_model, &model_path)) {
+                if (comp->has_animation && comp->animation_asset[0]) {
+                    resolve_project_animation_path(project, comp->animation_asset, &anim_path);
+                }
+                model_asset = register_scene_model_asset(gs, comp->mesh_model, model_path, anim_path);
+                kind = mesh_kind_from_string(comp->mesh_kind);
+                if (!comp->mesh_kind[0] && asset_key_is_floor(comp->mesh_model)) {
+                    kind = MESH_KIND_FLOOR;
+                }
+                if (model_asset >= 0) {
+                    push_mesh_component(gs, i, kind, model_asset);
+                    if (gs->mesh_component_count > 0) {
+                        gs->mesh_components[gs->mesh_component_count - 1].visible = comp->mesh_visible;
+                    }
+                    if (kind == MESH_KIND_SKINNED && gs->scene_primary_skinned_entity < 0) {
+                        gs->scene_primary_skinned_entity = i;
+                    }
+                }
+            }
+        }
+
+        if (comp->has_animation) {
+            push_animation_component(gs, i, comp->animation_clip);
+            if (gs->animation_component_count > 0) {
+                animation_component *ac = &gs->animation_components[gs->animation_component_count - 1];
+                ac->playing = comp->animation_playing;
+                ac->anim_time = comp->animation_time;
+                if (comp->animation_speed > 0.0f) ac->speed = comp->animation_speed;
+            }
+            if (kind == MESH_KIND_SKINNED && gs->scene_primary_skinned_entity < 0) {
+                gs->scene_primary_skinned_entity = i;
+            }
+        }
+
+        if (comp->has_camera) {
+            push_camera_component(gs, i,
+                                  comp->camera_fov,
+                                  comp->camera_near,
+                                  comp->camera_far,
+                                  VEC3(comp->camera_target[0], comp->camera_target[1], comp->camera_target[2]),
+                                  VEC3(comp->camera_up[0], comp->camera_up[1], comp->camera_up[2]));
+            gs->scene_camera_entity = i;
+        }
+    }
+
+    if (gs->camera_component_count <= 0 && gs->scene_entity_count < gs->scene_entity_capacity) {
+        int camera_index = gs->scene_entity_count++;
+        float cam_fov = gs->mesh3d.camera_fov_deg > 0.0f ? gs->mesh3d.camera_fov_deg : 60.0f;
+        float cam_near = gs->mesh3d.camera_near > 0.0f ? gs->mesh3d.camera_near : 0.1f;
+        float cam_far = gs->mesh3d.camera_far > cam_near ? gs->mesh3d.camera_far : 100.0f;
+        Vec3 cam_eye = gs->mesh3d.camera_set_by_project ? gs->mesh3d.camera_eye : VEC3(0.0f, 1.0f, 3.0f);
+        Vec3 cam_target = gs->mesh3d.camera_set_by_project ? gs->mesh3d.camera_target : VEC3(0.0f, 0.5f, 0.0f);
+        Vec3 cam_up = gs->mesh3d.camera_set_by_project ? gs->mesh3d.camera_up : VEC3(0.0f, 1.0f, 0.0f);
+        push_transform_component(gs, camera_index, cam_eye);
+        push_camera_component(gs, camera_index, cam_fov, cam_near, cam_far, cam_target, cam_up);
+        gs->scene_camera_entity = camera_index;
+    }
+}
+
+static int ensure_mesh3d_pose_buffers(game_state *gs, uint32_t joint_count) {
+    if (!gs || !gs->root_arena) return 0;
+    if (joint_count == 0) return 1;
+
+    if (gs->mesh3d.skin_mats &&
+        gs->mesh3d.skeleton.joint_count == joint_count &&
+        gs->mesh3d.pose_trans && gs->mesh3d.pose_rot &&
+        gs->mesh3d.pose_scale && gs->mesh3d.world_mats) {
+        return 1;
+    }
+
+    gs->mesh3d.pose_trans = (Vec3 *)arena_alloc(gs->root_arena, joint_count * sizeof(Vec3), 16, "pose_trans");
+    gs->mesh3d.pose_rot = (Quat *)arena_alloc(gs->root_arena, joint_count * sizeof(Quat), 16, "pose_rot");
+    gs->mesh3d.pose_scale = (Vec3 *)arena_alloc(gs->root_arena, joint_count * sizeof(Vec3), 16, "pose_scale");
+    gs->mesh3d.world_mats = (Mat4 *)arena_alloc(gs->root_arena, joint_count * sizeof(Mat4), 16, "world_mats");
+    gs->mesh3d.skin_mats = (Mat4 *)arena_alloc(gs->root_arena, joint_count * sizeof(Mat4), 16, "skin_mats");
+    return gs->mesh3d.pose_trans && gs->mesh3d.pose_rot &&
+           gs->mesh3d.pose_scale && gs->mesh3d.world_mats && gs->mesh3d.skin_mats;
+}
+
+static void load_scene_model_assets(game_state *gs) {
+    int i;
+    int needs_load = 0;
+    arena *model_arena;
+    if (!gs || !gs->gpu_device || !gs->root_arena) return;
+    for (i = 0; i < gs->scene_model_asset_count; i++) {
+        if (!gs->scene_model_assets[i].loaded) {
+            needs_load = 1;
+            break;
+        }
+    }
+    if (!needs_load) return;
+
+    model_arena = arena_alloc_subarena(gs->root_arena, MODEL_ARENA_BYTES, 16, "scene_models");
+    if (!model_arena) {
+        fprintf(stderr, "Warning: failed to allocate scene model arena\n");
+        return;
+    }
+
+    gltf_set_gpu_device(gs->gpu_device);
+
+    for (i = 0; i < gs->scene_model_asset_count; i++) {
+        scene_model_asset *asset = &gs->scene_model_assets[i];
+        if (asset->loaded) continue;
+
+        asset->model = load_glb(asset->path, model_arena);
+        asset->loaded = 1;
+        asset->has_skeleton = asset->model.skeleton.joint_count > 0 ? 1 : 0;
+
+        if (asset->has_animation_path && asset->animation_path[0] && asset->model.clip_count == 0) {
+            load_animations_glb(asset->animation_path, &asset->model, model_arena);
+        }
+
+        if (asset->model.mesh.primitive_count == 0) {
+            fprintf(stderr, "Warning: model '%s' has no primitives\n", asset->path);
+        }
+    }
+}
+
+static void sync_primary_mesh3d_asset(game_state *gs) {
+    mesh_component *primary = query_primary_mesh_component(gs);
+    scene_model_asset *asset = NULL;
+    Mat4 entity_world;
+    if (!gs || !primary) {
+        if (gs) gs->mesh3d.visible = 0;
+        return;
+    }
+
+    gs->scene_primary_skinned_entity = (primary->kind == MESH_KIND_SKINNED) ? primary->entity_index : -1;
+    asset = find_scene_model_asset(gs, primary->model_asset_index);
+    if (!asset || !asset->loaded || asset->model.mesh.primitive_count == 0) {
+        gs->mesh3d.visible = 0;
+        return;
+    }
+
+    entity_world = resolve_world_transform(gs, primary->entity_index);
+    gs->mesh3d.model_transform = mat4_mul(entity_world, asset->model.armature_transform);
+    gs->mesh3d.visible = primary->visible ? 1 : 0;
+
+    if (primary->kind != MESH_KIND_SKINNED || asset->model.skeleton.joint_count == 0) {
+        gs->mesh3d.primitive_count = 0;
+        return;
+    }
+
+    if (!ensure_mesh3d_pose_buffers(gs, asset->model.skeleton.joint_count)) {
+        gs->mesh3d.visible = 0;
+        return;
+    }
+
+    gs->mesh3d.skeleton = asset->model.skeleton;
+    gs->mesh3d.clips = asset->model.clips;
+    gs->mesh3d.clip_count = asset->model.clip_count;
+    gs->mesh3d.primitive_count = asset->model.mesh.primitive_count;
+    if (gs->mesh3d.active_clip >= gs->mesh3d.clip_count) gs->mesh3d.active_clip = 0;
+    gs->loaded_model = asset->model;
+}
+
 void update_input(game_state* gs) {
     int attack_pressed;
     const float camera_speed = 300.0f;
     const float zoom_speed = 2.0f;
+    camera_query_result active_camera;
+    int has_active_camera = 0;
     if (!gs) return;
+    has_active_camera = query_active_camera(gs, &active_camera);
 
     attack_pressed = (gs->input.input_mask & INPUT_A);
     if (attack_pressed) {
@@ -34,165 +904,102 @@ void update_input(game_state* gs) {
     }
 
     if (gs->input.input_mask & INPUT_X) {
-        gs->camera.position.x += gs->input.horizontal * camera_speed * gs->dt;
-        gs->camera.position.y += gs->input.vertical * camera_speed * gs->dt;
+        if (has_active_camera) {
+            active_camera.transform->position.x += gs->input.horizontal * camera_speed * gs->dt;
+            active_camera.transform->position.y += gs->input.vertical * camera_speed * gs->dt;
+        } else {
+            gs->camera.position.x += gs->input.horizontal * camera_speed * gs->dt;
+            gs->camera.position.y += gs->input.vertical * camera_speed * gs->dt;
+        }
     }
     if (gs->input.input_mask & INPUT_Y) {
         float zoom_delta = gs->input.vertical * zoom_speed * gs->dt;
-        gs->camera.zoom = fmaxf(0.1f, fminf(5.0f, gs->camera.zoom + zoom_delta));
+        if (has_active_camera) {
+            active_camera.camera->fov_deg = fmaxf(20.0f, fminf(110.0f, active_camera.camera->fov_deg + zoom_delta * 30.0f));
+        } else {
+            gs->camera.zoom = fmaxf(0.1f, fminf(5.0f, gs->camera.zoom + zoom_delta));
+        }
     }
 }
 
 EXPORT void init_engine(game_state *gs) {
-    /* ECS storage for editor/runtime scene graph (survives hot reload via game_state). */
-    if (gs->scene_entity_capacity <= 0)
-        gs->scene_entity_capacity = 64;
-    if (!gs->scene_entities) {
-        gs->scene_entities = (entity *)arena_alloc(gs->gameplay,
-            (uint32_t)(gs->scene_entity_capacity * sizeof(entity)), 16, "entities");
-        gs->scene_entity_count = 0;
-    }
+    int target_entities;
+    if (!gs) return;
 
-    if (gs->parent_component_capacity <= 0)
-        gs->parent_component_capacity = gs->scene_entity_capacity;
-    if (!gs->parent_components) {
-        gs->parent_components = (parent_component *)arena_alloc(gs->gameplay,
-            (uint32_t)(gs->parent_component_capacity * sizeof(parent_component)),
-            16, "parent_components");
-        gs->parent_component_count = 0;
-    }
-
-    if (gs->parent_transform_component_capacity <= 0)
-        gs->parent_transform_component_capacity = gs->scene_entity_capacity;
-    if (!gs->parent_transform_components) {
-        gs->parent_transform_components = (parent_transform_component *)arena_alloc(gs->gameplay,
-            (uint32_t)(gs->parent_transform_component_capacity * sizeof(parent_transform_component)),
-            16, "parent_transform_components");
-        gs->parent_transform_component_count = 0;
-    }
-
-    if (gs->parent_rotation_component_capacity <= 0)
-        gs->parent_rotation_component_capacity = gs->scene_entity_capacity;
-    if (!gs->parent_rotation_components) {
-        gs->parent_rotation_components = (parent_rotation_component *)arena_alloc(gs->gameplay,
-            (uint32_t)(gs->parent_rotation_component_capacity * sizeof(parent_rotation_component)),
-            16, "parent_rotation_components");
-        gs->parent_rotation_component_count = 0;
-    }
-
-    if (gs->mesh_component_capacity <= 0)
-        gs->mesh_component_capacity = gs->scene_entity_capacity;
-    if (!gs->mesh_components) {
-        gs->mesh_components = (mesh_component *)arena_alloc(gs->gameplay,
-            (uint32_t)(gs->mesh_component_capacity * sizeof(mesh_component)),
-            16, "mesh_components");
-        gs->mesh_component_count = 0;
-    }
-
-    if (gs->scene_entities && gs->scene_entity_count != 1) {
-        memset(gs->scene_entities, 0, (size_t)gs->scene_entity_capacity * sizeof(entity));
-        gs->scene_entities[0].type = PLAYER;
-        gs->scene_entities[0].health = 100.0f;
-        gs->scene_entities[0].pos.x = 0.0f;
-        gs->scene_entities[0].pos.y = 0.0f;
-        gs->scene_entity_count = 1;
-        gs->parent_component_count = 0;
-        gs->parent_transform_component_count = 0;
-        gs->parent_rotation_component_count = 0;
-    }
-
-    if (gs->mesh_components && gs->mesh_component_capacity > 0) {
-        if (gs->mesh_component_count <= 0 ||
-            gs->mesh_components[0].entity_index != 0) {
-            gs->mesh_components[0].entity_index = 0;
-            gs->mesh_components[0].visible = 1;
-            gs->mesh_component_count = 1;
+    target_entities = 8;
+    if (gs->project_loaded) {
+        if (gs->project.scene_entity_count > 0) {
+            target_entities = gs->project.scene_entity_count + 1;
+        } else {
+            target_entities = gs->project.entity_count + gs->project.piece_count + 1;
         }
+        if (target_entities < 8) target_entities = 8;
     }
 
-    /* Load 3D model assets.
-       Only runs on first init when no model is loaded yet. */
-    if (gs->loaded_model.mesh.primitive_count == 0 && gs->gpu_device) {
-        uint32_t jc;
-        arena *model_arena = arena_alloc_subarena(gs->root_arena, 2 * 1024 * 1024, 16, "gltf_models");
-gltf_set_gpu_device(gs->gpu_device);
+    if (!ensure_scene_storage(gs, target_entities)) return;
+    clear_scene_storage(gs);
 
-            const char *model_path = gs->default_model_path ?
-                gs->default_model_path : "assets/models/Knight.glb";
-            const char *anim_path = gs->default_animation_path ?
-                gs->default_animation_path : "assets/animations/Rig_Medium_General.glb";
-
-            gs->loaded_model = load_glb(model_path, model_arena);
-
-            if (gs->loaded_model.mesh.primitive_count > 0) {
-                if (gs->loaded_model.clip_count == 0) {
-                    load_animations_glb(anim_path, &gs->loaded_model, model_arena);
-                }
-
-                /* Populate gs->mesh3d so engine can drive animation, externals can render */
-                jc = gs->loaded_model.skeleton.joint_count;
-                gs->mesh3d.skeleton        = gs->loaded_model.skeleton;
-                gs->mesh3d.clips           = gs->loaded_model.clips;
-                gs->mesh3d.clip_count      = gs->loaded_model.clip_count;
-                gs->mesh3d.primitive_count  = gs->loaded_model.mesh.primitive_count;
-
-                gs->mesh3d.pose_trans  = (Vec3*)arena_alloc(model_arena, jc * sizeof(Vec3), 16, "pose_trans");
-                gs->mesh3d.pose_rot    = (Quat*)arena_alloc(model_arena, jc * sizeof(Quat), 16, "pose_rot");
-                gs->mesh3d.pose_scale  = (Vec3*)arena_alloc(model_arena, jc * sizeof(Vec3), 16, "pose_scale");
-                gs->mesh3d.world_mats  = (Mat4*)arena_alloc(model_arena, jc * sizeof(Mat4), 16, "world_mats");
-                gs->mesh3d.skin_mats   = (Mat4*)arena_alloc(model_arena, jc * sizeof(Mat4), 16, "skin_mats");
-
-                gs->mesh3d.visible = 1;
-                gs->mesh3d.active_clip = gs->loaded_model.clip_count > 6 ? 6 : 0;
-                gs->mesh3d.anim_time = 0.0f;
-                if (!gs->mesh3d.camera_set_by_project) {
-                    gs->mesh3d.camera_eye    = VEC3(0.0f, 1.0f, 3.0f);
-                    gs->mesh3d.camera_target = VEC3(0.0f, 0.5f, 0.0f);
-                    gs->mesh3d.camera_up     = VEC3(0.0f, 1.0f, 0.0f);
-                }
-                gs->mesh3d.model_transform = gs->loaded_model.armature_transform;
-            } else {
-                fprintf(stderr, "Warning: Knight.glb loaded but has no primitives\n");
-            }
+    if (gs->project_loaded) {
+        build_scene_from_project(gs);
+    } else {
+        build_fallback_scene(gs);
     }
 
-    /* Compute initial bind-pose skinning matrices so the mesh renders correctly
-       even before the first animation frame */
+    if (gs->mesh3d.camera_fov_deg <= 0.0f) gs->mesh3d.camera_fov_deg = 60.0f;
+    if (gs->mesh3d.camera_near <= 0.0f) gs->mesh3d.camera_near = 0.1f;
+    if (gs->mesh3d.camera_far <= gs->mesh3d.camera_near) gs->mesh3d.camera_far = 100.0f;
+
+    load_scene_model_assets(gs);
+    sync_primary_mesh3d_asset(gs);
+    sync_mesh_camera_from_components(gs);
+
     if (gs->mesh3d.skeleton.joint_count > 0 && gs->mesh3d.skin_mats) {
         init_pose_from_bind(&gs->mesh3d.skeleton,
                             gs->mesh3d.pose_trans, gs->mesh3d.pose_rot, gs->mesh3d.pose_scale);
         compute_world_transforms(&gs->mesh3d.skeleton,
-                                  gs->mesh3d.pose_trans, gs->mesh3d.pose_rot, gs->mesh3d.pose_scale,
-                                  gs->mesh3d.world_mats);
+                                 gs->mesh3d.pose_trans, gs->mesh3d.pose_rot, gs->mesh3d.pose_scale,
+                                 gs->mesh3d.world_mats);
         compute_skinning_matrices(&gs->mesh3d.skeleton, gs->mesh3d.world_mats, gs->mesh3d.skin_mats);
     }
 }
 
-static void update_mesh3d(game_state *gs) {
+static void update_mesh3d_from_animation_component(game_state *gs, animation_component *ac) {
     mesh3d_state *m = &gs->mesh3d;
+    if (!ac || !ac->playing) return;
     if (!m->visible || m->skeleton.joint_count == 0 || !m->skin_mats) return;
 
     if (m->clip_count > 0 && m->clips) {
-        uint32_t ci = m->active_clip < m->clip_count ? m->active_clip : 0;
-        AnimClip *clip = &m->clips[ci];
+        uint32_t ci;
+        AnimClip *clip;
 
-        m->anim_time += gs->dt;
-        if (clip->duration > 0.0f && m->anim_time > clip->duration)
-            m->anim_time -= clip->duration;
+        if (ac->speed <= 0.0f) ac->speed = 1.0f;
+        if (ac->active_clip < 0) ac->active_clip = 0;
+
+        ci = (uint32_t)ac->active_clip;
+        if (ci >= m->clip_count) ci = 0;
+        ac->active_clip = (int)ci;
+        clip = &m->clips[ci];
+
+        ac->anim_time += gs->dt * ac->speed;
+        if (clip->duration > 0.0f) {
+            while (ac->anim_time > clip->duration) ac->anim_time -= clip->duration;
+            while (ac->anim_time < 0.0f) ac->anim_time += clip->duration;
+        }
+        m->active_clip = ci;
+        m->anim_time = ac->anim_time;
 
         init_pose_from_bind(&m->skeleton, m->pose_trans, m->pose_rot, m->pose_scale);
-        sample_clip(clip, m->anim_time, m->pose_trans, m->pose_rot, m->pose_scale,
+        sample_clip(clip, ac->anim_time, m->pose_trans, m->pose_rot, m->pose_scale,
                     m->skeleton.joint_count);
         compute_world_transforms(&m->skeleton, m->pose_trans, m->pose_rot, m->pose_scale,
-                                  m->world_mats);
+                                 m->world_mats);
         compute_skinning_matrices(&m->skeleton, m->world_mats, m->skin_mats);
     }
 }
 
 EXPORT void update_engine(game_state *gs) {
     int i;
-    int mi;
-    int mesh_visible_set = 0;
+    int anim_updated = 0;
     if (!gs) return;
 
     gs->dl.sprite_count = 0;
@@ -200,27 +1007,22 @@ EXPORT void update_engine(game_state *gs) {
     gs->dbg.current_line_count = 0;
 
     update_input(gs);
-    /* Legacy 2D scene systems removed: runtime rendering is mesh-component-driven. */
 
-    /* Drive runtime mesh visibility from ECS mesh component (entity 0 for now). */
-    if (gs->mesh_components) {
-        for (mi = 0; mi < gs->mesh_component_count; mi++) {
-            mesh_component *mc = &gs->mesh_components[mi];
-            if (mc->entity_index == 0) {
-                gs->mesh3d.visible = mc->visible ? 1 : 0;
-                mesh_visible_set = 1;
-                break;
-            }
+    sync_primary_mesh3d_asset(gs);
+    sync_mesh_camera_from_components(gs);
+
+    if (gs->animation_components) {
+        animation_component *ac = query_primary_animation_component_for_mesh(gs);
+        if (ac) {
+            update_mesh3d_from_animation_component(gs, ac);
+            anim_updated = 1;
         }
     }
-    if (!mesh_visible_set && gs->mesh3d.primitive_count > 0) {
-        gs->mesh3d.visible = 1;
+    if (!anim_updated) {
+        animation_component fallback = {0, 1, (int)gs->mesh3d.active_clip, gs->mesh3d.anim_time, 1.0f};
+        update_mesh3d_from_animation_component(gs, &fallback);
     }
 
-    /* 3D mesh animation (driven by engine, rendered by externals) */
-    update_mesh3d(gs);
-
-    /* Copy debug lines from debug_renderer to draw_list */
     for (i = 0; i < gs->dbg.current_line_count; i++) {
         int idx;
         debug_line_command* line;

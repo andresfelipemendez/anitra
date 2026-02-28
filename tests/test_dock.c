@@ -113,12 +113,12 @@ TEST(alloc_node_exhaustion_returns_minus_one) {
 
 /* ── Tests: Default layout ────────────────────────────────────────────── */
 
-TEST(init_default_creates_five_nodes) {
+TEST(init_default_creates_seven_nodes) {
     dock_state d = make_default_dock();
     int count = 0, i;
     for (i = 0; i < MAX_DOCK_NODES; i++)
         if (d.nodes[i].in_use) count++;
-    ASSERT_EQ(count, 5); /* root split + inner split + 3 leaves */
+    ASSERT_EQ(count, 7); /* root + center/right split + center split + 4 leaves */
 }
 
 TEST(init_default_window_zero_active) {
@@ -133,6 +133,8 @@ TEST(init_default_all_panels_reachable) {
     ASSERT(dock_leaf_for_panel(&d, root, PANEL_GAME) >= 0);
     ASSERT(dock_leaf_for_panel(&d, root, PANEL_EDITOR) >= 0);
     ASSERT(dock_leaf_for_panel(&d, root, PANEL_PROFILER) >= 0);
+    ASSERT(dock_leaf_for_panel(&d, root, PANEL_SCENE_TREE) >= 0);
+    ASSERT(dock_leaf_for_panel(&d, root, PANEL_INSPECTOR) >= 0);
 }
 
 TEST(init_default_each_panel_in_own_leaf) {
@@ -162,13 +164,14 @@ TEST(layout_root_covers_full_window) {
 TEST(layout_leaves_partition_width) {
     dock_state d = make_default_dock();
     int root = d.windows[0].root_node;
-    int e_leaf, g_leaf, p_leaf;
+    int s_leaf, g_leaf, e_leaf, p_leaf;
     float total;
     dock_layout(&d, 0, 1600, 900);
+    s_leaf = dock_leaf_for_panel(&d, root, PANEL_SCENE_TREE);
     e_leaf = dock_leaf_for_panel(&d, root, PANEL_EDITOR);
     g_leaf = dock_leaf_for_panel(&d, root, PANEL_GAME);
     p_leaf = dock_leaf_for_panel(&d, root, PANEL_PROFILER);
-    total = d.nodes[e_leaf].w + d.nodes[g_leaf].w + d.nodes[p_leaf].w;
+    total = d.nodes[s_leaf].w + d.nodes[g_leaf].w + d.nodes[e_leaf].w + d.nodes[p_leaf].w;
     ASSERT_FLOAT_EQ(total, 1600.0f, 1.0f);
 }
 
@@ -190,19 +193,24 @@ TEST(layout_leaves_same_height) {
 TEST(node_at_point_finds_correct_leaf) {
     dock_state d = make_default_dock();
     int root = d.windows[0].root_node;
-    int e_leaf, g_leaf, p_leaf;
+    int s_leaf, g_leaf, e_leaf, p_leaf;
     int found;
     dock_layout(&d, 0, 1600, 900);
+    s_leaf = dock_leaf_for_panel(&d, root, PANEL_SCENE_TREE);
     e_leaf = dock_leaf_for_panel(&d, root, PANEL_EDITOR);
     g_leaf = dock_leaf_for_panel(&d, root, PANEL_GAME);
     p_leaf = dock_leaf_for_panel(&d, root, PANEL_PROFILER);
 
-    /* Game is leftmost (25%) → x=0..400 */
+    /* Scene Tree is leftmost */
     found = dock_node_at_point(&d, root, 100.0f, 450.0f);
+    ASSERT_EQ(found, s_leaf);
+
+    /* Game is left-center */
+    found = dock_node_at_point(&d, root, 500.0f, 450.0f);
     ASSERT_EQ(found, g_leaf);
 
-    /* Editor is middle (400..1120) */
-    found = dock_node_at_point(&d, root, 700.0f, 450.0f);
+    /* Editor is right-center */
+    found = dock_node_at_point(&d, root, 1000.0f, 450.0f);
     ASSERT_EQ(found, e_leaf);
 
     /* Profiler is rightmost (1120..1600) */
@@ -240,13 +248,14 @@ TEST(drop_zone_edges) {
 /* ── Tests: Divider hit-test ──────────────────────────────────────────── */
 
 TEST(divider_hit_on_vertical_split_line) {
-    /* In default layout: root is SPLIT_H at ratio=0.25 of 1600px → divider at x=400.
-       Inner is SPLIT_H at ratio=0.667 of 1200px → divider at x=400+1200*0.667 = 1200.4 */
+    /* Hit root divider at runtime-computed position. */
     dock_state d = make_default_dock();
+    int root = d.windows[0].root_node;
     dock_layout(&d, 0, 1600, 900);
     {
-        /* Hit the root divider (at x=400, y in range) */
-        int hit = dock_divider_at_point(&d, d.windows[0].root_node, 400.0f, 450.0f);
+        DockNode *rn = &d.nodes[root];
+        float root_div_x = rn->x + rn->w * rn->ratio;
+        int hit = dock_divider_at_point(&d, root, root_div_x, 450.0f);
         ASSERT(hit >= 0);
         ASSERT_EQ(d.nodes[hit].type, DOCK_SPLIT_H);
     }
@@ -254,10 +263,14 @@ TEST(divider_hit_on_vertical_split_line) {
 
 TEST(divider_hit_on_inner_split_line) {
     dock_state d = make_default_dock();
+    int root = d.windows[0].root_node;
+    int center_right = d.nodes[root].children[1];
+    int center_split = d.nodes[center_right].children[0];
     dock_layout(&d, 0, 1600, 900);
     {
-        /* Hit the inner divider (at x=400+1200*0.6=1120, y in range) */
-        int hit = dock_divider_at_point(&d, d.windows[0].root_node, 1120.0f, 450.0f);
+        DockNode *cn = &d.nodes[center_split];
+        float center_div_x = cn->x + cn->w * cn->ratio;
+        int hit = dock_divider_at_point(&d, root, center_div_x, 450.0f);
         ASSERT(hit >= 0);
         ASSERT_EQ(d.nodes[hit].type, DOCK_SPLIT_H);
     }
@@ -283,19 +296,16 @@ TEST(divider_miss_outside_window) {
 }
 
 TEST(divider_inner_takes_priority_over_outer) {
-    /* Create a layout where inner and outer dividers are close.
-       dock_divider_at_point checks children first, so deeper wins. */
+    /* dock_divider_at_point checks children first, so deeper wins. */
     dock_state d = make_default_dock();
     int root = d.windows[0].root_node;
-    int inner = d.nodes[root].children[1]; /* inner SPLIT_H */
-    /* Make inner's divider at a specific position */
+    int center_right = d.nodes[root].children[1];
+    int inner = d.nodes[center_right].children[0]; /* center SPLIT_H */
     dock_layout(&d, 0, 1600, 900);
     {
-        /* The inner SPLIT_H is the right child of root.
-           Its x starts at 400, w = 1200, ratio = 0.6.
-           Divider at 400 + 1200*0.6 = 1120.
-           Root divider is at 1600*0.25 = 400. */
-        int hit_inner = dock_divider_at_point(&d, d.windows[0].root_node, 1120.0f, 450.0f);
+        DockNode *in = &d.nodes[inner];
+        float inner_div_x = in->x + in->w * in->ratio;
+        int hit_inner = dock_divider_at_point(&d, root, inner_div_x, 450.0f);
         ASSERT(hit_inner >= 0);
         ASSERT_EQ(hit_inner, inner);
     }
@@ -476,10 +486,10 @@ TEST(header_hit_test_in_header_area) {
 
     dock_layout(&d, 0, 1600, 900);
 
-    /* Click in the game header (leftmost panel, y in dock header area) */
+    /* Click in the scene-tree header (leftmost panel, y in dock header area) */
     ASSERT(header_hit_test_node(&d, root, 100.0f, (float)MENU_BAR_HEIGHT + 10.0f,
                                  &hit_node, &hit_panel, &hit_tab));
-    ASSERT_EQ(hit_panel, PANEL_GAME);
+    ASSERT_EQ(hit_panel, PANEL_SCENE_TREE);
     ASSERT_EQ(hit_tab, 0);
 }
 
@@ -679,7 +689,7 @@ int main(void) {
     run_alloc_node_exhaustion_returns_minus_one();
 
     /* Default layout */
-    run_init_default_creates_five_nodes();
+    run_init_default_creates_seven_nodes();
     run_init_default_window_zero_active();
     run_init_default_all_panels_reachable();
     run_init_default_each_panel_in_own_leaf();

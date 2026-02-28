@@ -197,42 +197,51 @@ static void dock_init(dock_state *d) {
 }
 
 static void dock_init_default(dock_state *d) {
-    int root, left, right_split, mid, right;
+    int root, left, center_right_split, center_split, game_leaf, editor_leaf, right;
     memset(d, 0, sizeof(dock_state));
 
-    /* Root: horizontal split (Game | rest) */
+    /* Root: horizontal split (Scene Tree | rest) */
     root = dock_alloc_node(d);
     d->nodes[root].type = DOCK_SPLIT_H;
-    d->nodes[root].ratio = 0.25f;
+    d->nodes[root].ratio = 0.19f;
 
-    /* Left leaf: Game panel */
+    /* Left leaf: Scene Tree panel */
     left = dock_alloc_node(d);
-    d->nodes[left].panels[0] = PANEL_GAME;
+    d->nodes[left].panels[0] = PANEL_SCENE_TREE;
     d->nodes[left].panel_count = 1;
 
-    /* Right: horizontal split (Editor | Profiler) */
-    right_split = dock_alloc_node(d);
-    d->nodes[right_split].type = DOCK_SPLIT_H;
-    d->nodes[right_split].ratio = 0.6f;
+    /* Right side: horizontal split ((Game | Editor) | Profiler/Inspector) */
+    center_right_split = dock_alloc_node(d);
+    d->nodes[center_right_split].type = DOCK_SPLIT_H;
+    d->nodes[center_right_split].ratio = 0.78f;
 
-    /* Middle leaf: Editor panel */
-    mid = dock_alloc_node(d);
-    d->nodes[mid].panels[0] = PANEL_EDITOR;
-    d->nodes[mid].panel_count = 1;
+    /* Center area: horizontal split (Game | Editor) */
+    center_split = dock_alloc_node(d);
+    d->nodes[center_split].type = DOCK_SPLIT_H;
+    d->nodes[center_split].ratio = 0.5f;
 
-    /* Right leaf: Profiler + Scene Tree + Inspector tabs */
+    game_leaf = dock_alloc_node(d);
+    d->nodes[game_leaf].panels[0] = PANEL_GAME;
+    d->nodes[game_leaf].panel_count = 1;
+
+    editor_leaf = dock_alloc_node(d);
+    d->nodes[editor_leaf].panels[0] = PANEL_EDITOR;
+    d->nodes[editor_leaf].panel_count = 1;
+
+    /* Right leaf: Profiler + Inspector tabs (Inspector active by default) */
     right = dock_alloc_node(d);
     d->nodes[right].panels[0] = PANEL_PROFILER;
-    d->nodes[right].panels[1] = PANEL_SCENE_TREE;
-    d->nodes[right].panels[2] = PANEL_INSPECTOR;
-    d->nodes[right].panel_count = 3;
-    d->nodes[right].active_tab = 0;
+    d->nodes[right].panels[1] = PANEL_INSPECTOR;
+    d->nodes[right].panel_count = 2;
+    d->nodes[right].active_tab = 1;
 
     /* Wire up children */
     d->nodes[root].children[0] = left;
-    d->nodes[root].children[1] = right_split;
-    d->nodes[right_split].children[0] = mid;
-    d->nodes[right_split].children[1] = right;
+    d->nodes[root].children[1] = center_right_split;
+    d->nodes[center_right_split].children[0] = center_split;
+    d->nodes[center_right_split].children[1] = right;
+    d->nodes[center_split].children[0] = game_leaf;
+    d->nodes[center_split].children[1] = editor_leaf;
 
     d->windows[0].in_use = 1;
     d->windows[0].root_node = root;

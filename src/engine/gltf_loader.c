@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 /* GPU device — set via gltf_set_gpu_device() before loading */
 static SDL_GPUDevice *s_gpu_device;
@@ -66,7 +67,41 @@ static SDL_GPUBuffer *upload_gpu_buffer(const void *data, uint32_t size,
 
 /* ── texture extraction ───────────────────────────────────────── */
 
-static SDL_GPUTexture *extract_texture(cgltf_image *image, cgltf_data *gltf) {
+static int path_is_absolute(const char *p) {
+    if (!p || !p[0]) return 0;
+#ifdef _WIN32
+    if ((p[0] && p[1] == ':') || p[0] == '\\' || p[0] == '/') return 1;
+#else
+    if (p[0] == '/') return 1;
+#endif
+    return 0;
+}
+
+static void path_get_dirname(const char *path, char *out, size_t out_size) {
+    const char *slash;
+    size_t len;
+    if (!out || out_size == 0) return;
+    out[0] = '\0';
+    if (!path) return;
+
+    slash = strrchr(path, '/');
+#ifdef _WIN32
+    {
+        const char *back = strrchr(path, '\\');
+        if (!slash || (back && back > slash)) slash = back;
+    }
+#endif
+    if (!slash) {
+        snprintf(out, out_size, ".");
+        return;
+    }
+    len = (size_t)(slash - path);
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, path, len);
+    out[len] = '\0';
+}
+
+static SDL_GPUTexture *extract_texture(cgltf_image *image, const char *asset_dir) {
     int w, h, channels;
     unsigned char *pixels = NULL;
     uint32_t img_size;
@@ -79,9 +114,6 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, cgltf_data *gltf) {
     SDL_GPUCopyPass *copy;
     SDL_GPUTextureTransferInfo src = {0};
     SDL_GPUTextureRegion dst_region = {0};
-
-    (void)gltf;
-
     if (image->buffer_view) {
         /* embedded image in GLB */
         const uint8_t *buf = (const uint8_t *)image->buffer_view->buffer->data;
@@ -89,7 +121,13 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, cgltf_data *gltf) {
         pixels = stbi_load_from_memory(ptr, (int)image->buffer_view->size,
                                        &w, &h, &channels, 4);
     } else if (image->uri) {
-        pixels = stbi_load(image->uri, &w, &h, &channels, 4);
+        if (asset_dir && asset_dir[0] && !path_is_absolute(image->uri)) {
+            char resolved[PATH_MAX];
+            snprintf(resolved, sizeof(resolved), "%s/%s", asset_dir, image->uri);
+            pixels = stbi_load(resolved, &w, &h, &channels, 4);
+        } else {
+            pixels = stbi_load(image->uri, &w, &h, &channels, 4);
+        }
     }
 
     if (!pixels) {
@@ -225,7 +263,7 @@ static void mul_mat4(const float *a, const float *b, float *out) {
 
 /* ── mesh extraction ──────────────────────────────────────────── */
 
-static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, arena *ar) {
+static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, const char *asset_dir, arena *ar) {
     GltfMesh result = {0};
     int apply_transform;
     uint32_t pi;
@@ -327,7 +365,7 @@ static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, arena *a
             prim->material->pbr_metallic_roughness.base_color_texture.texture) {
             cgltf_image *img = prim->material->pbr_metallic_roughness
                                    .base_color_texture.texture->image;
-            out->texture = extract_texture(img, NULL);
+            out->texture = extract_texture(img, asset_dir);
         }
     }
 
@@ -506,6 +544,9 @@ GltfModel load_glb(const char *path, arena *ar) {
     cgltf_skin *skin = NULL;
     cgltf_size ni;
     uint32_t total_prims = 0;
+    char asset_dir[PATH_MAX];
+
+    path_get_dirname(path, asset_dir, sizeof(asset_dir));
 
     result = cgltf_parse_file(&options, path, &data);
     if (result != cgltf_result_success) {
@@ -591,7 +632,7 @@ GltfModel load_glb(const char *path, arena *ar) {
             cgltf_node_transform_world(node, mesh_world);
             mul_mat4(inv_skel_world, mesh_world, mesh_to_skel);
 
-            sub = extract_mesh(node->mesh, mesh_to_skel, ar);
+            sub = extract_mesh(node->mesh, mesh_to_skel, asset_dir, ar);
             for (p = 0; p < sub.primitive_count; p++) {
                 model.mesh.primitives[prim_idx++] = sub.primitives[p];
             }

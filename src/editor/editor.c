@@ -6,6 +6,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
@@ -241,14 +242,6 @@ static Clay_Dimensions profiler_measure_text(Clay_StringSlice text,
     };
 }
 
-static const char *entity_type_name(entity_type type) {
-    switch (type) {
-        case PLAYER: return "PLAYER";
-        case ENEMY: return "ENEMY";
-        default: return "UNKNOWN";
-    }
-}
-
 static int find_parent_component(const game_state *gs, int entity_index, int *out_parent_index) {
     int i;
     if (!gs->parent_components) return 0;
@@ -262,12 +255,15 @@ static int find_parent_component(const game_state *gs, int entity_index, int *ou
     return 0;
 }
 
-static int has_parent_transform_component(const game_state *gs, int entity_index) {
+static int has_parent_transform_component(const game_state *gs, int entity_index, int *out_parent_index) {
     int i;
     if (!gs->parent_transform_components) return 0;
     for (i = 0; i < gs->parent_transform_component_count; i++) {
         parent_transform_component *pt = &gs->parent_transform_components[i];
-        if (pt->entity_index == entity_index) return 1;
+        if (pt->entity_index == entity_index) {
+            if (out_parent_index) *out_parent_index = pt->parent_entity_index;
+            return 1;
+        }
     }
     return 0;
 }
@@ -282,17 +278,212 @@ static int has_parent_rotation_component(const game_state *gs, int entity_index)
     return 0;
 }
 
-static int has_mesh_component(const game_state *gs, int entity_index, int *out_visible) {
+static int has_mesh_component(const game_state *gs, int entity_index, int *out_visible, mesh_kind *out_kind) {
     int i;
     if (!gs->mesh_components) return 0;
     for (i = 0; i < gs->mesh_component_count; i++) {
         mesh_component *mc = &gs->mesh_components[i];
         if (mc->entity_index == entity_index) {
             if (out_visible) *out_visible = mc->visible;
+            if (out_kind) *out_kind = mc->kind;
             return 1;
         }
     }
     return 0;
+}
+
+static int has_animation_component(const game_state *gs, int entity_index,
+                                   int *out_playing, int *out_clip, float *out_time, float *out_speed) {
+    int i;
+    if (!gs->animation_components) return 0;
+    for (i = 0; i < gs->animation_component_count; i++) {
+        animation_component *ac = &gs->animation_components[i];
+        if (ac->entity_index == entity_index) {
+            if (out_playing) *out_playing = ac->playing;
+            if (out_clip) *out_clip = ac->active_clip;
+            if (out_time) *out_time = ac->anim_time;
+            if (out_speed) *out_speed = ac->speed;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_transform_component(const game_state *gs, int entity_index, Vec3 *out_position) {
+    int i;
+    if (!gs->transform_components) return 0;
+    for (i = 0; i < gs->transform_component_count; i++) {
+        transform_component *tc = &gs->transform_components[i];
+        if (tc->entity_index == entity_index) {
+            if (out_position) *out_position = tc->position;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_rotation_component(const game_state *gs, int entity_index, float *out_rotation_y_deg) {
+    int i;
+    if (!gs->rotation_components) return 0;
+    for (i = 0; i < gs->rotation_component_count; i++) {
+        rotation_component *rc = &gs->rotation_components[i];
+        if (rc->entity_index == entity_index) {
+            if (out_rotation_y_deg) *out_rotation_y_deg = rc->rotation_y_deg;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_scale_component(const game_state *gs, int entity_index, Vec3 *out_scale) {
+    int i;
+    if (!gs->scale_components) return 0;
+    for (i = 0; i < gs->scale_component_count; i++) {
+        scale_component *sc = &gs->scale_components[i];
+        if (sc->entity_index == entity_index) {
+            if (out_scale) *out_scale = sc->scale;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_velocity_component(const game_state *gs, int entity_index, vec2 *out_velocity) {
+    int i;
+    if (!gs->velocity_components) return 0;
+    for (i = 0; i < gs->velocity_component_count; i++) {
+        velocity_component *vc = &gs->velocity_components[i];
+        if (vc->entity_index == entity_index) {
+            if (out_velocity) *out_velocity = vc->velocity;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_health_component(const game_state *gs, int entity_index, float *out_health, float *out_max) {
+    int i;
+    if (!gs->health_components) return 0;
+    for (i = 0; i < gs->health_component_count; i++) {
+        health_component *hc = &gs->health_components[i];
+        if (hc->entity_index == entity_index) {
+            if (out_health) *out_health = hc->health;
+            if (out_max) *out_max = hc->max_health;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_collider_component(const game_state *gs, int entity_index, rect *out_rect) {
+    int i;
+    if (!gs->collider_components) return 0;
+    for (i = 0; i < gs->collider_component_count; i++) {
+        collider_component *cc = &gs->collider_components[i];
+        if (cc->entity_index == entity_index) {
+            if (out_rect) *out_rect = cc->rect;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int has_camera_component(const game_state *gs, int entity_index,
+                                float *out_fov, float *out_near, float *out_far,
+                                Vec3 *out_target, Vec3 *out_up) {
+    int i;
+    if (!gs->camera_components) return 0;
+    for (i = 0; i < gs->camera_component_count; i++) {
+        camera_component *cc = &gs->camera_components[i];
+        if (cc->entity_index == entity_index) {
+            if (out_fov) *out_fov = cc->fov_deg;
+            if (out_near) *out_near = cc->near_plane;
+            if (out_far) *out_far = cc->far_plane;
+            if (out_target) *out_target = cc->target;
+            if (out_up) *out_up = cc->up;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void build_scene_parent_lookup(const game_state *gs, int entity_count, int *parent_of) {
+    int i;
+    for (i = 0; i < entity_count; i++) parent_of[i] = -1;
+    if (gs->parent_components) {
+        for (i = 0; i < gs->parent_component_count; i++) {
+            parent_component *pc = &gs->parent_components[i];
+            if (pc->entity_index < 0 || pc->entity_index >= entity_count) continue;
+            parent_of[pc->entity_index] = pc->parent_entity_index;
+        }
+    }
+    if (!gs->parent_transform_components) return;
+
+    for (i = 0; i < gs->parent_transform_component_count; i++) {
+        parent_transform_component *pt = &gs->parent_transform_components[i];
+        if (pt->entity_index < 0 || pt->entity_index >= entity_count) continue;
+        if (pt->parent_entity_index < 0 || pt->parent_entity_index >= entity_count) continue;
+        if (parent_of[pt->entity_index] >= 0) continue;
+        parent_of[pt->entity_index] = pt->parent_entity_index;
+    }
+}
+
+static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
+                                       int entity_index, int depth, int click) {
+    static char row_bufs[SCENE_TREE_MAX_ENTITIES][64];
+    int bi = entity_index % SCENE_TREE_MAX_ENTITIES;
+    int selected = (e->scene_selected_entity == entity_index);
+    const char *name = NULL;
+
+    if (gs && entity_index >= 0 && entity_index < gs->project.scene_entity_count) {
+        if (gs->project.scene_entity_names[entity_index][0]) {
+            name = gs->project.scene_entity_names[entity_index];
+        }
+    }
+
+    if (name) {
+        snprintf(row_bufs[bi], sizeof(row_bufs[bi]), "%s", name);
+    } else {
+        snprintf(row_bufs[bi], sizeof(row_bufs[bi]), "Entity %d", entity_index);
+    }
+
+    CLAY(CLAY_IDI("STEntityRow", (int32_t)entity_index), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+            .padding = { .left = (uint16_t)(8 + depth * 16), .right = 8, .top = 5, .bottom = 5 }
+        },
+        .backgroundColor = selected ? ((Clay_Color){52, 62, 84, 255})
+                                    : (Clay_Hovered() ? ((Clay_Color){48, 56, 72, 255})
+                                                      : ((Clay_Color){0, 0, 0, 0})),
+        .cornerRadius = CLAY_CORNER_RADIUS(4)
+    }) {
+        int hovered = Clay_Hovered();
+        if (hovered && click) e->scene_selected_entity = entity_index;
+
+        {
+            Clay_String cs = {false, (int32_t)strlen(row_bufs[bi]), row_bufs[bi]};
+            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {224, 230, 240, 255}, .fontSize = 16}));
+        }
+    }
+}
+
+static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state *e,
+                                             int entity_index, int depth, int click,
+                                             const int *parent_of, int entity_count,
+                                             int *visited) {
+    int child;
+    if (entity_index < 0 || entity_index >= entity_count) return;
+    if (visited[entity_index]) return;
+
+    visited[entity_index] = 1;
+    scene_tree_emit_entity_row(gs, e, entity_index, depth, click);
+
+    for (child = 0; child < entity_count; child++) {
+        if (parent_of[child] == entity_index && child != entity_index) {
+            scene_tree_emit_entity_recursive(gs, e, child, depth + 1, click,
+                                             parent_of, entity_count, visited);
+        }
+    }
 }
 
 static int panel_event_hit(dock_state *d, PanelId panel, SDL_Window *evwin,
@@ -380,6 +571,36 @@ static void build_lines(game_state *gs, editor_state *es) {
     add_line(e, VEC3(-10, 0, 0), VEC3(10, 0, 0), 0.8f, 0.2f, 0.2f);  /* X red */
     add_line(e, VEC3(0, 0, -10), VEC3(0, 0, 10), 0.2f, 0.2f, 0.8f);  /* Z blue */
     add_line(e, VEC3(0, 0, 0),   VEC3(0, 2, 0),  0.2f, 0.8f, 0.2f);  /* Y green */
+
+    /* Floor entity wireframe from ECS components (Transform + Mesh(kind=floor) + Collider). */
+    if (gs->mesh_components) {
+        int mi;
+        int floor_entity = -1;
+        for (mi = 0; mi < gs->mesh_component_count; mi++) {
+            mesh_component *mc = &gs->mesh_components[mi];
+            if (!mc->visible) continue;
+            if (mc->kind != MESH_KIND_FLOOR) continue;
+            floor_entity = mc->entity_index;
+            break;
+        }
+        if (floor_entity >= 0) {
+            Vec3 floor_pos = VEC3(0.0f, 0.0f, 0.0f);
+            rect floor_box = {0.0f, 0.0f, 0.0f, 0.0f};
+            if (has_transform_component(gs, floor_entity, &floor_pos) &&
+                has_collider_component(gs, floor_entity, &floor_box)) {
+                float hx = floor_box.w * 0.5f;
+                float hz = floor_box.h * 0.5f;
+                Vec3 a = VEC3(floor_pos.x - hx, floor_pos.y, floor_pos.z - hz);
+                Vec3 b = VEC3(floor_pos.x + hx, floor_pos.y, floor_pos.z - hz);
+                Vec3 c = VEC3(floor_pos.x + hx, floor_pos.y, floor_pos.z + hz);
+                Vec3 d = VEC3(floor_pos.x - hx, floor_pos.y, floor_pos.z + hz);
+                add_line(e, a, b, 0.25f, 0.55f, 0.25f);
+                add_line(e, b, c, 0.25f, 0.55f, 0.25f);
+                add_line(e, c, d, 0.25f, 0.55f, 0.25f);
+                add_line(e, d, a, 0.25f, 0.55f, 0.25f);
+            }
+        }
+    }
 
     /* Game camera frustum gizmo */
     if (gs->mesh3d.visible) {
@@ -965,11 +1186,9 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     int win_w, win_h;
     int click;
     int entity_count;
+    int parent_of[SCENE_TREE_MAX_ENTITIES];
+    int visited[SCENE_TREE_MAX_ENTITIES];
     static char title_buf[128];
-    static char entity_label_bufs[SCENE_TREE_MAX_ENTITIES][96];
-    static char entity_type_bufs[SCENE_TREE_MAX_ENTITIES][64];
-    static char parent_comp_bufs[SCENE_TREE_MAX_ENTITIES][128];
-    static char mesh_comp_bufs[SCENE_TREE_MAX_ENTITIES][128];
     Clay_RenderCommandArray commands;
 
     if (!ctx) {
@@ -1005,6 +1224,10 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
 
     entity_count = gs->scene_entities ? gs->scene_entity_count : 0;
     snprintf(title_buf, sizeof(title_buf), "Scene Tree  (%d entities)", entity_count);
+    if (entity_count > SCENE_TREE_MAX_ENTITIES) entity_count = SCENE_TREE_MAX_ENTITIES;
+    build_scene_parent_lookup(gs, entity_count, parent_of);
+    memset(visited, 0, (size_t)entity_count * sizeof(int));
+
     CLAY(CLAY_ID("STRoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
@@ -1033,99 +1256,22 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
                 }
             }) {
                 int i;
-                for (i = 0; i < entity_count; i++) {
-                    entity *ent = &gs->scene_entities[i];
-                    int bi = i % SCENE_TREE_MAX_ENTITIES;
-                    int parent_idx = -1;
-                    int mesh_visible = 0;
-                    int has_mesh = has_mesh_component(gs, i, &mesh_visible);
-                    int has_parent = find_parent_component(gs, i, &parent_idx);
-                    int has_parent_transform = has_parent_transform_component(gs, i);
-                    int has_parent_rotation = has_parent_rotation_component(gs, i);
-                    int has_children = has_mesh || has_parent || has_parent_transform || has_parent_rotation;
-                    int collapsed = (i < SCENE_TREE_MAX_ENTITIES) ? e->scene_tree_collapsed[i] : 0;
-                    int selected = (e->scene_selected_entity == i);
-
-                    snprintf(entity_label_bufs[bi], sizeof(entity_label_bufs[bi]), "%s Entity %d",
-                        has_children ? (collapsed ? ">" : "v") : "-", i);
-                    snprintf(entity_type_bufs[bi], sizeof(entity_type_bufs[bi]), "Type: %s", entity_type_name(ent->type));
-
-                    CLAY(CLAY_IDI("STEntity", (int32_t)i), {
-                        .layout = {
-                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                            .padding = CLAY_PADDING_ALL(8),
-                            .childGap = 3,
-                            .layoutDirection = CLAY_TOP_TO_BOTTOM
-                        },
-                        .backgroundColor = selected ? ((Clay_Color){52, 62, 84, 255})
-                                                    : ((Clay_Color){36, 42, 56, 255}),
-                        .cornerRadius = CLAY_CORNER_RADIUS(4)
-                    }) {
-                        CLAY(CLAY_IDI("STEntityHdr", (int32_t)i), {
-                            .layout = {
-                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                                .padding = { .left = 4, .right = 4, .top = 2, .bottom = 2 }
-                            },
-                            .backgroundColor = Clay_Hovered() ? ((Clay_Color){52, 60, 78, 255})
-                                                              : ((Clay_Color){0, 0, 0, 0})
-                        }) {
-                            int hovered = Clay_Hovered();
-                            if (hovered && click) {
-                                if (has_children && i < SCENE_TREE_MAX_ENTITIES &&
-                                    e->scene_selected_entity == i) {
-                                    e->scene_tree_collapsed[i] = !e->scene_tree_collapsed[i];
-                                }
-                                e->scene_selected_entity = i;
-                            }
-
-                            {
-                                Clay_String es = {false, (int32_t)strlen(entity_label_bufs[bi]), entity_label_bufs[bi]};
-                                CLAY_TEXT(es, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = 16}));
-                            }
+                if (entity_count <= 0) {
+                    Clay_String cs = CLAY_STRING("(empty)");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = 16}));
+                } else {
+                    for (i = 0; i < entity_count; i++) {
+                        int p = parent_of[i];
+                        int is_root = (p < 0 || p >= entity_count || p == i);
+                        if (is_root) {
+                            scene_tree_emit_entity_recursive(gs, e, i, 0, click,
+                                                             parent_of, entity_count, visited);
                         }
-
-                        {
-                            Clay_String tys = {false, (int32_t)strlen(entity_type_bufs[bi]), entity_type_bufs[bi]};
-                            CLAY_TEXT(tys, CLAY_TEXT_CONFIG({.textColor = {176, 188, 205, 255}, .fontSize = 16}));
-                        }
-
-                        if (!has_children) {
-                            Clay_String cs = CLAY_STRING("Components: (none)");
-                            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = 16}));
-                        } else if (!e->scene_tree_collapsed[i]) {
-                            CLAY(CLAY_IDI("STEntityComps", (int32_t)i), {
-                                .layout = {
-                                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                                    .padding = { .left = 14, .right = 0, .top = 2, .bottom = 2 },
-                                    .childGap = 2,
-                                    .layoutDirection = CLAY_TOP_TO_BOTTOM
-                                }
-                            }) {
-                                if (has_parent) {
-                                    snprintf(parent_comp_bufs[bi], sizeof(parent_comp_bufs[bi]),
-                                        "Component: Parent (entity %d)", parent_idx);
-                                    {
-                                        Clay_String cs = {false, (int32_t)strlen(parent_comp_bufs[bi]), parent_comp_bufs[bi]};
-                                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = 16}));
-                                    }
-                                }
-                                if (has_mesh) {
-                                    snprintf(mesh_comp_bufs[bi], sizeof(mesh_comp_bufs[bi]),
-                                        "Component: Mesh (%s)", mesh_visible ? "visible" : "hidden");
-                                    {
-                                        Clay_String cs = {false, (int32_t)strlen(mesh_comp_bufs[bi]), mesh_comp_bufs[bi]};
-                                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
-                                    }
-                                }
-                                if (has_parent_transform) {
-                                    Clay_String cs = CLAY_STRING("Component: Parent Transform");
-                                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = 16}));
-                                }
-                                if (has_parent_rotation) {
-                                    Clay_String cs = CLAY_STRING("Component: Parent Rotation");
-                                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = 16}));
-                                }
-                            }
+                    }
+                    for (i = 0; i < entity_count; i++) {
+                        if (!visited[i]) {
+                            scene_tree_emit_entity_recursive(gs, e, i, 0, click,
+                                                             parent_of, entity_count, visited);
                         }
                     }
                 }
@@ -1148,9 +1294,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     int win_w, win_h;
     int selected;
     static char title_buf[96];
-    static char ent_buf[96];
-    static char mesh_buf[128];
-    static char parent_buf[128];
+    static char line_bufs[32][160];
     Clay_RenderCommandArray commands;
 
     if (!ctx) {
@@ -1207,57 +1351,186 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 Clay_String cs = CLAY_STRING("No entity selected.");
                 CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = 16}));
             } else {
-                entity *ent = &gs->scene_entities[selected];
+                int line_i = 0;
                 int parent_idx = -1;
+                int parent_transform_idx = -1;
+                Vec3 tpos = VEC3(0.0f, 0.0f, 0.0f);
+                float ry = 0.0f;
+                Vec3 tscale = VEC3(1.0f, 1.0f, 1.0f);
+                vec2 vvel = {0.0f, 0.0f};
+                float hcur = 0.0f, hmax = 0.0f;
+                rect crect = {0.0f, 0.0f, 0.0f, 0.0f};
                 int mesh_visible = 0;
-                int has_mesh = has_mesh_component(gs, selected, &mesh_visible);
+                mesh_kind mesh_kind_value = MESH_KIND_SKINNED;
+                int anim_playing = 0;
+                int anim_clip = 0;
+                float anim_time = 0.0f;
+                float anim_speed = 1.0f;
+                float cam_fov = 0.0f, cam_near = 0.0f, cam_far = 0.0f;
+                Vec3 cam_target = VEC3(0.0f, 0.0f, 0.0f);
+                Vec3 cam_up = VEC3(0.0f, 1.0f, 0.0f);
+                int has_transform = has_transform_component(gs, selected, &tpos);
+                int has_rotation = has_rotation_component(gs, selected, &ry);
+                int has_scale = has_scale_component(gs, selected, &tscale);
+                int has_velocity = has_velocity_component(gs, selected, &vvel);
+                int has_health = has_health_component(gs, selected, &hcur, &hmax);
+                int has_collider = has_collider_component(gs, selected, &crect);
+                int has_mesh = has_mesh_component(gs, selected, &mesh_visible, &mesh_kind_value);
+                int has_animation = has_animation_component(gs, selected,
+                                                            &anim_playing, &anim_clip, &anim_time, &anim_speed);
+                int has_camera = has_camera_component(gs, selected,
+                                                      &cam_fov, &cam_near, &cam_far,
+                                                      &cam_target, &cam_up);
                 int has_parent = find_parent_component(gs, selected, &parent_idx);
-                int has_parent_transform = has_parent_transform_component(gs, selected);
+                int has_parent_transform = has_parent_transform_component(gs, selected, &parent_transform_idx);
                 int has_parent_rotation = has_parent_rotation_component(gs, selected);
-                int has_any = has_mesh || has_parent || has_parent_transform || has_parent_rotation;
+                int has_components = has_transform || has_rotation || has_scale ||
+                                     has_velocity || has_health || has_collider ||
+                                     has_mesh || has_animation || has_camera || has_parent ||
+                                     has_parent_transform || has_parent_rotation;
 
-                snprintf(ent_buf, sizeof(ent_buf), "Entity %d", selected);
+                snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Entity %d", selected);
                 {
-                    Clay_String cs = {false, (int32_t)strlen(ent_buf), ent_buf};
+                    Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = 16}));
                 }
-                snprintf(ent_buf, sizeof(ent_buf), "Type: %s", entity_type_name(ent->type));
-                {
-                    Clay_String cs = {false, (int32_t)strlen(ent_buf), ent_buf};
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {176, 188, 205, 255}, .fontSize = 16}));
-                }
+                line_i++;
 
                 {
                     Clay_String cs = CLAY_STRING("Components");
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 200, 218, 255}, .fontSize = 16}));
                 }
-
-                if (!has_any) {
+                if (!has_components) {
                     Clay_String cs = CLAY_STRING("- (none)");
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = 16}));
-                } else {
-                    if (has_mesh) {
-                        snprintf(mesh_buf, sizeof(mesh_buf), "- Mesh (visible=%d)", mesh_visible);
-                        {
-                            Clay_String cs = {false, (int32_t)strlen(mesh_buf), mesh_buf};
-                            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
-                        }
+                }
+
+                if (has_transform) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Transform (position=%.2f, %.2f, %.2f)",
+                             tpos.x, tpos.y, tpos.z);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
                     }
-                    if (has_parent) {
-                        snprintf(parent_buf, sizeof(parent_buf), "- Parent (entity %d)", parent_idx);
-                        {
-                            Clay_String cs = {false, (int32_t)strlen(parent_buf), parent_buf};
-                            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = 16}));
-                        }
+                    line_i++;
+                }
+                if (has_rotation) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Rotation (y=%.2f deg)", ry);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
                     }
-                    if (has_parent_transform) {
-                        Clay_String cs = CLAY_STRING("- Parent Transform");
+                    line_i++;
+                }
+                if (has_scale) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Scale (%.2f, %.2f, %.2f)",
+                             tscale.x, tscale.y, tscale.z);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_velocity) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Velocity (%.2f, %.2f)", vvel.x, vvel.y);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_health) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Health (%.1f / %.1f)", hcur, hmax);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_collider) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Collider (%.2f, %.2f, %.2f, %.2f)",
+                             crect.x, crect.y, crect.w, crect.h);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_mesh) {
+                    const char *mesh_kind_name = "skinned";
+                    if (mesh_kind_value == MESH_KIND_FLOOR) mesh_kind_name = "floor";
+                    else if (mesh_kind_value == MESH_KIND_STATIC) mesh_kind_name = "static";
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Mesh (visible=%d kind=%s)", mesh_visible, mesh_kind_name);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_animation) {
+                    uint32_t total_clips = gs->mesh3d.clip_count;
+                    if (total_clips > 0) {
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "- Animation (playing=%d clip=%d/%u time=%.2f speed=%.2f)",
+                                 anim_playing, anim_clip, (unsigned int)total_clips, anim_time, anim_speed);
+                    } else {
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "- Animation (playing=%d clip=%d time=%.2f speed=%.2f)",
+                                 anim_playing, anim_clip, anim_time, anim_speed);
+                    }
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_camera) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Camera (fov=%.1f near=%.2f far=%.1f)", cam_fov, cam_near, cam_far);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "  target=(%.2f, %.2f, %.2f) up=(%.2f, %.2f, %.2f)",
+                             cam_target.x, cam_target.y, cam_target.z,
+                             cam_up.x, cam_up.y, cam_up.z);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_parent) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Parent (entity %d)", parent_idx);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_parent_transform) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Parent Transform (entity %d)", parent_transform_idx);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
                         CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = 16}));
                     }
-                    if (has_parent_rotation) {
-                        Clay_String cs = CLAY_STRING("- Parent Rotation");
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = 16}));
-                    }
+                    line_i++;
+                }
+                if (has_parent_rotation) {
+                    Clay_String cs = CLAY_STRING("- Parent Rotation");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = 16}));
                 }
             }
         }

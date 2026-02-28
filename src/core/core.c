@@ -99,6 +99,7 @@ EXPORT int init_core(const char *project_path) {
     /* Set default asset paths */
     g.game.default_model_path = "assets/models/Knight.glb";
     g.game.default_animation_path = "assets/animations/Rig_Medium_General.glb";
+    g.game.default_floor_model_path = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/floor_tile_large.gltf";
     g.game.texture_player = "assets/char_spritesheet.png";
     g.game.texture_tiles = "assets/Dungeon_Tileset.png";
     g.game.texture_slime = "assets/pinkslime_spritesheet.png";
@@ -118,35 +119,55 @@ EXPORT int init_core(const char *project_path) {
     g.game.shader_composite_vs = "assets/shaders/compiled/composite_vs.spv";
     g.game.shader_composite_fs = "assets/shaders/compiled/composite_fs.spv";
 
+    g.game.project_loaded = 0;
+
     /* Load project file if provided */
     if (project_path) {
-        static project_data project;
-        if (project_load(project_path, &project) == 0) {
+        project_data loaded_project;
+        if (project_load(project_path, &loaded_project) == 0) {
+            g.game.project = loaded_project;
+            g.game.project_loaded = 1;
+
             /* Override camera from project */
-            if (project.has_camera) {
-                g.game.mesh3d.camera_eye = VEC3(project.camera.eye[0],
-                    project.camera.eye[1], project.camera.eye[2]);
-                g.game.mesh3d.camera_target = VEC3(project.camera.target[0],
-                    project.camera.target[1], project.camera.target[2]);
-                g.game.mesh3d.camera_up = VEC3(project.camera.up[0],
-                    project.camera.up[1], project.camera.up[2]);
+            if (g.game.project.has_camera) {
+                g.game.mesh3d.camera_eye = VEC3(g.game.project.camera.eye[0],
+                    g.game.project.camera.eye[1], g.game.project.camera.eye[2]);
+                g.game.mesh3d.camera_target = VEC3(g.game.project.camera.target[0],
+                    g.game.project.camera.target[1], g.game.project.camera.target[2]);
+                g.game.mesh3d.camera_up = VEC3(g.game.project.camera.up[0],
+                    g.game.project.camera.up[1], g.game.project.camera.up[2]);
+                g.game.mesh3d.camera_fov_deg = g.game.project.camera.fov;
                 g.game.mesh3d.camera_set_by_project = 1;
             }
 
-            /* Resolve player model path from asset registry */
-            if (project.entity_count > 0) {
-                int pi;
-                project_entity *player = &project.entities[0];
-                for (pi = 0; pi < project.model_count; pi++) {
-                    if (strcmp(project.model_keys[pi], player->model) == 0) {
-                        g.game.default_model_path = project.model_paths[pi];
-                        break;
+            /* Resolve default model paths from ECS scene mesh components */
+            if (g.game.project.scene_entity_count > 0) {
+                int ei;
+                for (ei = 0; ei < g.game.project.scene_entity_count; ei++) {
+                    project_scene_component *comp = &g.game.project.scene_components[ei];
+                    int pi;
+                    if (!comp->has_mesh || !comp->mesh_model[0]) continue;
+
+                    for (pi = 0; pi < g.game.project.model_count; pi++) {
+                        if (strcmp(g.game.project.model_keys[pi], comp->mesh_model) == 0) {
+                            if (strcmp(comp->mesh_kind, "skinned") == 0) {
+                                g.game.default_model_path = g.game.project.model_paths[pi];
+                            }
+                            if (strcmp(comp->mesh_kind, "floor") == 0 ||
+                                strstr(comp->mesh_model, "floor") != NULL) {
+                                g.game.default_floor_model_path = g.game.project.model_paths[pi];
+                            }
+                            break;
+                        }
                     }
-                }
-                for (pi = 0; pi < project.animation_count; pi++) {
-                    if (strcmp(project.animation_keys[pi], player->animations) == 0) {
-                        g.game.default_animation_path = project.animation_paths[pi];
-                        break;
+
+                    if (comp->has_animation && comp->animation_asset[0]) {
+                        for (pi = 0; pi < g.game.project.animation_count; pi++) {
+                            if (strcmp(g.game.project.animation_keys[pi], comp->animation_asset) == 0) {
+                                g.game.default_animation_path = g.game.project.animation_paths[pi];
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -154,28 +175,28 @@ EXPORT int init_core(const char *project_path) {
             /* Override sprite/texture paths from project assets */
             {
                 int si;
-                for (si = 0; si < project.sprite_count; si++) {
-                    if (strcmp(project.sprite_keys[si], "player_sheet") == 0)
-                        g.game.texture_player = project.sprite_paths[si];
-                    else if (strcmp(project.sprite_keys[si], "slime_sheet") == 0)
-                        g.game.texture_slime = project.sprite_paths[si];
-                    else if (strcmp(project.sprite_keys[si], "health_bar") == 0)
-                        g.game.texture_health_bar = project.sprite_paths[si];
-                    else if (strcmp(project.sprite_keys[si], "health_fill") == 0)
-                        g.game.texture_health_fill = project.sprite_paths[si];
+                for (si = 0; si < g.game.project.sprite_count; si++) {
+                    if (strcmp(g.game.project.sprite_keys[si], "player_sheet") == 0)
+                        g.game.texture_player = g.game.project.sprite_paths[si];
+                    else if (strcmp(g.game.project.sprite_keys[si], "slime_sheet") == 0)
+                        g.game.texture_slime = g.game.project.sprite_paths[si];
+                    else if (strcmp(g.game.project.sprite_keys[si], "health_bar") == 0)
+                        g.game.texture_health_bar = g.game.project.sprite_paths[si];
+                    else if (strcmp(g.game.project.sprite_keys[si], "health_fill") == 0)
+                        g.game.texture_health_fill = g.game.project.sprite_paths[si];
                 }
             }
 
             /* Populate lighting from project */
-            if (project.has_lighting) {
+            if (g.game.project.has_lighting) {
                 int li;
                 g.game.lighting.ambient = VEC3(
-                    project.lighting.ambient[0],
-                    project.lighting.ambient[1],
-                    project.lighting.ambient[2]);
-                g.game.lighting.light_count = project.lighting.point_light_count;
-                for (li = 0; li < project.lighting.point_light_count; li++) {
-                    project_point_light *src = &project.lighting.point_lights[li];
+                    g.game.project.lighting.ambient[0],
+                    g.game.project.lighting.ambient[1],
+                    g.game.project.lighting.ambient[2]);
+                g.game.lighting.light_count = g.game.project.lighting.point_light_count;
+                for (li = 0; li < g.game.project.lighting.point_light_count; li++) {
+                    project_point_light *src = &g.game.project.lighting.point_lights[li];
                     g.game.lighting.lights[li].position = VEC3(
                         src->position[0], src->position[1], src->position[2]);
                     g.game.lighting.lights[li].color = VEC3(

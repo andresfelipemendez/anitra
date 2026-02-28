@@ -53,9 +53,12 @@ static SDL_GPUGraphicsPipeline *mesh_pipeline = NULL;
 static SDL_GPUSampler *mesh_sampler = NULL;
 /* Per-panel depth textures live in panel_depth[] below */
 static SDL_GPUBuffer *bone_storage_buffer = NULL;
+static SDL_GPUBuffer *bone_identity_buffer = NULL;
 static SDL_GPUTexture *white_texture = NULL;
 
 #define MAX_BONES 128
+#define FLOOR_INSTANCE_MAX 64
+#define WORLD_CHAIN_MAX 512
 
 // Font MSDF atlas
 static SDL_GPUTexture *font_atlas_texture = NULL;
@@ -320,6 +323,180 @@ typedef struct mesh_uniform_data {
     float view[16];
     float model[16];
 } mesh_uniform_data;
+
+static transform_component *scene_find_transform(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->transform_components) return NULL;
+    for (i = 0; i < gs->transform_component_count; i++) {
+        transform_component *tc = &gs->transform_components[i];
+        if (tc->entity_index == entity_index) return tc;
+    }
+    return NULL;
+}
+
+static rotation_component *scene_find_rotation(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->rotation_components) return NULL;
+    for (i = 0; i < gs->rotation_component_count; i++) {
+        rotation_component *rc = &gs->rotation_components[i];
+        if (rc->entity_index == entity_index) return rc;
+    }
+    return NULL;
+}
+
+static scale_component *scene_find_scale(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->scale_components) return NULL;
+    for (i = 0; i < gs->scale_component_count; i++) {
+        scale_component *sc = &gs->scale_components[i];
+        if (sc->entity_index == entity_index) return sc;
+    }
+    return NULL;
+}
+
+static parent_transform_component *scene_find_parent_transform(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->parent_transform_components) return NULL;
+    for (i = 0; i < gs->parent_transform_component_count; i++) {
+        parent_transform_component *pt = &gs->parent_transform_components[i];
+        if (pt->entity_index == entity_index) return pt;
+    }
+    return NULL;
+}
+
+static Quat scene_quat_from_y_deg(float degrees) {
+    float half = (degrees * 3.14159265f / 180.0f) * 0.5f;
+    return QUAT(0.0f, sinf(half), 0.0f, cosf(half));
+}
+
+static Vec3 scene_normalize_scale(Vec3 s) {
+    if (s.x == 0.0f) s.x = 1.0f;
+    if (s.y == 0.0f) s.y = 1.0f;
+    if (s.z == 0.0f) s.z = 1.0f;
+    return s;
+}
+
+static Mat4 scene_local_matrix(game_state *gs, int entity_index) {
+    transform_component *tc;
+    rotation_component *rc;
+    scale_component *sc;
+    Vec3 position = VEC3(0.0f, 0.0f, 0.0f);
+    float rotation_y = 0.0f;
+    Vec3 scale = VEC3(1.0f, 1.0f, 1.0f);
+    if (!gs) return mat4_identity();
+
+    tc = scene_find_transform(gs, entity_index);
+    if (tc) position = tc->position;
+
+    rc = scene_find_rotation(gs, entity_index);
+    if (rc) rotation_y = rc->rotation_y_deg;
+
+    sc = scene_find_scale(gs, entity_index);
+    if (sc) scale = scene_normalize_scale(sc->scale);
+
+    return mat4_from_trs(position, scene_quat_from_y_deg(rotation_y), scale);
+}
+
+static Mat4 scene_resolve_world_matrix(game_state *gs, int entity_index) {
+    int chain[WORLD_CHAIN_MAX];
+    int chain_count = 0;
+    int current = entity_index;
+    int guard = 0;
+    Mat4 world = mat4_identity();
+    if (!gs || !gs->scene_entities) return world;
+
+    while (guard < WORLD_CHAIN_MAX &&
+           current >= 0 && current < gs->scene_entity_count) {
+        parent_transform_component *pt;
+        chain[chain_count++] = current;
+        pt = scene_find_parent_transform(gs, current);
+        if (!pt) break;
+        if (pt->parent_entity_index == current) break;
+        current = pt->parent_entity_index;
+        guard++;
+    }
+
+    while (chain_count > 0) {
+        int idx = chain[--chain_count];
+        world = mat4_mul(world, scene_local_matrix(gs, idx));
+    }
+
+    return world;
+}
+
+static scene_model_asset *scene_asset_for_mesh(game_state *gs, const mesh_component *mc) {
+    int asset_index;
+    if (!gs || !mc) return NULL;
+    asset_index = mc->model_asset_index;
+    if (asset_index < 0 || asset_index >= gs->scene_model_asset_count) return NULL;
+    return &gs->scene_model_assets[asset_index];
+}
+
+static void draw_scene_meshes(memory *m,
+                              SDL_GPURenderPass *render_pass,
+                              SDL_GPUCommandBuffer *cmd_buf,
+                              Mat4 projection,
+                              Mat4 view) {
+    int i;
+    game_state *gs = &m->game;
+    if (!mesh_pipeline || !render_pass || !cmd_buf) return;
+    if (!gs->scene_entities || !gs->mesh_components) return;
+    if (!bone_identity_buffer) return;
+
+    SDL_BindGPUGraphicsPipeline(render_pass, mesh_pipeline);
+
+    for (i = 0; i < gs->mesh_component_count; i++) {
+        mesh_component *mc = &gs->mesh_components[i];
+        scene_model_asset *asset;
+        Mat4 world;
+        Mat4 model;
+        mesh_uniform_data mesh_uniforms;
+        SDL_GPUBuffer *bones_to_bind;
+        uint32_t p;
+
+        if (!mc->visible) continue;
+        if (mc->entity_index < 0 || mc->entity_index >= gs->scene_entity_count) continue;
+
+        asset = scene_asset_for_mesh(gs, mc);
+        if (!asset || !asset->loaded || asset->model.mesh.primitive_count == 0) continue;
+
+        world = scene_resolve_world_matrix(gs, mc->entity_index);
+        model = mat4_mul(world, asset->model.armature_transform);
+
+        memcpy(mesh_uniforms.projection, projection.m, sizeof(float) * 16);
+        memcpy(mesh_uniforms.view, view.m, sizeof(float) * 16);
+        memcpy(mesh_uniforms.model, model.m, sizeof(float) * 16);
+        SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+
+        bones_to_bind = bone_identity_buffer;
+        if (mc->kind == MESH_KIND_SKINNED &&
+            bone_storage_buffer &&
+            gs->mesh3d.skeleton.joint_count > 0 &&
+            gs->mesh3d.skin_mats) {
+            bones_to_bind = bone_storage_buffer;
+        }
+        SDL_BindGPUVertexStorageBuffers(render_pass, 0, &bones_to_bind, 1);
+
+        for (p = 0; p < asset->model.mesh.primitive_count; p++) {
+            GltfPrimitive *prim = &asset->model.mesh.primitives[p];
+            SDL_GPUBufferBinding vbuf_binding = {0};
+            SDL_GPUBufferBinding ibuf_binding = {0};
+            SDL_GPUTextureSamplerBinding tex_bind = {0};
+
+            vbuf_binding.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
+            SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+
+            ibuf_binding.buffer = (SDL_GPUBuffer *)prim->index_buffer;
+            SDL_BindGPUIndexBuffer(render_pass, &ibuf_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+            tex_bind.texture = prim->texture ? (SDL_GPUTexture *)prim->texture : white_texture;
+            tex_bind.sampler = mesh_sampler;
+            SDL_BindGPUFragmentSamplers(render_pass, 0, &tex_bind, 1);
+
+            SDL_DrawGPUIndexedPrimitives(render_pass, prim->index_count, 1, 0, 0, 0);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Font data (MSDF atlas)
@@ -1836,7 +2013,52 @@ EXPORT int init_externals(struct memory *m) {
         }
     }
 
-    // 16. Create sampler (nearest-neighbor for pixel art)
+    // 16. Create identity bone buffer (used for static meshes).
+    {
+        SDL_GPUBufferCreateInfo buf_info = {0};
+        SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
+        SDL_GPUTransferBuffer *transfer = NULL;
+        SDL_GPUCommandBuffer *upload_cmd = NULL;
+        SDL_GPUCopyPass *copy = NULL;
+        SDL_GPUTransferBufferLocation src = {0};
+        SDL_GPUBufferRegion dst = {0};
+        Mat4 *bones;
+        int bi;
+
+        buf_info.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+        buf_info.size = MAX_BONES * sizeof(Mat4);
+        bone_identity_buffer = SDL_CreateGPUBuffer(gpu_device, &buf_info);
+        if (!bone_identity_buffer) {
+            fprintf(stderr, "Failed to create identity bone buffer: %s\n", SDL_GetError());
+            return -1;
+        }
+
+        tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tbuf_info.size = MAX_BONES * sizeof(Mat4);
+        transfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
+        if (!transfer) {
+            fprintf(stderr, "Failed to create identity bone transfer buffer: %s\n", SDL_GetError());
+            return -1;
+        }
+
+        bones = (Mat4 *)SDL_MapGPUTransferBuffer(gpu_device, transfer, false);
+        for (bi = 0; bi < MAX_BONES; bi++) {
+            bones[bi] = mat4_identity();
+        }
+        SDL_UnmapGPUTransferBuffer(gpu_device, transfer);
+
+        upload_cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
+        copy = SDL_BeginGPUCopyPass(upload_cmd);
+        src.transfer_buffer = transfer;
+        dst.buffer = bone_identity_buffer;
+        dst.size = MAX_BONES * sizeof(Mat4);
+        SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+        SDL_EndGPUCopyPass(copy);
+        SDL_SubmitGPUCommandBuffer(upload_cmd);
+        SDL_ReleaseGPUTransferBuffer(gpu_device, transfer);
+    }
+
+    // 17. Create sampler (nearest-neighbor for pixel art)
     {
         SDL_GPUSamplerCreateInfo samp_info = {0};
         samp_info.min_filter = SDL_GPU_FILTER_NEAREST;
@@ -2803,40 +3025,15 @@ EXPORT void update_externals(struct memory *m) {
 
         SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target);
 
-        // 3D Mesh
-        if (m->game.mesh3d.visible && m->game.loaded_model.mesh.primitive_count > 0) {
-            SDL_BindGPUGraphicsPipeline(render_pass, mesh_pipeline);
-
+        // 3D meshes from ECS scene (all model assets from project TOML)
+        {
             float aspect = (float)gw / (float)gh;
-            Mat4 proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, aspect, 0.1f, 100.0f);
+            float fov_deg = m->game.mesh3d.camera_fov_deg > 0.0f ? m->game.mesh3d.camera_fov_deg : 60.0f;
+            float near_plane = m->game.mesh3d.camera_near > 0.0f ? m->game.mesh3d.camera_near : 0.1f;
+            float far_plane = m->game.mesh3d.camera_far > near_plane ? m->game.mesh3d.camera_far : 100.0f;
+            Mat4 proj = mat4_perspective(fov_deg * 3.14159265f / 180.0f, aspect, near_plane, far_plane);
             Mat4 view = mat4_look_at(m->game.mesh3d.camera_eye, m->game.mesh3d.camera_target, m->game.mesh3d.camera_up);
-
-            mesh_uniform_data mesh_uniforms;
-            memcpy(mesh_uniforms.projection, proj.m, sizeof(float) * 16);
-            memcpy(mesh_uniforms.view, view.m, sizeof(float) * 16);
-            memcpy(mesh_uniforms.model, m->game.mesh3d.model_transform.m, sizeof(float) * 16);
-            SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
-
-            SDL_BindGPUVertexStorageBuffers(render_pass, 0, &bone_storage_buffer, 1);
-
-            for (uint32_t p = 0; p < m->game.loaded_model.mesh.primitive_count; p++) {
-                GltfPrimitive *prim = &m->game.loaded_model.mesh.primitives[p];
-
-                SDL_GPUBufferBinding vbuf_binding = {0};
-                vbuf_binding.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
-                SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
-
-                SDL_GPUBufferBinding ibuf_binding = {0};
-                ibuf_binding.buffer = (SDL_GPUBuffer *)prim->index_buffer;
-                SDL_BindGPUIndexBuffer(render_pass, &ibuf_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-
-                SDL_GPUTextureSamplerBinding tex_bind = {0};
-                tex_bind.texture = prim->texture ? (SDL_GPUTexture *)prim->texture : white_texture;
-                tex_bind.sampler = mesh_sampler;
-                SDL_BindGPUFragmentSamplers(render_pass, 0, &tex_bind, 1);
-
-                SDL_DrawGPUIndexedPrimitives(render_pass, prim->index_count, 1, 0, 0, 0);
-            }
+            draw_scene_meshes(m, render_pass, cmd_buf, proj, view);
         }
 
         // 2D sprites + lines
@@ -3054,37 +3251,8 @@ EXPORT void update_externals(struct memory *m) {
                                      vec3_add(m->editor.cam_pos, ed_fwd),
                                      VEC3(0, 1, 0));
 
-        /* 1. 3D mesh (editor camera) */
-        if (m->game.mesh3d.visible && m->game.loaded_model.mesh.primitive_count > 0) {
-            SDL_BindGPUGraphicsPipeline(ed_pass, mesh_pipeline);
-
-            mesh_uniform_data ed_mesh_u;
-            memcpy(ed_mesh_u.projection, ed_proj.m, sizeof(float) * 16);
-            memcpy(ed_mesh_u.view, ed_view.m, sizeof(float) * 16);
-            memcpy(ed_mesh_u.model, m->game.mesh3d.model_transform.m, sizeof(float) * 16);
-            SDL_PushGPUVertexUniformData(cmd_buf, 0, &ed_mesh_u, sizeof(ed_mesh_u));
-
-            SDL_BindGPUVertexStorageBuffers(ed_pass, 0, &bone_storage_buffer, 1);
-
-            for (uint32_t p = 0; p < m->game.loaded_model.mesh.primitive_count; p++) {
-                GltfPrimitive *prim = &m->game.loaded_model.mesh.primitives[p];
-
-                SDL_GPUBufferBinding vb = {0};
-                vb.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
-                SDL_BindGPUVertexBuffers(ed_pass, 0, &vb, 1);
-
-                SDL_GPUBufferBinding ib = {0};
-                ib.buffer = (SDL_GPUBuffer *)prim->index_buffer;
-                SDL_BindGPUIndexBuffer(ed_pass, &ib, SDL_GPU_INDEXELEMENTSIZE_16BIT);
-
-                SDL_GPUTextureSamplerBinding tb = {0};
-                tb.texture = prim->texture ? (SDL_GPUTexture *)prim->texture : white_texture;
-                tb.sampler = mesh_sampler;
-                SDL_BindGPUFragmentSamplers(ed_pass, 0, &tb, 1);
-
-                SDL_DrawGPUIndexedPrimitives(ed_pass, prim->index_count, 1, 0, 0, 0);
-            }
-        }
+        /* 1. 3D meshes (editor camera) */
+        draw_scene_meshes(m, ed_pass, cmd_buf, ed_proj, ed_view);
 
         /* 2. Editor 3D lines (grid + gizmo) */
         if (editor_vert_count > 0 && editor_line_gpu_buf) {
@@ -3288,13 +3456,22 @@ EXPORT void end_externals(struct memory *m) {
     /* depth_texture replaced by panel_depth[] — already freed above */
     if (white_texture) { SDL_ReleaseGPUTexture(gpu_device, white_texture); white_texture = NULL; }
     if (bone_storage_buffer) { SDL_ReleaseGPUBuffer(gpu_device, bone_storage_buffer); bone_storage_buffer = NULL; }
+    if (bone_identity_buffer) { SDL_ReleaseGPUBuffer(gpu_device, bone_identity_buffer); bone_identity_buffer = NULL; }
 
-    // Release glTF model GPU resources
-    for (uint32_t p = 0; p < m->game.loaded_model.mesh.primitive_count; p++) {
-        GltfPrimitive *prim = &m->game.loaded_model.mesh.primitives[p];
-        if (prim->vertex_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->vertex_buffer);
-        if (prim->index_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->index_buffer);
-        if (prim->texture) SDL_ReleaseGPUTexture(gpu_device, (SDL_GPUTexture *)prim->texture);
+    // Release glTF model GPU resources (all scene model assets)
+    {
+        int ai;
+        for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
+            scene_model_asset *asset = &m->game.scene_model_assets[ai];
+            uint32_t p;
+            if (!asset->loaded) continue;
+            for (p = 0; p < asset->model.mesh.primitive_count; p++) {
+                GltfPrimitive *prim = &asset->model.mesh.primitives[p];
+                if (prim->vertex_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->vertex_buffer);
+                if (prim->index_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->index_buffer);
+                if (prim->texture) SDL_ReleaseGPUTexture(gpu_device, (SDL_GPUTexture *)prim->texture);
+            }
+        }
     }
 
     // Shadercross
