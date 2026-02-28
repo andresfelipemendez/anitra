@@ -662,7 +662,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     snprintf(title_buf, sizeof(title_buf), "Memory Profiler    %s / %s  (%.1f%%)",
         format_bytes(a->used), format_bytes(a->capacity), (double)used_pct);
 
-    /* Flatten records for block+grid */
+    /* Flatten records for grid */
     flat_color = 0;
     flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
 
@@ -687,7 +687,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
             CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
         }
 
-        /* Three-panel row */
+        /* Two-panel row */
         CLAY(CLAY_ID("PPanels"), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
@@ -753,102 +753,6 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                             hover_offset = hi.offset;
                             hover_size = hi.size;
                             have_hover = hi.found;
-                        }
-                    }
-                }
-            }
-
-            /* ===== BLOCK PANEL (center, 20%) ===== */
-            CLAY(CLAY_ID("PBlock"), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_PERCENT(0.20f), CLAY_SIZING_GROW({0}) },
-                    .padding = CLAY_PADDING_ALL(8),
-                    .childGap = 2,
-                    .layoutDirection = CLAY_TOP_TO_BOTTOM
-                },
-                .backgroundColor = {35, 35, 40, 255},
-                .cornerRadius = CLAY_CORNER_RADIUS(4)
-            }) {
-                {
-                    Clay_String hdr = CLAY_STRING("Block View");
-                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
-                }
-
-                /* Column of proportional blocks */
-                CLAY(CLAY_ID("PBlockBody"), {
-                    .layout = {
-                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-                        .layoutDirection = CLAY_TOP_TO_BOTTOM
-                    },
-                    .clip = { .vertical = true, .childOffset = {0, 0} }
-                }) {
-                    float block_total_h = (e->prof_container_h > 1.0f) ? e->prof_container_h : (float)(win_h - 80);
-                    int bi;
-                    if (block_total_h < 1.0f) block_total_h = 1.0f;
-
-                    for (bi = 0; bi < flat_count; bi++) {
-                        float frac = (a->capacity > 0) ? ((float)flat[bi].size / (float)a->capacity) : 0.0f;
-                        float bh = frac * block_total_h;
-                        Clay_Color bcolor;
-                        int blk_hovered;
-                        static char block_bufs[PROFILER_MAX_FLAT_RECORDS][48];
-                        if (bh <= 0.0f) continue;
-                        bcolor = profiler_colors[flat[bi].color_idx % profiler_color_count];
-                        blk_hovered = have_hover &&
-                            flat[bi].offset >= hover_offset &&
-                            flat[bi].offset + flat[bi].size <= hover_offset + hover_size;
-                        if (have_hover) {
-                            if (blk_hovered) {
-                                bcolor.r = (float)(bcolor.r + (255 - bcolor.r) * 0.5f);
-                                bcolor.g = (float)(bcolor.g + (255 - bcolor.g) * 0.5f);
-                                bcolor.b = (float)(bcolor.b + (255 - bcolor.b) * 0.5f);
-                            } else {
-                                bcolor.r = (float)(bcolor.r * 0.3f);
-                                bcolor.g = (float)(bcolor.g * 0.3f);
-                                bcolor.b = (float)(bcolor.b * 0.3f);
-                            }
-                        }
-                        snprintf(block_bufs[bi], sizeof(block_bufs[bi]), "%s", flat[bi].tag);
-
-                        CLAY(CLAY_IDI("BlkEntry", (int32_t)bi), {
-                            .layout = {
-                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(bh) },
-                                .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
-                                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
-                            },
-                            .backgroundColor = bcolor,
-                            .cornerRadius = CLAY_CORNER_RADIUS(2)
-                        }) {
-                            if (bh > 14) {
-                                Clay_String bs = {false, (int32_t)strlen(block_bufs[bi]), block_bufs[bi]};
-                                CLAY_TEXT(bs, CLAY_TEXT_CONFIG({.textColor = {0, 0, 0, 200}, .fontSize = 16}));
-                            }
-                        }
-                    }
-
-                    /* Free space block */
-                    {
-                        uint32_t free_bytes = a->capacity - a->used;
-                        float frac = (a->capacity > 0) ? ((float)free_bytes / (float)a->capacity) : 0.0f;
-                        float fh = frac * block_total_h;
-                        static char free_buf[32];
-                        if (fh > 0.0f) {
-                            snprintf(free_buf, sizeof(free_buf), "FREE %s", format_bytes(free_bytes));
-
-                            CLAY(CLAY_ID("BlkFree"), {
-                                .layout = {
-                                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(fh) },
-                                    .padding = { .left = 4, .right = 4, .top = 1, .bottom = 1 },
-                                    .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER}
-                                },
-                                .backgroundColor = {50, 50, 55, 255},
-                                .cornerRadius = CLAY_CORNER_RADIUS(2)
-                            }) {
-                                if (fh > 14) {
-                                    Clay_String fs = {false, (int32_t)strlen(free_buf), free_buf};
-                                    CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {120, 120, 120, 255}, .fontSize = 16}));
-                                }
-                            }
                         }
                     }
                 }

@@ -9,6 +9,7 @@
  */
 
 #include <sys/event.h>
+#include <dirent.h>
 
 /* ------- TCC commands --------------------------------------------------- */
 
@@ -188,11 +189,42 @@ static const char *sdl3_sources_platform[] = {
 
 /* ------- watch (forge) — macOS kqueue ----------------------------------- */
 
+static time_t newest_mtime_recursive(const char *path)
+{
+    struct stat st;
+    time_t newest = 0;
+    DIR *dir;
+    struct dirent *de;
+
+    if (stat(path, &st) != 0) return 0;
+    newest = st.st_mtime;
+    if (!S_ISDIR(st.st_mode)) return newest;
+
+    dir = opendir(path);
+    if (!dir) return newest;
+
+    while ((de = readdir(dir)) != NULL) {
+        char child[PATH_SIZE];
+        time_t child_newest;
+
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+
+        snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+        child_newest = newest_mtime_recursive(child);
+        if (child_newest > newest) newest = child_newest;
+    }
+
+    closedir(dir);
+    return newest;
+}
+
 static int watch_and_rebuild(void)
 {
     int kq, engine_fd, editor_fd, core_fd, externals_fd;
     struct kevent changes[4];
     struct kevent events[4];
+    time_t engine_mtime = 0, editor_mtime = 0, core_mtime = 0, externals_mtime = 0;
 
     printf("=== Forge: watching src/engine + src/editor + src/core + src/externals for changes ===\n");
     fflush(stdout);
@@ -286,12 +318,23 @@ static int watch_and_rebuild(void)
         printf("!! Initial core compile failed. Waiting for changes...\n");
     }
 
+    /* Baseline source mtimes for polling fallback (kqueue on directories
+       misses in-place file edits in some workflows/editors). */
+    engine_mtime = newest_mtime_recursive("src/engine");
+    editor_mtime = newest_mtime_recursive("src/editor");
+    core_mtime = newest_mtime_recursive("src/core");
+    externals_mtime = newest_mtime_recursive("src/externals");
+
     /* Watch loop */
     while (1) {
         int nev, i;
         int engine_changed = 0, editor_changed = 0, core_changed = 0, externals_changed = 0;
+        struct timespec timeout;
 
-        nev = kevent(kq, NULL, 0, events, 4, NULL);
+        timeout.tv_sec = 0;
+        timeout.tv_nsec = 200 * 1000 * 1000; /* 200ms poll fallback cadence */
+
+        nev = kevent(kq, NULL, 0, events, 4, &timeout);
         if (nev < 0) {
             printf("!! kevent wait failed\n");
             break;
@@ -308,14 +351,28 @@ static int watch_and_rebuild(void)
         usleep(50000);
         {
             struct timespec zero = {0, 0};
-            while (kevent(kq, NULL, 0, events, 4, &zero) > 0) {
-                for (i = 0; i < nev; i++) {
+            int drained;
+            while ((drained = kevent(kq, NULL, 0, events, 4, &zero)) > 0) {
+                for (i = 0; i < drained; i++) {
                     if ((int)events[i].ident == engine_fd) engine_changed = 1;
                     if ((int)events[i].ident == editor_fd) editor_changed = 1;
                     if ((int)events[i].ident == core_fd)   core_changed = 1;
                     if ((int)events[i].ident == externals_fd) externals_changed = 1;
                 }
             }
+        }
+
+        /* Poll fallback: catches in-place writes that may not fire vnode events on dirs. */
+        {
+            time_t now_engine = newest_mtime_recursive("src/engine");
+            time_t now_editor = newest_mtime_recursive("src/editor");
+            time_t now_core = newest_mtime_recursive("src/core");
+            time_t now_externals = newest_mtime_recursive("src/externals");
+
+            if (now_engine > engine_mtime) { engine_changed = 1; engine_mtime = now_engine; }
+            if (now_editor > editor_mtime) { editor_changed = 1; editor_mtime = now_editor; }
+            if (now_core > core_mtime) { core_changed = 1; core_mtime = now_core; }
+            if (now_externals > externals_mtime) { externals_changed = 1; externals_mtime = now_externals; }
         }
 
         if (engine_changed) {
