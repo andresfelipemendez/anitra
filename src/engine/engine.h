@@ -3,8 +3,8 @@
 
 #include <export.h>
 
-DECLARE_FUNC_VOID_pGAME(init_engine)
-DECLARE_FUNC_VOID_pGAME(destroy_engine)
-DECLARE_FUNC_VOID_pGAME(update_engine)
+DECLARE_ENGINE_FUNC_VOID(init_engine)
+DECLARE_ENGINE_FUNC_VOID(destroy_engine)
+DECLARE_ENGINE_FUNC_VOID(update_engine)
 
 #endif

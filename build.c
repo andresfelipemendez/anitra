@@ -1,8 +1,9 @@
 /*
  * build.c - nobuild build system for the Anitra game engine
  *
- * Compile:  tcc -Blib/tcc-windows -o builder.exe build.c  (Windows)
- *           ./tcc -Blib/tcc-linux -o builder build.c      (Linux)
+ * Compile:  tcc -Blib/tcc-windows -o builder.exe build.c             (Windows)
+ *           ./tcc -Blib/tcc-linux -o builder build.c                (Linux)
+ *           lib/tcc/macos/tcc -Blib/tcc/macos -o builder build.c    (macOS)
  * Usage:    builder [target]
  *
  * Targets:  all (default), run, tracy, sdl3, spirvcross, shadercross, shaders, harfbuzz, externals, core, engine, editor, test, exe, watch, clean
@@ -24,7 +25,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <limits.h>
-#include <sys/inotify.h>
+#include <fcntl.h>
 #include <poll.h>
 #endif
 
@@ -47,6 +48,12 @@
 #define DLL_EXT  ".dll"
 #define DLL_PREFIX ""
 #define EXE_EXT  ".exe"
+#elif defined(__APPLE__)
+#define OBJ_EXT  ".o"
+#define LIB_EXT  ".a"
+#define DLL_EXT  ".dylib"
+#define DLL_PREFIX "lib"
+#define EXE_EXT  ""
 #else
 #define OBJ_EXT  ".o"
 #define LIB_EXT  ".a"
@@ -270,7 +277,7 @@ static int find_tools(void)
 #else
 static int find_tools(void)
 {
-    /* On Linux, just verify that cc exists */
+    /* On Unix, just verify that cc exists */
     if (system("command -v cc >/dev/null 2>&1") != 0) {
         printf("!! cc not found. Install a C compiler (gcc or clang).\n");
         return 1;
@@ -446,6 +453,12 @@ static int build_tracy(void)
                 "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
                 tool_link, pdb_suffix);
         }
+#elif defined(__APPLE__)
+        snprintf(cmd, sizeof(cmd),
+            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT " "
+            OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
+            "-lpthread -lc++",
+            tool_link);
 #else
         snprintf(cmd, sizeof(cmd),
             "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT " "
@@ -518,6 +531,12 @@ static int build_harfbuzz(void)
                 "dwrite.lib",
                 tool_link, pdb_suffix);
         }
+#elif defined(__APPLE__)
+        snprintf(cmd, sizeof(cmd),
+            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT " "
+            OBJ_EXT_DIR "/harfbuzz" OBJ_EXT " "
+            "-lc++",
+            tool_link);
 #else
         snprintf(cmd, sizeof(cmd),
             "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT " "
@@ -665,6 +684,19 @@ static int build_externals(void)
         " " DEBUG_DIR "/SDL3_shadercross.def"
         " " DEBUG_DIR "/tracy.def"
         " " DEBUG_DIR "/harfbuzz.def");
+#elif defined(__APPLE__)
+    snprintf(cmd, sizeof(cmd),
+        "lib/tcc/macos/tcc -Blib/tcc/macos -shared"
+        " -DMAC_OS_X_VERSION_MIN_REQUIRED=1100"
+        " -DSTBI_NO_THREAD_LOCALS -DCLAY_DISABLE_SIMD"
+        " -o " DEBUG_DIR "/libexternals.dylib"
+        " -DTRACY_ENABLE -DTRACY_ON_DEMAND"
+        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
+        " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
+        " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
+        " src/externals/externals.c"
+        " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -ltracy -lharfbuzz"
+        " -lpthread -lm");
 #else
     snprintf(cmd, sizeof(cmd),
         "./tcc -Blib/tcc-linux -shared"
@@ -692,94 +724,20 @@ static int build_externals(void)
     return 0;
 }
 
-/* ------- TCC commands (used by build_core, build_engine, build_editor, watch) */
+/* ------- Platform-specific implementations ------------------------------ */
+/*
+ * Each platform file provides:
+ *   - TCC command defines (TCC_COMPILE_CMD, TCC_EDITOR_CMD, etc.)
+ *   - sdl3_sources_platform[] array
+ *   - watch_and_rebuild() function
+ */
 
-#ifdef _WIN32
-#define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
-#define HOTRELOAD_EDITOR_EVENT_NAME "Global\\ReloadEditorEvent"
-#define HOTRELOAD_CORE_EVENT_NAME   "Global\\ReloadCoreEvent"
-
-#define TCC_COMPILE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -shared" \
-    " -o build/Debug/engine.dll" \
-    " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf" \
-    " src/engine/engine.c" \
-    " src/engine/renderer.c" \
-    " src/engine/physics.c" \
-    " src/engine/scene.c" \
-    " src/engine/debug_render.c" \
-    " src/engine/anim.c" \
-    " src/engine/gltf_loader.c" \
-    " build/Debug/SDL3.def"
-#define TCC_EDITOR_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -shared" \
-    " -o build/Debug/editor.dll" \
-    " -DCLAY_DISABLE_SIMD" \
-    " -Isrc -Isrc/editor -Isrc/engine" \
-    " -Ilib/SDL3/include -Ilib/clay" \
-    " src/editor/editor.c" \
-    " build/Debug/SDL3.def"
-
-#define TCC_CORE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -shared" \
-    " -o build/Debug/core.dll" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include" \
-    " src/core/core.c" \
-    " src/core/loadlibrary_windows.c" \
-    " build/Debug/SDL3.def" \
-    " build/Debug/externals.def"
-
-#define TCC_EXE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
-    " -o build/Debug/AnitraEngine.exe" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include" \
-    " src/main.c" \
-    " src/core/loadlibrary_windows.c"
-
-#define TCC_TEST_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
-    " -o build/Debug/test_dock.exe" \
-    " -Isrc/editor" \
-    " tests/test_dock.c"
+#if defined(_WIN32)
+#include "build_win32.c"
+#elif defined(__APPLE__)
+#include "build_macos.c"
 #else
-#define TCC_COMPILE_CMD \
-    "./tcc -Blib/tcc-linux -shared" \
-    " -o build/Debug/engine.so" \
-    " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf" \
-    " src/engine/*.c"
-
-#define TCC_EDITOR_CMD \
-    "./tcc -Blib/tcc-linux -shared" \
-    " -o build/Debug/editor.so" \
-    " -DCLAY_DISABLE_SIMD" \
-    " -Isrc -Isrc/editor -Isrc/engine" \
-    " -Ilib/SDL3/include -Ilib/clay" \
-    " src/editor/editor.c"
-
-#define TCC_CORE_CMD \
-    "./tcc -Blib/tcc-linux -shared" \
-    " -o build/Debug/core.so" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include" \
-    " src/core/core.c" \
-    " src/core/loadlibrary_linux.c"
-
-#define TCC_EXE_CMD \
-    "./tcc -Blib/tcc-linux" \
-    " -o build/Debug/AnitraEngine" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include" \
-    " src/main.c" \
-    " src/core/loadlibrary_linux.c" \
-    " -ldl"
-
-#define TCC_TEST_CMD \
-    "./tcc -Blib/tcc-linux" \
-    " -o build/Debug/test_dock" \
-    " -Isrc/editor" \
-    " tests/test_dock.c"
+#include "build_linux.c"
 #endif
 
 /* ------- core (DLL) ----------------------------------------------------- */
@@ -857,350 +815,7 @@ static int build_test(void)
     return 0;
 }
 
-/* ------- watch (forge) -------------------------------------------------- */
-
-static HANDLE g_engine_process = NULL;
-
-static int watch_and_rebuild(void)
-{
-#ifdef _WIN32
-    HANDLE hEngineDir, hEditorDir, hCoreDir;
-    HANDLE hEngineEvent, hEditorEvent, hCoreEvent;
-    char engine_buf[4096], editor_buf[4096], core_buf[4096];
-    OVERLAPPED engine_ov = {0}, editor_ov = {0}, core_ov = {0};
-    DWORD bytes;
-
-    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
-    fflush(stdout);
-
-    /* Open directory handles for watching */
-    hEngineDir = CreateFileA(
-        "src/engine", FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-    if (hEngineDir == INVALID_HANDLE_VALUE) {
-        printf("!! Failed to open src/engine for watching (error %lu)\n", GetLastError());
-        return 1;
-    }
-
-    hEditorDir = CreateFileA(
-        "src/editor", FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-    if (hEditorDir == INVALID_HANDLE_VALUE) {
-        printf("!! Failed to open src/editor for watching (error %lu)\n", GetLastError());
-        CloseHandle(hEngineDir);
-        return 1;
-    }
-
-    hCoreDir = CreateFileA(
-        "src/core", FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-    if (hCoreDir == INVALID_HANDLE_VALUE) {
-        printf("!! Failed to open src/core for watching (error %lu)\n", GetLastError());
-        CloseHandle(hEngineDir);
-        CloseHandle(hEditorDir);
-        return 1;
-    }
-
-    engine_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
-    editor_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
-    core_ov.hEvent   = CreateEventA(NULL, TRUE, FALSE, NULL);
-
-    /* Named events for signaling the running application */
-    hEngineEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EVENT_NAME);
-    hEditorEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EDITOR_EVENT_NAME);
-    hCoreEvent   = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_CORE_EVENT_NAME);
-    if (!hEngineEvent || !hEditorEvent || !hCoreEvent) {
-        printf("!! Failed to create reload events (error %lu)\n", GetLastError());
-        return 1;
-    }
-
-    if (ensure_dirs() != 0) return 1;
-
-    /* Initial compiles (app handles copying to _copy on load) */
-    printf(">> " TCC_COMPILE_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_COMPILE_CMD) == 0) {
-        printf("   Initial engine compile OK.\n");
-    } else {
-        printf("!! Initial engine compile failed.\n");
-    }
-
-    printf(">> " TCC_EDITOR_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_EDITOR_CMD) == 0) {
-        printf("   Initial editor compile OK.\n");
-    } else {
-        printf("!! Initial editor compile failed.\n");
-    }
-
-    printf(">> " TCC_CORE_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_CORE_CMD) == 0) {
-        printf("   Initial core compile OK.\n");
-    } else {
-        printf("!! Initial core compile failed.\n");
-    }
-
-    /* Watch loop: wait on directory changes or engine process exit */
-    while (1) {
-        HANDLE waitHandles[4];
-        DWORD handleCount = 3;
-        DWORD waitResult;
-
-        ReadDirectoryChangesW(hEngineDir, engine_buf, sizeof(engine_buf), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            &bytes, &engine_ov, NULL);
-        ReadDirectoryChangesW(hEditorDir, editor_buf, sizeof(editor_buf), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            &bytes, &editor_ov, NULL);
-        ReadDirectoryChangesW(hCoreDir, core_buf, sizeof(core_buf), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            &bytes, &core_ov, NULL);
-
-        waitHandles[0] = engine_ov.hEvent;
-        waitHandles[1] = editor_ov.hEvent;
-        waitHandles[2] = core_ov.hEvent;
-        if (g_engine_process) {
-            waitHandles[3] = g_engine_process;
-            handleCount = 4;
-        }
-        waitResult = WaitForMultipleObjects(handleCount, waitHandles, FALSE, INFINITE);
-
-        /* Engine process exited */
-        if (g_engine_process && waitResult == WAIT_OBJECT_0 + 3) {
-            printf("\n--- Engine exited, stopping watch. ---\n");
-            fflush(stdout);
-            break;
-        }
-
-        /* Debounce */
-        Sleep(50);
-        CancelIo(hEngineDir);
-        CancelIo(hEditorDir);
-        CancelIo(hCoreDir);
-        ResetEvent(engine_ov.hEvent);
-        ResetEvent(editor_ov.hEvent);
-        ResetEvent(core_ov.hEvent);
-
-        if (waitResult == WAIT_OBJECT_0) {
-            /* Engine directory changed */
-            printf("\n--- Engine change detected, recompiling... ---\n");
-            fflush(stdout);
-            printf(">> " TCC_COMPILE_CMD "\n");
-            fflush(stdout);
-            if (system(TCC_COMPILE_CMD) == 0) {
-                printf("   Compile OK. Signaling engine reload...\n");
-                SetEvent(hEngineEvent);
-                ResetEvent(hEngineEvent);
-            } else {
-                printf("!! Engine compile failed.\n");
-            }
-        } else if (waitResult == WAIT_OBJECT_0 + 1) {
-            /* Editor directory changed */
-            printf("\n--- Editor change detected, recompiling... ---\n");
-            fflush(stdout);
-            printf(">> " TCC_EDITOR_CMD "\n");
-            fflush(stdout);
-            if (system(TCC_EDITOR_CMD) == 0) {
-                printf("   Compile OK. Signaling editor reload...\n");
-                SetEvent(hEditorEvent);
-                ResetEvent(hEditorEvent);
-            } else {
-                printf("!! Editor compile failed.\n");
-            }
-        } else if (waitResult == WAIT_OBJECT_0 + 2) {
-            /* Core directory changed */
-            printf("\n--- Core change detected, recompiling... ---\n");
-            fflush(stdout);
-            printf(">> " TCC_CORE_CMD "\n");
-            fflush(stdout);
-            if (system(TCC_CORE_CMD) == 0) {
-                printf("   Compile OK. Signaling core reload...\n");
-                SetEvent(hCoreEvent);
-                ResetEvent(hCoreEvent);
-            } else {
-                printf("!! Core compile failed.\n");
-            }
-        }
-        fflush(stdout);
-    }
-
-    CloseHandle(hEngineEvent);
-    CloseHandle(hEditorEvent);
-    CloseHandle(hCoreEvent);
-    CloseHandle(engine_ov.hEvent);
-    CloseHandle(editor_ov.hEvent);
-    CloseHandle(core_ov.hEvent);
-    CloseHandle(hEngineDir);
-    CloseHandle(hEditorDir);
-    CloseHandle(hCoreDir);
-    return 0;
-
-#else /* Linux inotify */
-    int ifd, engine_wfd, editor_wfd, core_wfd;
-    struct pollfd pfd;
-    char buf[4096];
-
-    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
-    fflush(stdout);
-
-    ifd = inotify_init();
-    if (ifd < 0) {
-        printf("!! inotify_init failed\n");
-        return 1;
-    }
-
-    engine_wfd = inotify_add_watch(ifd, "src/engine",
-        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
-    if (engine_wfd < 0) {
-        printf("!! inotify_add_watch failed on src/engine\n");
-        close(ifd);
-        return 1;
-    }
-
-    editor_wfd = inotify_add_watch(ifd, "src/editor",
-        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
-    if (editor_wfd < 0) {
-        printf("!! inotify_add_watch failed on src/editor\n");
-        close(ifd);
-        return 1;
-    }
-
-    core_wfd = inotify_add_watch(ifd, "src/core",
-        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
-    if (core_wfd < 0) {
-        printf("!! inotify_add_watch failed on src/core\n");
-        close(ifd);
-        return 1;
-    }
-
-    /* Ensure build output directory exists */
-    if (ensure_dirs() != 0) return 1;
-
-    /* Initial compile — engine */
-    printf(">> " TCC_COMPILE_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_COMPILE_CMD) == 0) {
-        fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
-        printf("   Initial engine compile OK.\n");
-    } else {
-        printf("!! Initial engine compile failed. Waiting for changes...\n");
-    }
-
-    /* Initial compile — editor */
-    printf(">> " TCC_EDITOR_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_EDITOR_CMD) == 0) {
-        fclose(fopen(DEBUG_DIR "/.editor-reload-signal", "w"));
-        printf("   Initial editor compile OK.\n");
-    } else {
-        printf("!! Initial editor compile failed. Waiting for changes...\n");
-    }
-
-    /* Initial compile — core */
-    printf(">> " TCC_CORE_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_CORE_CMD) == 0) {
-        printf("   Initial core compile OK.\n");
-    } else {
-        printf("!! Initial core compile failed. Waiting for changes...\n");
-    }
-
-    /* Watch loop */
-    pfd.fd = ifd;
-    pfd.events = POLLIN;
-
-    while (1) {
-        int ret = poll(&pfd, 1, -1);
-        if (ret < 0) {
-            printf("!! poll failed\n");
-            break;
-        }
-
-        /* Drain inotify events — track which directories changed */
-        int engine_changed = 0, editor_changed = 0, core_changed = 0;
-        {
-            ssize_t n = read(ifd, buf, sizeof(buf));
-            ssize_t i = 0;
-            while (i < n) {
-                struct inotify_event *ev = (struct inotify_event *)(buf + i);
-                if (ev->wd == engine_wfd) engine_changed = 1;
-                if (ev->wd == editor_wfd) editor_changed = 1;
-                if (ev->wd == core_wfd)   core_changed = 1;
-                i += sizeof(struct inotify_event) + ev->len;
-            }
-        }
-
-        /* Debounce: wait 50ms and drain again */
-        usleep(50000);
-        {
-            struct pollfd drain_pfd;
-            drain_pfd.fd = ifd;
-            drain_pfd.events = POLLIN;
-            while (poll(&drain_pfd, 1, 0) > 0) {
-                ssize_t n = read(ifd, buf, sizeof(buf));
-                ssize_t i = 0;
-                while (i < n) {
-                    struct inotify_event *ev = (struct inotify_event *)(buf + i);
-                    if (ev->wd == engine_wfd) engine_changed = 1;
-                    if (ev->wd == editor_wfd) editor_changed = 1;
-                    if (ev->wd == core_wfd)   core_changed = 1;
-                    i += sizeof(struct inotify_event) + ev->len;
-                }
-            }
-        }
-
-        if (engine_changed) {
-            printf("\n--- Engine change detected, recompiling... ---\n");
-            fflush(stdout);
-            printf(">> " TCC_COMPILE_CMD "\n");
-            fflush(stdout);
-            if (system(TCC_COMPILE_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
-                printf("   Compile OK. Engine reload signal written.\n");
-            } else {
-                printf("!! Engine compile failed.\n");
-            }
-        }
-
-        if (editor_changed) {
-            printf("\n--- Editor change detected, recompiling... ---\n");
-            fflush(stdout);
-            printf(">> " TCC_EDITOR_CMD "\n");
-            fflush(stdout);
-            if (system(TCC_EDITOR_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.editor-reload-signal", "w"));
-                printf("   Compile OK. Editor reload signal written.\n");
-            } else {
-                printf("!! Editor compile failed.\n");
-            }
-        }
-
-        if (core_changed) {
-            printf("\n--- Core change detected, recompiling... ---\n");
-            fflush(stdout);
-            printf(">> " TCC_CORE_CMD "\n");
-            fflush(stdout);
-            if (system(TCC_CORE_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.core-reload-signal", "w"));
-                printf("   Compile OK. Core reload signal written.\n");
-            } else {
-                printf("!! Core compile failed.\n");
-            }
-        }
-        fflush(stdout);
-    }
-
-    close(ifd);
-    return 0;
-#endif
-}
+/* watch_and_rebuild() is provided by the platform file included above */
 
 /* ------- exe ------------------------------------------------------------ */
 static int build_exe(void)
@@ -1254,7 +869,7 @@ static void sdl3_obj_path(char *out, size_t out_size, const char *src)
     }
     *o = '\0';
 
-    /* Replace .c or .cpp extension with platform obj extension */
+    /* Replace .c, .cpp, or .m extension with platform obj extension */
     dot = strrchr(out, '.');
     if (dot) {
         strcpy(dot, OBJ_EXT);
@@ -1439,299 +1054,7 @@ static const char *sdl3_sources_common[] = {
     "lib/SDL3/src/libm/s_tan.c"
 };
 
-#ifdef _WIN32
-/* SDL3 Windows-specific sources */
-static const char *sdl3_sources_platform[] = {
-    /* Audio */
-    "lib/SDL3/src/audio/directsound/SDL_directsound.c",
-    "lib/SDL3/src/audio/wasapi/SDL_wasapi.c",
-    "lib/SDL3/src/audio/dummy/SDL_dummyaudio.c",
-    "lib/SDL3/src/audio/disk/SDL_diskaudio.c",
-
-    /* Camera */
-    "lib/SDL3/src/camera/mediafoundation/SDL_camera_mediafoundation.c",
-    "lib/SDL3/src/camera/dummy/SDL_camera_dummy.c",
-
-    /* Core */
-    "lib/SDL3/src/core/windows/SDL_gameinput.cpp",
-    "lib/SDL3/src/core/windows/SDL_hid.c",
-    "lib/SDL3/src/core/windows/SDL_immdevice.c",
-    "lib/SDL3/src/core/windows/SDL_windows.c",
-    "lib/SDL3/src/core/windows/SDL_xinput.c",
-
-    /* Dialog */
-    "lib/SDL3/src/dialog/windows/SDL_windowsdialog.c",
-
-    /* Filesystem */
-    "lib/SDL3/src/filesystem/windows/SDL_sysfilesystem.c",
-    "lib/SDL3/src/filesystem/windows/SDL_sysfsops.c",
-
-    /* Haptic */
-    "lib/SDL3/src/haptic/windows/SDL_dinputhaptic.c",
-    "lib/SDL3/src/haptic/windows/SDL_windowshaptic.c",
-    "lib/SDL3/src/haptic/hidapi/SDL_hidapihaptic.c",
-    "lib/SDL3/src/haptic/hidapi/SDL_hidapihaptic_lg4ff.c",
-
-    /* HID */
-    "lib/SDL3/src/hidapi/windows/hid.c",
-
-    /* I/O */
-    "lib/SDL3/src/io/generic/SDL_asyncio_generic.c",
-    "lib/SDL3/src/io/windows/SDL_asyncio_windows_ioring.c",
-
-    /* Joystick */
-    "lib/SDL3/src/joystick/windows/SDL_dinputjoystick.c",
-    "lib/SDL3/src/joystick/windows/SDL_rawinputjoystick.c",
-    "lib/SDL3/src/joystick/windows/SDL_windows_gaming_input.c",
-    "lib/SDL3/src/joystick/windows/SDL_windowsjoystick.c",
-    "lib/SDL3/src/joystick/windows/SDL_xinputjoystick.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapijoystick.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_combined.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gamecube.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_luna.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps3.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps4.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps5.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_rumble.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_shield.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_stadia.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam_hori.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steamdeck.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_switch.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_wii.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xbox360.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xbox360w.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xboxone.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gip.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam_triton.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_lg4ff.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_8bitdo.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_flydigi.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gamesir.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_sinput.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_zuiki.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_report_descriptor.c",
-    "lib/SDL3/src/joystick/virtual/SDL_virtualjoystick.c",
-    "lib/SDL3/src/joystick/gdk/SDL_gameinputjoystick.cpp",
-    "lib/SDL3/src/joystick/dummy/SDL_sysjoystick.c",
-
-    /* Loadso */
-    "lib/SDL3/src/loadso/windows/SDL_sysloadso.c",
-
-    /* Locale */
-    "lib/SDL3/src/locale/windows/SDL_syslocale.c",
-
-    /* Main */
-    "lib/SDL3/src/main/windows/SDL_sysmain_runapp.c",
-    "lib/SDL3/src/main/generic/SDL_sysmain_callbacks.c",
-
-    /* Misc */
-    "lib/SDL3/src/misc/windows/SDL_sysurl.c",
-
-    /* Power */
-    "lib/SDL3/src/power/windows/SDL_syspower.c",
-
-    /* Process */
-    "lib/SDL3/src/process/windows/SDL_windowsprocess.c",
-
-    /* Sensor */
-    "lib/SDL3/src/sensor/windows/SDL_windowssensor.c",
-
-    /* Storage */
-    "lib/SDL3/src/storage/generic/SDL_genericstorage.c",
-    "lib/SDL3/src/storage/steam/SDL_steamstorage.c",
-
-    /* Thread */
-    "lib/SDL3/src/thread/windows/SDL_syscond_cv.c",
-    "lib/SDL3/src/thread/windows/SDL_sysmutex.c",
-    "lib/SDL3/src/thread/windows/SDL_sysrwlock_srw.c",
-    "lib/SDL3/src/thread/windows/SDL_syssem.c",
-    "lib/SDL3/src/thread/windows/SDL_systhread.c",
-    "lib/SDL3/src/thread/windows/SDL_systls.c",
-    "lib/SDL3/src/thread/generic/SDL_syscond.c",
-    "lib/SDL3/src/thread/generic/SDL_sysrwlock.c",
-
-    /* Time & Timer */
-    "lib/SDL3/src/time/windows/SDL_systime.c",
-    "lib/SDL3/src/timer/windows/SDL_systimer.c",
-
-    /* Tray */
-    "lib/SDL3/src/tray/windows/SDL_tray.c",
-
-    /* Video - Windows */
-    "lib/SDL3/src/video/windows/SDL_windowsclipboard.c",
-    "lib/SDL3/src/video/windows/SDL_windowsevents.c",
-    "lib/SDL3/src/video/windows/SDL_windowsframebuffer.c",
-    "lib/SDL3/src/video/windows/SDL_windowsgameinput.cpp",
-    "lib/SDL3/src/video/windows/SDL_windowskeyboard.c",
-    "lib/SDL3/src/video/windows/SDL_windowsmessagebox.c",
-    "lib/SDL3/src/video/windows/SDL_windowsmodes.c",
-    "lib/SDL3/src/video/windows/SDL_windowsmouse.c",
-    "lib/SDL3/src/video/windows/SDL_windowsopengl.c",
-    "lib/SDL3/src/video/windows/SDL_windowsopengles.c",
-    "lib/SDL3/src/video/windows/SDL_windowsrawinput.c",
-    "lib/SDL3/src/video/windows/SDL_windowsshape.c",
-    "lib/SDL3/src/video/windows/SDL_windowsvideo.c",
-    "lib/SDL3/src/video/windows/SDL_windowsvulkan.c",
-    "lib/SDL3/src/video/windows/SDL_windowswindow.c",
-
-    /* Render - D3D */
-    "lib/SDL3/src/render/direct3d/SDL_render_d3d.c",
-    "lib/SDL3/src/render/direct3d/SDL_shaders_d3d.c",
-    "lib/SDL3/src/render/direct3d11/SDL_render_d3d11.c",
-    "lib/SDL3/src/render/direct3d11/SDL_shaders_d3d11.c",
-    "lib/SDL3/src/render/direct3d12/SDL_render_d3d12.c",
-    "lib/SDL3/src/render/direct3d12/SDL_shaders_d3d12.c",
-
-    /* GPU - D3D12 */
-    "lib/SDL3/src/gpu/d3d12/SDL_gpu_d3d12.c"
-};
-
-#else
-/* SDL3 Linux-specific sources */
-static const char *sdl3_sources_platform[] = {
-    /* Audio */
-    "lib/SDL3/src/audio/alsa/SDL_alsa_audio.c",
-    "lib/SDL3/src/audio/pulseaudio/SDL_pulseaudio.c",
-    "lib/SDL3/src/audio/dummy/SDL_dummyaudio.c",
-    "lib/SDL3/src/audio/disk/SDL_diskaudio.c",
-
-    /* Camera */
-    "lib/SDL3/src/camera/v4l2/SDL_camera_v4l2.c",
-    "lib/SDL3/src/camera/dummy/SDL_camera_dummy.c",
-
-    /* Core */
-    "lib/SDL3/src/core/linux/SDL_dbus.c",
-    "lib/SDL3/src/core/linux/SDL_evdev.c",
-    "lib/SDL3/src/core/linux/SDL_evdev_capabilities.c",
-    "lib/SDL3/src/core/linux/SDL_evdev_kbd.c",
-    "lib/SDL3/src/core/linux/SDL_progressbar.c",
-    "lib/SDL3/src/core/linux/SDL_threadprio.c",
-    "lib/SDL3/src/core/linux/SDL_udev.c",
-    "lib/SDL3/src/core/unix/SDL_appid.c",
-    "lib/SDL3/src/core/unix/SDL_poll.c",
-
-    /* Dialog */
-    "lib/SDL3/src/dialog/unix/SDL_portaldialog.c",
-    "lib/SDL3/src/dialog/unix/SDL_unixdialog.c",
-    "lib/SDL3/src/dialog/unix/SDL_zenitydialog.c",
-    "lib/SDL3/src/dialog/unix/SDL_zenitymessagebox.c",
-
-    /* Filesystem */
-    "lib/SDL3/src/filesystem/unix/SDL_sysfilesystem.c",
-    "lib/SDL3/src/filesystem/posix/SDL_sysfsops.c",
-
-    /* Haptic */
-    "lib/SDL3/src/haptic/linux/SDL_syshaptic.c",
-    "lib/SDL3/src/haptic/hidapi/SDL_hidapihaptic.c",
-    "lib/SDL3/src/haptic/hidapi/SDL_hidapihaptic_lg4ff.c",
-
-    /* HID */
-    "lib/SDL3/src/hidapi/linux/hid.c",
-
-    /* I/O */
-    "lib/SDL3/src/io/generic/SDL_asyncio_generic.c",
-
-    /* Joystick */
-    "lib/SDL3/src/joystick/linux/SDL_sysjoystick.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapijoystick.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_combined.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gamecube.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_luna.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps3.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps4.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps5.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_rumble.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_shield.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_stadia.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam_hori.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steamdeck.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_switch.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_wii.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xbox360.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xbox360w.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xboxone.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gip.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam_triton.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_lg4ff.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_8bitdo.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_flydigi.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gamesir.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_sinput.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_zuiki.c",
-    "lib/SDL3/src/joystick/hidapi/SDL_report_descriptor.c",
-    "lib/SDL3/src/joystick/virtual/SDL_virtualjoystick.c",
-    "lib/SDL3/src/joystick/dummy/SDL_sysjoystick.c",
-
-    /* Loadso */
-    "lib/SDL3/src/loadso/dlopen/SDL_sysloadso.c",
-
-    /* Locale */
-    "lib/SDL3/src/locale/unix/SDL_syslocale.c",
-
-    /* Main */
-    "lib/SDL3/src/main/generic/SDL_sysmain_callbacks.c",
-
-    /* Misc */
-    "lib/SDL3/src/misc/unix/SDL_sysurl.c",
-
-    /* Power */
-    "lib/SDL3/src/power/linux/SDL_syspower.c",
-
-    /* Process */
-    "lib/SDL3/src/process/posix/SDL_posixprocess.c",
-
-    /* Sensor */
-    "lib/SDL3/src/sensor/dummy/SDL_dummysensor.c",
-
-    /* Storage */
-    "lib/SDL3/src/storage/generic/SDL_genericstorage.c",
-    "lib/SDL3/src/storage/steam/SDL_steamstorage.c",
-
-    /* Thread */
-    "lib/SDL3/src/thread/pthread/SDL_syscond.c",
-    "lib/SDL3/src/thread/pthread/SDL_sysmutex.c",
-    "lib/SDL3/src/thread/pthread/SDL_sysrwlock.c",
-    "lib/SDL3/src/thread/pthread/SDL_syssem.c",
-    "lib/SDL3/src/thread/pthread/SDL_systhread.c",
-    "lib/SDL3/src/thread/pthread/SDL_systls.c",
-
-    /* Time & Timer */
-    "lib/SDL3/src/time/unix/SDL_systime.c",
-    "lib/SDL3/src/timer/unix/SDL_systimer.c",
-
-    /* Tray */
-    "lib/SDL3/src/tray/unix/SDL_tray.c",
-
-    /* Video - X11 */
-    "lib/SDL3/src/video/x11/edid-parse.c",
-    "lib/SDL3/src/video/x11/SDL_x11clipboard.c",
-    "lib/SDL3/src/video/x11/SDL_x11dyn.c",
-    "lib/SDL3/src/video/x11/SDL_x11events.c",
-    "lib/SDL3/src/video/x11/SDL_x11framebuffer.c",
-    "lib/SDL3/src/video/x11/SDL_x11keyboard.c",
-    "lib/SDL3/src/video/x11/SDL_x11messagebox.c",
-    "lib/SDL3/src/video/x11/SDL_x11modes.c",
-    "lib/SDL3/src/video/x11/SDL_x11mouse.c",
-    "lib/SDL3/src/video/x11/SDL_x11opengl.c",
-    "lib/SDL3/src/video/x11/SDL_x11opengles.c",
-    "lib/SDL3/src/video/x11/SDL_x11pen.c",
-    "lib/SDL3/src/video/x11/SDL_x11settings.c",
-    "lib/SDL3/src/video/x11/SDL_x11shape.c",
-    "lib/SDL3/src/video/x11/SDL_x11toolkit.c",
-    "lib/SDL3/src/video/x11/SDL_x11touch.c",
-    "lib/SDL3/src/video/x11/SDL_x11video.c",
-    "lib/SDL3/src/video/x11/SDL_x11vulkan.c",
-    "lib/SDL3/src/video/x11/SDL_x11window.c",
-    "lib/SDL3/src/video/x11/SDL_x11xfixes.c",
-    "lib/SDL3/src/video/x11/SDL_x11xinput2.c",
-    "lib/SDL3/src/video/x11/SDL_x11xsync.c",
-    "lib/SDL3/src/video/x11/SDL_x11xtest.c",
-    "lib/SDL3/src/video/x11/xsettings-client.c"
-};
-#endif
+/* sdl3_sources_platform[] is provided by the platform file included above */
 
 static int build_sdl3(void)
 {
@@ -1765,7 +1088,7 @@ static int build_sdl3(void)
         if (ensure_msvc_tools() != 0) return 1;
 #endif
 
-        /* Detect C++ by extension */
+        /* Detect C++ and Objective-C by extension */
         ext = strrchr(src, '.');
         is_cpp = (ext && strcmp(ext, ".cpp") == 0);
 
@@ -1775,7 +1098,7 @@ static int build_sdl3(void)
                 "\"%s\" /std:c++20 /EHsc /MD /O2 /nologo /c "
                 "/DSDL_BUILDING_SDL3 /DDLL_EXPORT /D_WINDOWS /DWIN32 "
                 "/Ilib/SDL3/include /Ilib/SDL3/include/build_config "
-                "/Ilib/SDL3/src "
+                "/Ilib/SDL3/src /Ilib/SDL3/src/video/khronos "
                 "/Fo%s "
                 "/Fd" OBJ_SDL3_DIR "/sdl3.pdb "
                 "%s",
@@ -1785,7 +1108,7 @@ static int build_sdl3(void)
                 "\"%s\" /TC /MD /O2 /nologo /c "
                 "/DSDL_BUILDING_SDL3 /DDLL_EXPORT /D_WINDOWS /DWIN32 "
                 "/Ilib/SDL3/include /Ilib/SDL3/include/build_config "
-                "/Ilib/SDL3/src "
+                "/Ilib/SDL3/src /Ilib/SDL3/src/video/khronos "
                 "/Fo%s "
                 "/Fd" OBJ_SDL3_DIR "/sdl3.pdb "
                 "%s",
@@ -1797,16 +1120,25 @@ static int build_sdl3(void)
                 "%s -std=c++20 -fPIC -O2 -c "
                 "-DSDL_BUILDING_SDL3 -DDLL_EXPORT "
                 "-Ilib/SDL3/include -Ilib/SDL3/include/build_config "
-                "-Ilib/SDL3/src "
+                "-Ilib/SDL3/src -Ilib/SDL3/src/video/khronos "
                 "-o %s "
                 "%s",
                 tool_cxx, obj, src);
+        } else if (ext && strcmp(ext, ".m") == 0) {
+            snprintf(cmd, sizeof(cmd),
+                "%s -fPIC -O2 -c -fobjc-arc "
+                "-DSDL_BUILDING_SDL3 -DDLL_EXPORT "
+                "-Ilib/SDL3/include -Ilib/SDL3/include/build_config "
+                "-Ilib/SDL3/src -Ilib/SDL3/src/video/khronos "
+                "-o %s "
+                "%s",
+                tool_cc, obj, src);
         } else {
             snprintf(cmd, sizeof(cmd),
                 "%s -fPIC -O2 -c "
                 "-DSDL_BUILDING_SDL3 -DDLL_EXPORT "
                 "-Ilib/SDL3/include -Ilib/SDL3/include/build_config "
-                "-Ilib/SDL3/src "
+                "-Ilib/SDL3/src -Ilib/SDL3/src/video/khronos "
                 "-o %s "
                 "%s",
                 tool_cc, obj, src);
@@ -1849,6 +1181,18 @@ static int build_sdl3(void)
             "user32.lib gdi32.lib winmm.lib imm32.lib "
             "ole32.lib oleaut32.lib version.lib advapi32.lib "
             "setupapi.lib shell32.lib cfgmgr32.lib",
+            tool_link);
+#elif defined(__APPLE__)
+        snprintf(cmd, sizeof(cmd),
+            "%s -shared -o " DEBUG_DIR "/libSDL3" DLL_EXT " "
+            "@" OBJ_SDL3_DIR "/sdl3_objs.txt "
+            "-lpthread -lm "
+            "-framework Cocoa -framework IOKit -framework CoreAudio "
+            "-framework AudioToolbox -framework CoreVideo -framework Metal "
+            "-framework QuartzCore -framework Carbon -framework ForceFeedback "
+            "-framework GameController -framework CoreHaptics "
+            "-framework UniformTypeIdentifiers -framework CoreMedia "
+            "-framework AVFoundation",
             tool_link);
 #else
         snprintf(cmd, sizeof(cmd),
@@ -2093,7 +1437,7 @@ static int build_shadercross(void)
     } else {
         printf("   SDL_shadercross is up to date.\n");
     }
-    /* No DXC on Linux */
+    /* No DXC on Unix */
 #endif
 
     return 0;
@@ -2234,7 +1578,7 @@ static int build_and_run(void)
         return rc;
     }
 #else
-    /* Fork and exec the engine on Linux */
+    /* Fork and exec the engine on Unix */
     pid_t pid = fork();
     if (pid < 0) {
         printf("!! Failed to fork\n");

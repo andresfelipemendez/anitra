@@ -19,32 +19,32 @@ bool bbox_collide(const rect* a, const rect* b) {
             a_bottom < b_top && a_top > b_bottom);
 }
 
-void collision(memory* g) {
+void collision(game_state* gs) {
     entity* player = &scene.entities[0];
     assert(player->type == PLAYER);
-    
-    player->collider.rect.x = player->pos.x + (player->velocity.x * g->dt);
-    player->collider.rect.y = player->pos.y + (player->velocity.y * g->dt);
-    
+
+    player->collider.rect.x = player->pos.x + (player->velocity.x * gs->dt);
+    player->collider.rect.y = player->pos.y + (player->velocity.y * gs->dt);
+
     vec2 player_center = {player->collider.rect.x, player->collider.rect.y};
-    debug_draw_rect(&g->debug_renderer, player_center, player->collider.rect.w, player->collider.rect.h, DEBUG_BLUE);
-    
+    debug_draw_rect(&gs->dbg, player_center, player->collider.rect.w, player->collider.rect.h, DEBUG_BLUE);
+
 
     float cross_size = 8.0f;
     vec2 center_h1 = {player->pos.x - cross_size, player->pos.y};
     vec2 center_h2 = {player->pos.x + cross_size, player->pos.y};
     vec2 center_v1 = {player->pos.x, player->pos.y - cross_size};
     vec2 center_v2 = {player->pos.x, player->pos.y + cross_size};
-    
-    debug_draw_line(&g->debug_renderer, center_h1, center_h2, DEBUG_RED);
-    debug_draw_line(&g->debug_renderer, center_v1, center_v2, DEBUG_RED);
-    
+
+    debug_draw_line(&gs->dbg, center_h1, center_h2, DEBUG_RED);
+    debug_draw_line(&gs->dbg, center_v1, center_v2, DEBUG_RED);
+
     for (int i = 1; i < scene.entity_count; i++) {
         entity* e = &scene.entities[i];
-        
+
         e->collider.rect.x = e->pos.x;
         e->collider.rect.y = e->pos.y;
-        
+
         debug_color color = DEBUG_GREEN;
         const animator* pa = &player->current_animation;
         if(pa->animation.keyframes[0].frame != -1 &&
@@ -54,7 +54,7 @@ void collision(memory* g) {
                 player->pos.x + pa->animation.collider.x,
                 player->pos.y + pa->animation.collider.y,
             };
-            debug_draw_rect(&g->debug_renderer, hit_center, pa->animation.collider.w, pa->animation.collider.h, DEBUG_YELLOW);
+            debug_draw_rect(&gs->dbg, hit_center, pa->animation.collider.w, pa->animation.collider.h, DEBUG_YELLOW);
             rect hit_box = {
                 player->pos.x + pa->animation.collider.x,
                 player->pos.y + pa->animation.collider.y,
@@ -63,75 +63,75 @@ void collision(memory* g) {
             };
             if(bbox_collide(&hit_box, &e->collider.rect)){
                 color = DEBUG_RED;
-                e->health -= 5 * g->dt;
+                e->health -= 5 * gs->dt;
             }
         }
         if (bbox_collide(&player->collider.rect, &e->collider.rect)) {
             color = DEBUG_RED;
-            player->health -= 5.0f * g->dt;
+            player->health -= 5.0f * gs->dt;
             if (player->health < 0.0f) {
                 player->health = 0.0f;
             }
         }
         animator* a = &e->current_animation;
-        
-        if(a->animation.keyframes[0].frame != -1 && 
-            a->frame_index >= a->animation.keyframes[0].frame && 
+
+        if(a->animation.keyframes[0].frame != -1 &&
+            a->frame_index >= a->animation.keyframes[0].frame &&
             a->frame_index <= a->animation.keyframes[1].frame) {
-                
-            vec2 hit_center = { 
+
+            vec2 hit_center = {
                 player->pos.x + a->animation.collider.x,
                 player->pos.y + a->animation.collider.y,
             };
-            debug_draw_rect(&g->debug_renderer, hit_center, a->animation.collider.w, a->animation.collider.h, DEBUG_YELLOW);
+            debug_draw_rect(&gs->dbg, hit_center, a->animation.collider.w, a->animation.collider.h, DEBUG_YELLOW);
         }
 
         vec2 center = {e->collider.rect.x, e->collider.rect.y};
-        debug_draw_rect(&g->debug_renderer, center, e->collider.rect.w, e->collider.rect.h, color);
-        
+        debug_draw_rect(&gs->dbg, center, e->collider.rect.w, e->collider.rect.h, color);
+
         vec2 enemy_center_h1 = {e->pos.x - cross_size, e->pos.y};
         vec2 enemy_center_h2 = {e->pos.x + cross_size, e->pos.y};
         vec2 enemy_center_v1 = {e->pos.x, e->pos.y - cross_size};
         vec2 enemy_center_v2 = {e->pos.x, e->pos.y + cross_size};
-        
-        debug_draw_line(&g->debug_renderer, enemy_center_h1, enemy_center_h2, DEBUG_RED);
-        debug_draw_line(&g->debug_renderer, enemy_center_v1, enemy_center_v2, DEBUG_RED);
+
+        debug_draw_line(&gs->dbg, enemy_center_h1, enemy_center_h2, DEBUG_RED);
+        debug_draw_line(&gs->dbg, enemy_center_v1, enemy_center_v2, DEBUG_RED);
     }
 
     player->collider.rect.x = player->pos.x;
     player->collider.rect.y = player->pos.y;
 }
 
-void apply_movement(memory* g) {
+void apply_movement(game_state* gs) {
     entity* player = &scene.entities[0];
     assert(player->type == PLAYER);
-        
+
     vec2 new_pos = {
-        player->pos.x + player->velocity.x * g->dt,
-        player->pos.y + player->velocity.y * g->dt
+        player->pos.x + player->velocity.x * gs->dt,
+        player->pos.y + player->velocity.y * gs->dt
     };
-    
+
     player->collider.rect.x = new_pos.x;
     player->collider.rect.y = new_pos.y;
-    
+
     bool collision_detected = false;
-    
+
     for (int j = 1; j < scene.entity_count; j++) {
         entity* other = &scene.entities[j];
         other->collider.rect.x = other->pos.x;
         other->collider.rect.y = other->pos.y;
-        
+
         if (bbox_collide(&player->collider.rect, &other->collider.rect)) {
             collision_detected = true;
             break;
         }
     }
-    
+
     if (!collision_detected) {
         player->pos = new_pos;
     }
-    
+
     player->velocity.x = 0.0f;
     player->velocity.y = 0.0f;
-    
+
 }

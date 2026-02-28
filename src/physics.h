@@ -8,7 +8,7 @@
 int check_aabb_collision(rect a, rect b);
 
 /* Physics update functions */
-void collision(memory *g);
-void apply_movement(memory *g);
+void collision(game_state *gs);
+void apply_movement(game_state *gs);
 
 #endif /* PHYSICS_H */

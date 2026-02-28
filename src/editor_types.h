@@ -6,6 +6,7 @@
 /* Panel IDs for docking system */
 typedef enum {
     PANEL_GAME,
+    PANEL_EDITOR,
     PANEL_PROFILER,
     PANEL_INSPECTOR,
     PANEL_OUTLINE,

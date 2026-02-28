@@ -3,9 +3,9 @@
 
 #include <game.h>
 
-struct memory;
+struct game_state;
 struct collider;
-void collision(struct memory* g);
-void apply_movement(struct memory* g);
+void collision(struct game_state* gs);
+void apply_movement(struct game_state* gs);
 bool bbox_collide(const rect* a, const rect* b);
 #endif

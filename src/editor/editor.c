@@ -286,8 +286,8 @@ static void add_line(editor_state *e, Vec3 a, Vec3 b, float r, float g, float bl
 
 /* ── Line building ─────────────────────────────────────────────── */
 
-static void build_lines(memory *g) {
-    editor_state *e = &g->editor;
+static void build_lines(game_state *gs, editor_state *es) {
+    editor_state *e = es;
     float gc = 0.3f;
     int i;
     Vec3 axis_dirs[3];
@@ -307,17 +307,17 @@ static void build_lines(memory *g) {
     add_line(e, VEC3(0, 0, 0),   VEC3(0, 2, 0),  0.2f, 0.8f, 0.2f);  /* Y green */
 
     /* Game camera frustum gizmo */
-    if (g->mesh3d.visible) {
-        Vec3 eye    = g->mesh3d.camera_eye;
-        Vec3 target = g->mesh3d.camera_target;
-        Vec3 cam_up = g->mesh3d.camera_up;
+    if (gs->mesh3d.visible) {
+        Vec3 eye    = gs->mesh3d.camera_eye;
+        Vec3 target = gs->mesh3d.camera_target;
+        Vec3 cam_up = gs->mesh3d.camera_up;
         Vec3 fwd    = vec3_normalize(vec3_sub(target, eye));
         Vec3 right  = vec3_normalize(vec3_cross(fwd, cam_up));
         Vec3 up     = vec3_cross(right, fwd);
 
         float fov    = 60.0f * 3.14159265f / 180.0f;
-        float aspect = (g->width > 0 && g->height > 0)
-                       ? (float)g->width / (float)g->height : 4.0f / 3.0f;
+        float aspect = (gs->width > 0 && gs->height > 0)
+                       ? (float)gs->width / (float)gs->height : 4.0f / 3.0f;
         float near_d = 0.3f;
         float vis_d  = 3.0f;
 
@@ -389,8 +389,8 @@ static void build_lines(memory *g) {
 
 /* ── Camera input (polling-based) ──────────────────────────────── */
 
-static void update_camera(memory *g) {
-    editor_state *e = &g->editor;
+static void update_camera(game_state *gs, editor_state *es) {
+    editor_state *e = es;
     const bool *keys;
     float dt, spd, dx, dy;
     Vec3 fwd, right, up;
@@ -401,7 +401,7 @@ static void update_camera(memory *g) {
     if (focused != (SDL_Window *)e->window) return;
 
     keys = SDL_GetKeyboardState(NULL);
-    dt   = g->dt;
+    dt   = gs->dt;
     fwd  = cam_forward(e);
     right = vec3_normalize(vec3_cross(fwd, VEC3(0, 1, 0)));
     up    = VEC3(0, 1, 0);
@@ -425,8 +425,8 @@ static void update_camera(memory *g) {
 
 /* ── Gizmo hover detection (polling-based) ─────────────────────── */
 
-static void update_gizmo_hover(memory *g) {
-    editor_state *e = &g->editor;
+static void update_gizmo_hover(game_state *gs, editor_state *es) {
+    editor_state *e = es;
     SDL_Window *mouse_win;
     int i;
     float fw2, fh2, ed_aspect, mx, my;
@@ -435,7 +435,7 @@ static void update_gizmo_hover(memory *g) {
     float giz_dist, giz_len, best_dist;
     Vec3 axis_dirs[3];
 
-    if (!e->open || !e->window || !g->mesh3d.visible) {
+    if (!e->open || !e->window || !gs->mesh3d.visible) {
         e->gizmo_hovered = 0;
         return;
     }
@@ -463,7 +463,7 @@ static void update_gizmo_hover(memory *g) {
     my -= e->panel_y;
     mouse = VEC3(mx, my, 0);
 
-    giz = g->mesh3d.camera_eye;
+    giz = gs->mesh3d.camera_eye;
     giz_dist = vec3_len(vec3_sub(giz, e->cam_pos));
     giz_len  = giz_dist * 0.08f;
     if (giz_len < 0.1f) giz_len = 0.1f;
@@ -488,8 +488,8 @@ static void update_gizmo_hover(memory *g) {
 
 /* ── Public API ────────────────────────────────────────────────── */
 
-EXPORT void init_editor(memory *g) {
-    editor_state *e = &g->editor;
+EXPORT void init_editor(game_state *gs, editor_state *es) {
+    editor_state *e = es;
     if (e->initialized) return;
 
     e->cam_pos    = VEC3(0.0f, 3.0f, 8.0f);
@@ -506,24 +506,24 @@ EXPORT void init_editor(memory *g) {
 
     /* Create profiler Clay context (one-time, backed by editor_arena).
        profiler_clay_ctx in editor_state survives hot-reload. */
-    if (!e->profiler_clay_ctx && g->editor_arena) {
+    if (!e->profiler_clay_ctx && es->editor_arena) {
         uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(g->editor_arena, clay_size, 16, "clay_editor");
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_editor");
         if (clay_sub) {
             Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
             Clay_ErrorHandler err = {0};
             e->profiler_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
             Clay_SetCurrentContext((Clay_Context *)e->profiler_clay_ctx);
             Clay_SetMeasureTextFunction(profiler_measure_text, e);
-            g->clay_editor = e->profiler_clay_ctx;
+            es->clay_editor = e->profiler_clay_ctx;
         }
     }
 }
 
 /* ── Profiler Clay layout (produces render commands for externals GPU upload) ── */
 
-static void profiler_layout(memory *g) {
-    editor_state *e = &g->editor;
+static void profiler_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
     Clay_Context *pctx = (Clay_Context *)e->profiler_clay_ctx;
     int prof_win_idx;
@@ -547,10 +547,10 @@ static void profiler_layout(memory *g) {
         arena *clay_sub_arena = NULL;
         uint32_t ri;
         /* Find the clay_editor sub-arena by tag in editor_arena records */
-        for (ri = 0; ri < g->editor_arena->record_count; ri++) {
-            if (g->editor_arena->records[ri].child &&
-                strcmp(g->editor_arena->records[ri].tag, "clay_editor") == 0) {
-                clay_sub_arena = g->editor_arena->records[ri].child;
+        for (ri = 0; ri < es->editor_arena->record_count; ri++) {
+            if (es->editor_arena->records[ri].child &&
+                strcmp(es->editor_arena->records[ri].tag, "clay_editor") == 0) {
+                clay_sub_arena = es->editor_arena->records[ri].child;
                 break;
             }
         }
@@ -579,13 +579,13 @@ static void profiler_layout(memory *g) {
         Clay_Vector2 mpos = {e->prof_mouse_x, e->prof_mouse_y};
         Clay_Vector2 sdelta = {0, e->prof_scroll_y};
         Clay_SetPointerState(mpos, (bool)e->prof_mouse_down);
-        Clay_UpdateScrollContainers(true, sdelta, g->dt);
+        Clay_UpdateScrollContainers(true, sdelta, gs->dt);
         e->prof_scroll_y = 0; /* consumed */
     }
 
     Clay_BeginLayout();
 
-    a = &g->arena;
+    a = gs->root_arena;
     used_pct = (a->capacity > 0) ? (100.0f * a->used / a->capacity) : 0.0f;
 
     snprintf(title_buf, sizeof(title_buf), "Memory Profiler    %s / %s  (%.1f%%)",
@@ -923,8 +923,8 @@ static void profiler_layout(memory *g) {
     }
 }
 
-EXPORT void update_editor(memory *g) {
-    editor_state *e = &g->editor;
+EXPORT void update_editor(game_state *gs, editor_state *es) {
+    editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
 
     if (!e->open) return;
@@ -946,14 +946,14 @@ EXPORT void update_editor(memory *g) {
         int game_node = dock_find_leaf_for_panel_global(d, PANEL_GAME, &game_win_idx);
         if (game_node >= 0) {
             DockNode *gn = &d->nodes[game_node];
-            g->width = (int)gn->w;
-            g->height = (int)(gn->h - DOCK_HEADER_HEIGHT);
-            if (g->height < 1) g->height = 1;
+            gs->width = (int)gn->w;
+            gs->height = (int)(gn->h - DOCK_HEADER_HEIGHT);
+            if (gs->height < 1) gs->height = 1;
         } else {
             int dw2, dh2;
             SDL_GetWindowSizeInPixels((SDL_Window *)d->windows[0].sdl_window, &dw2, &dh2);
-            g->width = dw2;
-            g->height = dh2;
+            gs->width = dw2;
+            gs->height = dh2;
         }
     }
 
@@ -978,22 +978,22 @@ EXPORT void update_editor(memory *g) {
     }
 
     /* ── Profiler Clay layout (produces render commands for externals) ── */
-    profiler_layout(g);
+    profiler_layout(gs, es);
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
-    update_camera(g);
-    update_gizmo_hover(g);
-    build_lines(g);
+    update_camera(gs, es);
+    update_gizmo_hover(gs, es);
+    build_lines(gs, es);
 }
 
-EXPORT void destroy_editor(memory *g) {
-    (void)g;
+EXPORT void destroy_editor(game_state *gs, editor_state *es) {
+    (void)gs; (void)es;
 }
 
-EXPORT int editor_handle_event(memory *g, void *event_ptr) {
-    editor_state *e = &g->editor;
+EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr) {
+    editor_state *e = es;
     SDL_Event *ev = (SDL_Event *)event_ptr;
-    dock_state *d = (dock_state *)g->editor.dock;
+    dock_state *d = (dock_state *)es->dock;
     DragState *drag = &d->drag;
     ResizeState *resize = &d->resize;
     SDL_Window *evwin;
@@ -1275,8 +1275,8 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
             Vec3 ed_fwd, giz, world_axis, center_s, tip_s;
 
             e->gizmo_active = e->gizmo_hovered;
-            e->gizmo_drag_start_eye    = g->mesh3d.camera_eye;
-            e->gizmo_drag_start_target = g->mesh3d.camera_target;
+            e->gizmo_drag_start_eye    = gs->mesh3d.camera_eye;
+            e->gizmo_drag_start_target = gs->mesh3d.camera_target;
             e->gizmo_drag_accum = 0;
 
             fw2 = e->panel_w; fh2 = e->panel_h;
@@ -1286,7 +1286,7 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
             ed_view = mat4_look_at(e->cam_pos, vec3_add(e->cam_pos, ed_fwd), VEC3(0, 1, 0));
             vp = mat4_mul(ed_proj, ed_view);
 
-            giz = g->mesh3d.camera_eye;
+            giz = gs->mesh3d.camera_eye;
             giz_dist = vec3_len(vec3_sub(giz, e->cam_pos));
             giz_len  = giz_dist * 0.08f;
             if (giz_len < 0.1f) giz_len = 0.1f;
@@ -1319,8 +1319,8 @@ EXPORT int editor_handle_event(memory *g, void *event_ptr) {
         world_axis = (e->gizmo_active == 1) ? VEC3(1, 0, 0) :
                      (e->gizmo_active == 2) ? VEC3(0, 1, 0) : VEC3(0, 0, 1);
         delta = vec3_scale(world_axis, e->gizmo_drag_accum * e->gizmo_world_per_pixel);
-        g->mesh3d.camera_eye    = vec3_add(e->gizmo_drag_start_eye, delta);
-        g->mesh3d.camera_target = vec3_add(e->gizmo_drag_start_target, delta);
+        gs->mesh3d.camera_eye    = vec3_add(e->gizmo_drag_start_eye, delta);
+        gs->mesh3d.camera_target = vec3_add(e->gizmo_drag_start_target, delta);
     }
 
     /* Gizmo: left-button up ends drag */

@@ -69,6 +69,28 @@ EXPORT int init_core() {
     memory g = {0};
     int reload;
 
+    /* Set default asset paths */
+    g.game.default_model_path = "assets/models/Knight.glb";
+    g.game.default_animation_path = "assets/animations/Rig_Medium_General.glb";
+    g.game.texture_player = "assets/char_spritesheet.png";
+    g.game.texture_tiles = "assets/Dungeon_Tileset.png";
+    g.game.texture_slime = "assets/pinkslime_spritesheet.png";
+    g.game.texture_health_bar = "assets/health_bar_hud.png";
+    g.game.texture_health_fill = "assets/health_hud.png";
+    g.game.font_editor = "assets/fonts/SourceCodePro-Regular.ttf";
+    g.game.shader_sprite_vs = "assets/shaders/compiled/sprite_vs.spv";
+    g.game.shader_sprite_fs = "assets/shaders/compiled/sprite_fs.spv";
+    g.game.shader_debug_lines_vs = "assets/shaders/compiled/debug_lines_vs.spv";
+    g.game.shader_debug_lines_fs = "assets/shaders/compiled/debug_lines_fs.spv";
+    g.game.shader_ui_rect_vs = "assets/shaders/compiled/ui_rect_vs.spv";
+    g.game.shader_ui_rect_fs = "assets/shaders/compiled/ui_rect_fs.spv";
+    g.game.shader_font_vs = "assets/shaders/compiled/font_vs.spv";
+    g.game.shader_font_fs = "assets/shaders/compiled/font_fs.spv";
+    g.game.shader_mesh_vs = "assets/shaders/compiled/mesh_vs.spv";
+    g.game.shader_mesh_fs = "assets/shaders/compiled/mesh_fs.spv";
+    g.game.shader_composite_vs = "assets/shaders/compiled/composite_vs.spv";
+    g.game.shader_composite_fs = "assets/shaders/compiled/composite_fs.spv";
+
 /* Load engine DLL (copy first so engine.dll stays unlocked) */
     copylibrary("engine", "engine_copy");
     engine_lib = loadlibrary("engine_copy");
@@ -77,9 +99,9 @@ EXPORT int init_core() {
       return 1;
     }
     
-    init_func init_e = (init_func)getfunction(engine_lib, "init_engine");
-    destroy_func destroy_e = (destroy_func)getfunction(engine_lib, "destroy_engine");
-    update_func update_e = (update_func)getfunction(engine_lib, "update_engine");
+    engine_init_fn init_e = (engine_init_fn)getfunction(engine_lib, "init_engine");
+    engine_destroy_fn destroy_e = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
+    engine_update_fn update_e = (engine_update_fn)getfunction(engine_lib, "update_engine");
     
     if (!init_e || !destroy_e || !update_e) {
       fprintf(stderr, "Failed to get engine functions\n");
@@ -95,11 +117,11 @@ EXPORT int init_core() {
     copylibrary("editor", "editor_copy");
     editor_lib = loadlibrary("editor_copy");
     if (editor_lib) {
-      init_func init_ed = (init_func)getfunction(editor_lib, "init_editor");
-      destroy_func destroy_ed = (destroy_func)getfunction(editor_lib, "destroy_editor");
-      update_func update_ed = (update_func)getfunction(editor_lib, "update_editor");
-      handle_event_func handle_ev = (handle_event_func)getfunction(editor_lib, "editor_handle_event");
-      
+      editor_init_fn init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
+      editor_destroy_fn destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
+      editor_update_fn update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
+      editor_handle_event_fn handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
+
       if (!init_ed || !destroy_ed || !update_ed) {
         fprintf(stderr, "Warning: Editor functions not found - editor disabled\n");
         unloadlibrary(editor_lib);
@@ -167,7 +189,7 @@ int begin_game_loop(memory *g) {
                                 FALSE, HOTRELOAD_CORE_EVENT_NAME);
 #endif
 
-  while (g->play) {
+  while (g->game.play) {
 #ifdef _WIN32
 if (reloadFlag) {
       reloadFlag = 0;
@@ -189,9 +211,9 @@ if (reloadFlag) {
         continue;
       }
       
-init_func new_init = (init_func)getfunction(engine_lib, "init_engine");
-      destroy_func new_destroy = (destroy_func)getfunction(engine_lib, "destroy_engine");
-      update_func new_update = (update_func)getfunction(engine_lib, "update_engine");
+engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine");
+      engine_destroy_fn new_destroy = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
+      engine_update_fn new_update = (engine_update_fn)getfunction(engine_lib, "update_engine");
 
       if (!new_init || !new_destroy || !new_update) {
         fprintf(stderr, "Failed to get engine functions after reload\n");
@@ -225,10 +247,10 @@ init_func new_init = (init_func)getfunction(engine_lib, "init_engine");
         continue;
       }
 
-      init_func new_init_ed = (init_func)getfunction(editor_lib, "init_editor");
-      destroy_func new_destroy_ed = (destroy_func)getfunction(editor_lib, "destroy_editor");
-      update_func new_update_ed = (update_func)getfunction(editor_lib, "update_editor");
-      handle_event_func new_handle_ev = (handle_event_func)getfunction(editor_lib, "editor_handle_event");
+      editor_init_fn new_init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
+      editor_destroy_fn new_destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
+      editor_update_fn new_update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
+      editor_handle_event_fn new_handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
 
       if (!new_init_ed || !new_destroy_ed || !new_update_ed) {
         fprintf(stderr, "Failed to get editor functions after reload\n");

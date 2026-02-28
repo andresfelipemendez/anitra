@@ -5,7 +5,7 @@
 #include "debug_render.h"
 #include "draw_list.h"
 #include "gltf_types.h"
-#include "editor.h"
+#include "editor/editor.h"
 
 #ifndef __cplusplus
 #include <stdbool.h>
@@ -135,15 +135,14 @@ typedef struct mesh3d_state {
     Mat4 model_transform;
 } mesh3d_state;
 
-typedef struct memory {
-  struct arena arena;
-  struct arena *gameplay;       /* sub-arena for engine/gameplay allocations */
-  struct arena *editor_arena;   /* sub-arena for editor/dock allocations */
+typedef struct game_state {
+  struct arena *root_arena;     /* pointer to memory.arena */
+  struct arena *gameplay;       /* sub-arena for engine allocations */
 
   double _t_prev;
 
-  debug_renderer debug_renderer;
-  draw_list draw_list;
+  debug_renderer dbg;
+  draw_list dl;
 
   camera camera;
   input_state input;
@@ -154,18 +153,16 @@ typedef struct memory {
   float dt;
 
   mesh3d_state mesh3d;
+  GltfModel loaded_model;       /* loaded 3D model data */
 
   /* GPU device handle — set by externals, used by engine for asset loading */
   void *gpu_device;
 
-  /* Clay UI contexts — opaque Clay_Context*, set by externals init.
-     Game Clay: for in-game UI (pause menu, HUD). Allocated from main arena.
-     Editor Clay: for editor UI (profiler, panels). Allocated from editor_arena. */
+  /* Clay UI context — opaque Clay_Context*, set by externals init.
+     Game Clay: for in-game UI (pause menu, HUD). Allocated from main arena. */
   void *clay_game;
-void *clay_editor;
 
-  /* Asset paths - can be overridden at runtime */
-/* Asset paths - loaded from config file at startup */
+  /* Asset paths — loaded from config file at startup */
   const char *default_model_path;
   const char *default_animation_path;
   const char *texture_player;
@@ -186,6 +183,12 @@ void *clay_editor;
   const char *shader_mesh_fs;
   const char *shader_composite_vs;
   const char *shader_composite_fs;
+} game_state;
+
+typedef struct memory {
+  struct arena arena;
+  game_state game;
+  editor_state editor;
 } memory;
 
 #endif /* GAME_H */

@@ -15,6 +15,13 @@ typedef struct { float x, y, z, r, g, b; } editor_line_vert;
 #define PROF_GRID_MAX_ROWS 512
 
 typedef struct editor_state {
+    /* Arena pointers — set by externals init, used by editor for allocation */
+    struct arena *root_arena;      /* pointer to memory.arena (for profiler arena display) */
+    struct arena *editor_arena;    /* sub-arena for editor allocations */
+
+    /* Clay editor context — opaque Clay_Context*, allocated from editor_arena */
+    void *clay_editor;
+
     /* Camera */
     Vec3  cam_pos;
     float cam_yaw, cam_pitch;

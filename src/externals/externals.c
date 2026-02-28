@@ -102,15 +102,15 @@ static int header_tex_w[PANEL_COUNT] = {0};
 static SDL_GPUTexture *gpu_textures[TEXTURE_COUNT] = {NULL};
 
 // Engine callbacks (loaded by core.cpp)
-static init g_init = NULL;
-static destroy g_destroy = NULL;
-static update g_update = NULL;
+static engine_init_fn g_init = NULL;
+static engine_destroy_fn g_destroy = NULL;
+static engine_update_fn g_update = NULL;
 
 // Editor callbacks (loaded by core.cpp)
-static init g_editor_init = NULL;
-static destroy g_editor_destroy = NULL;
-static update g_editor_update = NULL;
-static handle_event g_editor_handle_event = NULL;
+static editor_init_fn g_editor_init = NULL;
+static editor_destroy_fn g_editor_destroy = NULL;
+static editor_update_fn g_editor_update = NULL;
+static editor_handle_event_fn g_editor_handle_event = NULL;
 
 // ---------------------------------------------------------------------------
 // Vertex structures
@@ -541,7 +541,7 @@ SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
     SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
     
     SDL_EndGPUCopyPass(copy_pass);
-    if (SDL_SubmitGPUCommandBuffer(cmd) != 0) {
+    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
         fprintf(stderr, "Failed to submit GPU command buffer for texture upload: %s\n", filepath);
         SDL_ReleaseGPUTexture(gpu_device, texture);
         return NULL;
@@ -549,6 +549,7 @@ SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
 
     printf("Loaded texture: %s (%dx%d)\n", filepath, w, h);
     return texture;
+}
 
 // ---------------------------------------------------------------------------
 // Font loading
@@ -775,7 +776,7 @@ static SDL_GPUBuffer* upload_storage_buffer(const void *data, uint32_t size) {
     SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
     
     SDL_EndGPUCopyPass(copy);
-    if (SDL_SubmitGPUCommandBuffer(cmd) != 0) {
+    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
         fprintf(stderr, "Failed to submit GPU command buffer for storage upload\n");
         SDL_ReleaseGPUBuffer(gpu_device, buf);
         return NULL;
@@ -801,11 +802,6 @@ static int font_upload_to_gpu(FontData *font) {
         font->grid_indices,
         font->grid_index_count * sizeof(uint16_t));
 
-    printf("Font GPU buffers uploaded (curves=%uB, glyphs=%uB, grid=%uB, indices=%uB)\n",
-           font->curve_count * (uint32_t)sizeof(BezierCurve),
-           256 * (uint32_t)sizeof(GlyphInfo),
-           font->grid_cell_count * (uint32_t)sizeof(GpuGridCell),
-           font->grid_index_count * (uint32_t)sizeof(uint16_t));
     return 0;
 }
 
@@ -1396,7 +1392,8 @@ static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_bu
         SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->rect_vert_count, 1, 0, 0);
     }
 
-    if (ui->font_vert_count > 0 && ui->font_gpu_buf) {
+    if (ui->font_vert_count > 0 && ui->font_gpu_buf &&
+        font_curve_buffer && font_glyph_buffer && font_grid_cell_buffer && font_grid_index_buffer) {
         SDL_BindGPUGraphicsPipeline(render_pass, font_pipeline);
         SDL_PushGPUVertexUniformData(cmd_buf, 0, uniforms, sizeof(*uniforms));
 
@@ -1427,7 +1424,7 @@ static void ensure_panel_textures(dock_state *d);
 // init_externals
 // ---------------------------------------------------------------------------
 
-EXPORT int init_externals(struct memory *g) {
+EXPORT int init_externals(struct memory *m) {
     dock_state *dock = NULL;
 
     // 1. Init SDL
@@ -1461,7 +1458,7 @@ EXPORT int init_externals(struct memory *g) {
     }
 
     /* Expose GPU device to engine for asset loading */
-    g->gpu_device = gpu_device;
+    m->game.gpu_device = gpu_device;
 
     // 5. Claim window
     if (!SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
@@ -1475,12 +1472,13 @@ EXPORT int init_externals(struct memory *g) {
     // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
 // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
     SDL_GPUShader* sprite_vs = load_shader_from_spirv(
-        g->shader_sprite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        m->game.shader_sprite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* sprite_fs = load_shader_from_spirv(
-        g->shader_sprite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        m->game.shader_sprite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!sprite_vs || !sprite_fs) {
         fprintf(stderr, "Failed to compile sprite shaders\n");
         return -1;
+    }
 
     // 7. Create sprite pipeline
     {
@@ -1563,12 +1561,13 @@ EXPORT int init_externals(struct memory *g) {
 
 // 8. Compile debug line shaders (split files)
     SDL_GPUShader* line_vs = load_shader_from_spirv(
-        g->shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        m->game.shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* line_fs = load_shader_from_spirv(
-        g->shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        m->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!line_vs || !line_fs) {
         fprintf(stderr, "Failed to compile debug line shaders\n");
         return -1;
+    }
 
     // 9. Create line pipeline
     {
@@ -1634,15 +1633,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // 9b. Create 3D editor line pipeline (float3 position)
     {
-// 9b. Create 3D editor line pipeline (float3 position)
-    {
         SDL_GPUShader *ed_vs = load_shader_from_spirv(
-            g->shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            m->game.shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *ed_fs = load_shader_from_spirv(
-            g->shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            m->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!ed_vs || !ed_fs) {
             fprintf(stderr, "Failed to compile editor line shaders\n");
             return -1;
+        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -1698,14 +1696,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // 10. Compile and create UI rect pipeline
     {
-{
         SDL_GPUShader *ui_vs = load_shader_from_spirv(
-            g->shader_ui_rect_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            m->game.shader_ui_rect_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *ui_fs = load_shader_from_spirv(
-            g->shader_ui_rect_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            m->game.shader_ui_rect_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!ui_vs || !ui_fs) {
             fprintf(stderr, "Failed to compile UI rect shaders\n");
             return -1;
+        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -1767,14 +1765,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // 11. Compile and create font pipeline
     {
-{
         SDL_GPUShader *font_vs = load_shader_from_spirv(
-            g->shader_font_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            m->game.shader_font_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *font_fs = load_shader_from_spirv(
-            g->shader_font_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            m->game.shader_font_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!font_vs || !font_fs) {
             fprintf(stderr, "Failed to compile font shaders\n");
             return -1;
+        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -1848,14 +1846,14 @@ EXPORT int init_externals(struct memory *g) {
 
     // 12. Compile and create mesh (3D skinned) pipeline
     {
-{
         SDL_GPUShader *mesh_vs = load_shader_from_spirv(
-            g->shader_mesh_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            m->game.shader_mesh_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *mesh_fs = load_shader_from_spirv(
-            g->shader_mesh_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            m->game.shader_mesh_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!mesh_vs || !mesh_fs) {
             fprintf(stderr, "Failed to compile mesh shaders\n");
             return -1;
+        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -2017,17 +2015,15 @@ EXPORT int init_externals(struct memory *g) {
     }
 
 // 11. Load textures from config paths
-    gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture(g->texture_player);
-    gpu_textures[TEXTURE_TILES]       = load_gpu_texture(g->texture_tiles);
-    gpu_textures[TEXTURE_SLIME]       = load_gpu_texture(g->texture_slime);
-    gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture(g->texture_health_bar);
-    gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture(g->texture_health_fill);
+    gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture(m->game.texture_player);
+    gpu_textures[TEXTURE_TILES]       = load_gpu_texture(m->game.texture_tiles);
+    gpu_textures[TEXTURE_SLIME]       = load_gpu_texture(m->game.texture_slime);
+    gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture(m->game.texture_health_bar);
+    gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture(m->game.texture_health_fill);
 
     // Load editor font and upload to GPU
-    if (font_load(&editor_font, g->font_editor) != 0) {
-        fprintf(stderr, "Failed to load editor font from: %s\n", g->font_editor);
-        return -1;
-        fprintf(stderr, "Failed to upload font to GPU\n");
+    if (font_load(&editor_font, m->game.font_editor) != 0) {
+        fprintf(stderr, "Failed to load editor font from: %s\n", m->game.font_editor);
         return -1;
     }
     if (harfbuzz_init(&editor_font) != 0) {
@@ -2042,28 +2038,32 @@ EXPORT int init_externals(struct memory *g) {
         for (ch = 0; ch < 128; ch++) {
             int advance, lsb;
             stbtt_GetCodepointHMetrics(&editor_font.stb_info, ch, &advance, &lsb);
-            g->editor.font_advances[ch] = (float)advance * scale1;
+            m->editor.font_advances[ch] = (float)advance * scale1;
         }
-        g->editor.font_line_height = editor_font.ascent - editor_font.descent + editor_font.line_gap;
+        m->editor.font_line_height = editor_font.ascent - editor_font.descent + editor_font.line_gap;
     }
 
     // Initialize arena (single allocation for all engine memory)
     {
         uint32_t arena_size = 500 * 1024 * 1024; // 500 MB
         void *arena_mem = malloc(arena_size);
-        arena_init(&g->arena, arena_mem, arena_size);
+        arena_init(&m->arena, arena_mem, arena_size);
         printf("Arena initialized (%u bytes)\n", arena_size);
     }
 
+    // Set cross-references so game_state and editor_state can reach root arena
+    m->game.root_arena = &m->arena;
+    m->editor.root_arena = &m->arena;
+
     // Allocate editor sub-arena (dock state, editor-specific allocations)
-    g->editor_arena = arena_alloc_subarena(&g->arena, 50 * 1024 * 1024, 16, "editor");
-    g->editor.dock = arena_alloc(g->editor_arena, sizeof(dock_state), 16, "dock_state");
-    dock = (dock_state *)g->editor.dock;
+    m->editor.editor_arena = arena_alloc_subarena(&m->arena, 50 * 1024 * 1024, 16, "editor");
+    m->editor.dock = arena_alloc(m->editor.editor_arena, sizeof(dock_state), 16, "dock_state");
+    dock = (dock_state *)m->editor.dock;
 
     // Initialize Clay UI — game context (from main arena, for in-game UI: pause menu, HUD)
     {
         uint64_t clay_mem_size = Clay_MinMemorySize();
-        clay_arena_game = arena_alloc_subarena(&g->arena, (uint32_t)clay_mem_size, 16, "clay_game");
+        clay_arena_game = arena_alloc_subarena(&m->arena, (uint32_t)clay_mem_size, 16, "clay_game");
 
         Clay_Arena clay_arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem_size, clay_arena_game->base);
 
@@ -2077,26 +2077,26 @@ EXPORT int init_externals(struct memory *g) {
     }
 
     // Clay editor context is now created by editor.dll (init_editor) — we just publish the game context
-    g->clay_game = clay_context;
+    m->game.clay_game = clay_context;
 
     // Initialize dock system (single window, three-column layout)
     if (!dock->initialized) {
         dock_init_default(dock);
     }
     dock->windows[0].sdl_window = window;
-    g->editor.open = 1;
-    g->editor.window = window;  /* editor gets the main window handle for focus/mouse checks */
+    m->editor.open = 1;
+    m->editor.window = window;  /* editor gets the main window handle for focus/mouse checks */
 
     // Create composite pipeline (draws panel textures into window)
     {
-{
         SDL_GPUShader *comp_vs = load_shader_from_spirv(
-            g->shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            m->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *comp_fs = load_shader_from_spirv(
-            g->shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            m->game.shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!comp_vs || !comp_fs) {
             fprintf(stderr, "Failed to compile composite shaders\n");
             return -1;
+        }
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -2165,13 +2165,11 @@ EXPORT int init_externals(struct memory *g) {
     // Create grid texture pipeline (same shaders as composite, but with depth stencil
     // so it can draw inside the profiler render pass which has a depth target)
     {
-{
         SDL_GPUShader *grid_vs = load_shader_from_spirv(
-            g->shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            m->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *grid_fs = load_shader_from_spirv(
-            g->shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            m->game.shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
 
-        SDL_GPUVertexBufferDescription vbuf_desc = {0};
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
         vbuf_desc.pitch = sizeof(composite_vertex);
@@ -2242,23 +2240,23 @@ EXPORT int init_externals(struct memory *g) {
 
     // Allocate rendering sub-arena (draw_commands, debug_lines, debug_vertices)
     {
-        arena *rendering = arena_alloc_subarena(&g->arena, 256 * 1024, 16, "rendering");
+        arena *rendering = arena_alloc_subarena(&m->arena, 256 * 1024, 16, "rendering");
 
-        g->draw_list.sprite_capacity = MAX_DRAW_COMMANDS;
-        g->draw_list.sprites = (draw_command*)arena_alloc(rendering,
+        m->game.dl.sprite_capacity = MAX_DRAW_COMMANDS;
+        m->game.dl.sprites = (draw_command*)arena_alloc(rendering,
             (uint32_t)(MAX_DRAW_COMMANDS * sizeof(draw_command)), 16, "draw_commands");
-        g->draw_list.line_capacity = MAX_DEBUG_LINES;
-        g->draw_list.lines = (debug_line_command*)arena_alloc(rendering,
+        m->game.dl.line_capacity = MAX_DEBUG_LINES;
+        m->game.dl.lines = (debug_line_command*)arena_alloc(rendering,
             (uint32_t)(MAX_DEBUG_LINES * sizeof(debug_line_command)), 16, "debug_lines");
 
-        g->debug_renderer.max_lines = 1000;
-        g->debug_renderer.vertex_buffer = (float*)arena_alloc(rendering,
-            (uint32_t)(g->debug_renderer.max_lines * 10 * sizeof(float)), 16, "debug_vertices");
-        g->debug_renderer.current_line_count = 0;
+        m->game.dbg.max_lines = 1000;
+        m->game.dbg.current_line_count = 0;
+        m->game.dbg.vertex_buffer = (float*)arena_alloc(rendering,
+            (uint32_t)(1000 * 10 * sizeof(float)), 16, "debug_vertices");
     }
 
     // Allocate gameplay sub-arena (entities, etc.)
-    g->gameplay = arena_alloc_subarena(&g->arena, 256 * 1024, 16, "gameplay");
+    m->game.gameplay = arena_alloc_subarena(&m->arena, 256 * 1024, 16, "gameplay");
 
     // Create initial panel textures (dock layout → panel rects → offscreen textures)
     {
@@ -2269,9 +2267,9 @@ EXPORT int init_externals(struct memory *g) {
     }
 
     // Init game timing
-    g->_t_prev = (double)SDL_GetTicks() / 1000.0;
-    g->dt = 0.0f;
-    g->play = true;
+    m->game._t_prev = (double)SDL_GetTicks() / 1000.0;
+    m->game.dt = 0.0f;
+    m->game.play = true;
 
     printf("Externals initialized (SDL3 GPU, docked panels)\n");
     return 1;
@@ -2282,10 +2280,10 @@ EXPORT int init_externals(struct memory *g) {
 // Input handling
 // ---------------------------------------------------------------------------
 
-static void update_input(memory *g) {
-    g->input.horizontal = 0.0f;
-    g->input.vertical = 0.0f;
-    g->input.input_mask = 0;
+static void update_input(memory *m) {
+    m->game.input.horizontal = 0.0f;
+    m->game.input.vertical = 0.0f;
+    m->game.input.input_mask = 0;
 
     /* Suppress keyboard game input when a non-game window has focus */
     SDL_Window *focused = SDL_GetKeyboardFocus();
@@ -2310,13 +2308,13 @@ static void update_input(memory *g) {
         }
 
         if (keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_J])
-            g->input.input_mask |= INPUT_A;
+            m->game.input.input_mask |= INPUT_A;
         if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT] || keys[SDL_SCANCODE_K])
-            g->input.input_mask |= INPUT_B;
+            m->game.input.input_mask |= INPUT_B;
         if (keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_L])
-            g->input.input_mask |= INPUT_X;
+            m->game.input.input_mask |= INPUT_X;
         if (keys[SDL_SCANCODE_Q] || keys[SDL_SCANCODE_I] || keys[SDL_SCANCODE_TAB])
-            g->input.input_mask |= INPUT_Y;
+            m->game.input.input_mask |= INPUT_Y;
     }
 
     // Gamepad input
@@ -2344,13 +2342,13 @@ static void update_input(memory *g) {
             }
 
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH))
-                g->input.input_mask |= INPUT_A;
+                m->game.input.input_mask |= INPUT_A;
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST))
-                g->input.input_mask |= INPUT_B;
+                m->game.input.input_mask |= INPUT_B;
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_WEST))
-                g->input.input_mask |= INPUT_X;
+                m->game.input.input_mask |= INPUT_X;
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH))
-                g->input.input_mask |= INPUT_Y;
+                m->game.input.input_mask |= INPUT_Y;
 
             SDL_CloseGamepad(pad);
         }
@@ -2358,8 +2356,8 @@ static void update_input(memory *g) {
     SDL_free(gamepads);
 
     // Combine keyboard and gamepad (take stronger input)
-    g->input.horizontal = (fabsf(kb_horizontal) > fabsf(gp_horizontal)) ? kb_horizontal : gp_horizontal;
-    g->input.vertical   = (fabsf(kb_vertical)   > fabsf(gp_vertical))   ? kb_vertical   : gp_vertical;
+    m->game.input.horizontal = (fabsf(kb_horizontal) > fabsf(gp_horizontal)) ? kb_horizontal : gp_horizontal;
+    m->game.input.vertical   = (fabsf(kb_vertical)   > fabsf(gp_vertical))   ? kb_vertical   : gp_vertical;
 }
 
 // ---------------------------------------------------------------------------
@@ -2442,16 +2440,16 @@ static void ensure_panel_textures(dock_state *d)
 // update_externals
 // ---------------------------------------------------------------------------
 
-EXPORT void update_externals(struct memory *g) {
-    dock_state *dock = (dock_state *)g->editor.dock;
+EXPORT void update_externals(struct memory *m) {
+    dock_state *dock = (dock_state *)m->editor.dock;
     TracyCZoneN(ctx_update, "update_externals", 1);
     // --- Timing ---
     double now = (double)SDL_GetTicks() / 1000.0;
-    double dtd = now - g->_t_prev;
-    g->_t_prev = now;
+    double dtd = now - m->game._t_prev;
+    m->game._t_prev = now;
     if (dtd < 0.0) dtd = 0.0;
     if (dtd > 0.1) dtd = 0.1;
-    g->dt = (float)dtd;
+    m->game.dt = (float)dtd;
 
     // --- Events ---
     {
@@ -2459,7 +2457,7 @@ EXPORT void update_externals(struct memory *g) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
-                g->play = false;
+                m->game.play = false;
                 TracyCZoneEnd(ctx_poll);
                 TracyCZoneEnd(ctx_update);
                 return;
@@ -2515,7 +2513,7 @@ EXPORT void update_externals(struct memory *g) {
                     }
                 }
                 if (is_main) {
-                    g->play = false;
+                    m->game.play = false;
                     TracyCZoneEnd(ctx_poll);
                     TracyCZoneEnd(ctx_update);
                     return;
@@ -2525,7 +2523,7 @@ EXPORT void update_externals(struct memory *g) {
 
             /* Dispatch all events to editor.dll (dock interaction + camera + gizmo) */
             if (g_editor_handle_event) {
-                if (g_editor_handle_event(g, &event))
+                if (g_editor_handle_event(&m->game, &m->editor, &event))
                     continue; /* editor consumed the event */
             }
         }
@@ -2533,7 +2531,7 @@ EXPORT void update_externals(struct memory *g) {
     }
 
     // --- Input ---
-    update_input(g);
+    update_input(m);
 
     // --- Process dock commands from editor.dll ---
 
@@ -2657,30 +2655,30 @@ EXPORT void update_externals(struct memory *g) {
     // Sync game Clay arena usage so profiler display is accurate
     if (clay_arena_game && clay_context)
         clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
-    if (g->editor.open && g_editor_update) g_editor_update(g);
+    if (m->editor.open && g_editor_update) g_editor_update(&m->game, &m->editor);
 
     // --- Panel textures (after dock_layout in editor, which set node rects) ---
     ensure_panel_textures(dock);
 
     // --- Ortho projection (based on game panel size, set by editor.dll) ---
     {
-        float w = (float)g->width;
-        float h = (float)g->height;
+        float w = (float)m->game.width;
+        float h = (float)m->game.height;
         float ortho[16] = {
             2.0f/w, 0,      0,     0,
             0,      2.0f/h, 0,     0,
             0,      0,     -1.0f,  0,
             0,      0,      0,     1.0f
         };
-        memcpy(g->draw_list.ortho_projection, ortho, sizeof(ortho));
+        memcpy(m->game.dl.ortho_projection, ortho, sizeof(ortho));
     }
 
     // --- Reset draw list ---
-    g->draw_list.sprite_count = 0;
-    g->draw_list.line_count = 0;
+    m->game.dl.sprite_count = 0;
+    m->game.dl.line_count = 0;
 
     // --- Call engine update (fills draw_list + updates mesh3d animation) ---
-    g_update(g);
+    g_update(&m->game);
 
     // --- Render ---
     SDL_GPUCommandBuffer *cmd_buf = SDL_AcquireGPUCommandBuffer(gpu_device);
@@ -2695,7 +2693,7 @@ EXPORT void update_externals(struct memory *g) {
     // ================================================================
 
     // --- Build sprite vertex data ---
-    int sprite_count = g->draw_list.sprite_count;
+    int sprite_count = m->game.dl.sprite_count;
     int sprite_vertex_count = sprite_count * 6;
     Uint32 sprite_buf_size = (Uint32)(sprite_vertex_count * sizeof(sprite_vertex));
 
@@ -2710,7 +2708,7 @@ EXPORT void update_externals(struct memory *g) {
         sprite_vertex *verts = (sprite_vertex*)SDL_MapGPUTransferBuffer(gpu_device, sprite_transfer, false);
 
         for (int i = 0; i < sprite_count; i++) {
-            const draw_command *cmd = &g->draw_list.sprites[i];
+            const draw_command *cmd = &m->game.dl.sprites[i];
             float half_w = cmd->width * 0.5f;
             float half_h = cmd->height * 0.5f;
 
@@ -2755,7 +2753,7 @@ EXPORT void update_externals(struct memory *g) {
     }
 
     // --- Build line vertex data ---
-    int line_count = g->draw_list.line_count;
+    int line_count = m->game.dl.line_count;
     int line_vertex_count = line_count * 2;
     Uint32 line_buf_size = (Uint32)(line_vertex_count * sizeof(line_vertex));
 
@@ -2770,7 +2768,7 @@ EXPORT void update_externals(struct memory *g) {
         line_vertex *verts = (line_vertex*)SDL_MapGPUTransferBuffer(gpu_device, line_transfer, false);
 
         for (int i = 0; i < line_count; i++) {
-            const debug_line_command *ln = &g->draw_list.lines[i];
+            const debug_line_command *ln = &m->game.dl.lines[i];
             verts[i * 2 + 0] = (line_vertex){ln->x1, ln->y1, ln->r, ln->g, ln->b};
             verts[i * 2 + 1] = (line_vertex){ln->x2, ln->y2, ln->r, ln->g, ln->b};
         }
@@ -2795,14 +2793,14 @@ EXPORT void update_externals(struct memory *g) {
     }
 
     // --- Upload bone matrices (computed by engine) ---
-    if (g->mesh3d.visible && g->mesh3d.skeleton.joint_count > 0 && g->mesh3d.skin_mats) {
-        Uint32 bone_size = g->mesh3d.skeleton.joint_count * sizeof(Mat4);
+    if (m->game.mesh3d.visible && m->game.mesh3d.skeleton.joint_count > 0 && m->game.mesh3d.skin_mats) {
+        Uint32 bone_size = m->game.mesh3d.skeleton.joint_count * sizeof(Mat4);
         SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
         tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         tbuf_info.size = bone_size;
         SDL_GPUTransferBuffer *bone_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
         void *map = SDL_MapGPUTransferBuffer(gpu_device, bone_transfer, false);
-        memcpy(map, g->mesh3d.skin_mats, bone_size);
+        memcpy(map, m->game.mesh3d.skin_mats, bone_size);
         SDL_UnmapGPUTransferBuffer(gpu_device, bone_transfer);
 
         SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(cmd_buf);
@@ -2817,17 +2815,17 @@ EXPORT void update_externals(struct memory *g) {
     }
 
     // --- Prepare Clay UI: game window (layout + upload) ---
-    ui_prepare_game(cmd_buf, g);
+    ui_prepare_game(cmd_buf, m);
 
     // --- Prepare Clay UI: profiler window (layout + upload) ---
     if (panel_color[PANEL_PROFILER]) {
-        profiler_prepare(cmd_buf, g);
+        profiler_prepare(cmd_buf, m);
     }
 
     // --- Upload editor 3D lines (populated by editor.dll) ---
     SDL_GPUBuffer *editor_line_gpu_buf = NULL;
-    int editor_vert_count = g->editor.line_count * 2;
-    if (g->editor.open && editor_vert_count > 0) {
+    int editor_vert_count = m->editor.line_count * 2;
+    if (m->editor.open && editor_vert_count > 0) {
         Uint32 ed_buf_size = (Uint32)(editor_vert_count * sizeof(editor_line_vert));
 
         SDL_GPUTransferBufferCreateInfo ed_tbuf_info = {0};
@@ -2836,7 +2834,7 @@ EXPORT void update_externals(struct memory *g) {
 
         SDL_GPUTransferBuffer *ed_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &ed_tbuf_info);
         void *ed_mapped = SDL_MapGPUTransferBuffer(gpu_device, ed_transfer, false);
-        memcpy(ed_mapped, g->editor.lines, ed_buf_size);
+        memcpy(ed_mapped, m->editor.lines, ed_buf_size);
         SDL_UnmapGPUTransferBuffer(gpu_device, ed_transfer);
 
         SDL_GPUBufferCreateInfo ed_gpu_info = {0};
@@ -2964,23 +2962,23 @@ EXPORT void update_externals(struct memory *g) {
         SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target);
 
         // 3D Mesh
-        if (g->mesh3d.visible && g->loaded_model.mesh.primitive_count > 0) {
+        if (m->game.mesh3d.visible && m->game.loaded_model.mesh.primitive_count > 0) {
             SDL_BindGPUGraphicsPipeline(render_pass, mesh_pipeline);
 
             float aspect = (float)gw / (float)gh;
             Mat4 proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, aspect, 0.1f, 100.0f);
-            Mat4 view = mat4_look_at(g->mesh3d.camera_eye, g->mesh3d.camera_target, g->mesh3d.camera_up);
+            Mat4 view = mat4_look_at(m->game.mesh3d.camera_eye, m->game.mesh3d.camera_target, m->game.mesh3d.camera_up);
 
             mesh_uniform_data mesh_uniforms;
             memcpy(mesh_uniforms.projection, proj.m, sizeof(float) * 16);
             memcpy(mesh_uniforms.view, view.m, sizeof(float) * 16);
-            memcpy(mesh_uniforms.model, g->mesh3d.model_transform.m, sizeof(float) * 16);
+            memcpy(mesh_uniforms.model, m->game.mesh3d.model_transform.m, sizeof(float) * 16);
             SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
 
             SDL_BindGPUVertexStorageBuffers(render_pass, 0, &bone_storage_buffer, 1);
 
-            for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
-                GltfPrimitive *prim = &g->loaded_model.mesh.primitives[p];
+            for (uint32_t p = 0; p < m->game.loaded_model.mesh.primitive_count; p++) {
+                GltfPrimitive *prim = &m->game.loaded_model.mesh.primitives[p];
 
                 SDL_GPUBufferBinding vbuf_binding = {0};
                 vbuf_binding.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
@@ -3002,8 +3000,8 @@ EXPORT void update_externals(struct memory *g) {
         // 2D sprites + lines
         {
             uniform_data uniforms;
-            memcpy(uniforms.projection, g->draw_list.ortho_projection, sizeof(float) * 16);
-            memcpy(uniforms.view, g->draw_list.view_matrix, sizeof(float) * 16);
+            memcpy(uniforms.projection, m->game.dl.ortho_projection, sizeof(float) * 16);
+            memcpy(uniforms.view, m->game.dl.view_matrix, sizeof(float) * 16);
 
             if (sprite_count > 0 && sprite_gpu_buf) {
                 SDL_BindGPUGraphicsPipeline(render_pass, sprite_pipeline);
@@ -3017,7 +3015,7 @@ EXPORT void update_externals(struct memory *g) {
                     if (!gpu_textures[tex_id]) continue;
                     bool bound = false;
                     for (int i = 0; i < sprite_count; i++) {
-                        if (g->draw_list.sprites[i].texture_id == tex_id) {
+                        if (m->game.dl.sprites[i].texture_id == tex_id) {
                             if (!bound) {
                                 SDL_GPUTextureSamplerBinding tex_binding = {0};
                                 tex_binding.texture = gpu_textures[tex_id];
@@ -3101,7 +3099,7 @@ EXPORT void update_externals(struct memory *g) {
     }
 
     // --- EDITOR PANEL RENDER PASS (offscreen) ---
-    if (g->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
+    if (m->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
         Uint32 ew = (Uint32)panel_tex_w[PANEL_EDITOR];
         Uint32 eh = (Uint32)panel_tex_h[PANEL_EDITOR];
 
@@ -3124,28 +3122,28 @@ EXPORT void update_externals(struct memory *g) {
         /* Editor camera matrices */
         float ed_aspect = (float)ew / (float)eh;
         Mat4 ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
-        float ed_cp = cosf(g->editor.cam_pitch);
-        Vec3 ed_fwd = VEC3(ed_cp * sinf(g->editor.cam_yaw),
-                           sinf(g->editor.cam_pitch),
-                           ed_cp * cosf(g->editor.cam_yaw));
-        Mat4 ed_view = mat4_look_at(g->editor.cam_pos,
-                                     vec3_add(g->editor.cam_pos, ed_fwd),
+        float ed_cp = cosf(m->editor.cam_pitch);
+        Vec3 ed_fwd = VEC3(ed_cp * sinf(m->editor.cam_yaw),
+                           sinf(m->editor.cam_pitch),
+                           ed_cp * cosf(m->editor.cam_yaw));
+        Mat4 ed_view = mat4_look_at(m->editor.cam_pos,
+                                     vec3_add(m->editor.cam_pos, ed_fwd),
                                      VEC3(0, 1, 0));
 
         /* 1. 3D mesh (editor camera) */
-        if (g->mesh3d.visible && g->loaded_model.mesh.primitive_count > 0) {
+        if (m->game.mesh3d.visible && m->game.loaded_model.mesh.primitive_count > 0) {
             SDL_BindGPUGraphicsPipeline(ed_pass, mesh_pipeline);
 
             mesh_uniform_data ed_mesh_u;
             memcpy(ed_mesh_u.projection, ed_proj.m, sizeof(float) * 16);
             memcpy(ed_mesh_u.view, ed_view.m, sizeof(float) * 16);
-            memcpy(ed_mesh_u.model, g->mesh3d.model_transform.m, sizeof(float) * 16);
+            memcpy(ed_mesh_u.model, m->game.mesh3d.model_transform.m, sizeof(float) * 16);
             SDL_PushGPUVertexUniformData(cmd_buf, 0, &ed_mesh_u, sizeof(ed_mesh_u));
 
             SDL_BindGPUVertexStorageBuffers(ed_pass, 0, &bone_storage_buffer, 1);
 
-            for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
-                GltfPrimitive *prim = &g->loaded_model.mesh.primitives[p];
+            for (uint32_t p = 0; p < m->game.loaded_model.mesh.primitive_count; p++) {
+                GltfPrimitive *prim = &m->game.loaded_model.mesh.primitives[p];
 
                 SDL_GPUBufferBinding vb = {0};
                 vb.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
@@ -3273,8 +3271,8 @@ EXPORT void update_externals(struct memory *g) {
 // end_externals
 // ---------------------------------------------------------------------------
 
-EXPORT void end_externals(struct memory *g) {
-    dock_state *dock = (dock_state *)g->editor.dock;
+EXPORT void end_externals(struct memory *m) {
+    dock_state *dock = (dock_state *)m->editor.dock;
     // Release textures
     for (int i = 0; i < TEXTURE_COUNT; i++) {
         if (gpu_textures[i]) {
@@ -3293,9 +3291,9 @@ EXPORT void end_externals(struct memory *g) {
     clay_arena_game = NULL;
 
     // Release editor mouse look if active
-    if (g->editor.cam_mouse_look && window) {
+    if (m->editor.cam_mouse_look && window) {
         SDL_SetWindowRelativeMouseMode(window, false);
-        g->editor.cam_mouse_look = 0;
+        m->editor.cam_mouse_look = 0;
     }
 
     // Panel offscreen textures
@@ -3368,8 +3366,8 @@ EXPORT void end_externals(struct memory *g) {
     if (bone_storage_buffer) { SDL_ReleaseGPUBuffer(gpu_device, bone_storage_buffer); bone_storage_buffer = NULL; }
 
     // Release glTF model GPU resources
-    for (uint32_t p = 0; p < g->loaded_model.mesh.primitive_count; p++) {
-        GltfPrimitive *prim = &g->loaded_model.mesh.primitives[p];
+    for (uint32_t p = 0; p < m->game.loaded_model.mesh.primitive_count; p++) {
+        GltfPrimitive *prim = &m->game.loaded_model.mesh.primitives[p];
         if (prim->vertex_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->vertex_buffer);
         if (prim->index_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->index_buffer);
         if (prim->texture) SDL_ReleaseGPUTexture(gpu_device, (SDL_GPUTexture *)prim->texture);
@@ -3405,9 +3403,9 @@ EXPORT void end_externals(struct memory *g) {
     }
 
     // Free arena (single free for all engine memory)
-    if (g->arena.base) {
-        free(g->arena.base);
-        g->arena.base = NULL;
+    if (m->arena.base) {
+        free(m->arena.base);
+        m->arena.base = NULL;
     }
 
     SDL_Quit();
@@ -3417,23 +3415,23 @@ EXPORT void end_externals(struct memory *g) {
 // Engine callbacks
 // ---------------------------------------------------------------------------
 
-EXPORT void init_engine(struct memory *g) {
-    g_init(g);
+EXPORT void init_engine(struct memory *m) {
+    g_init(&m->game);
 }
 
-EXPORT void destroy_engine(struct memory *g) {
-    g_destroy(g);
+EXPORT void destroy_engine(struct memory *m) {
+    g_destroy(&m->game);
 }
 
-EXPORT void assign_init(init func) {
+EXPORT void assign_init(engine_init_fn func) {
     g_init = func;
 }
 
-EXPORT void assign_destroy(destroy func) {
+EXPORT void assign_destroy(engine_destroy_fn func) {
     g_destroy = func;
 }
 
-EXPORT void assign_update(update func) {
+EXPORT void assign_update(engine_update_fn func) {
     g_update = func;
 }
 
@@ -3441,26 +3439,26 @@ EXPORT void assign_update(update func) {
 // Editor callbacks
 // ---------------------------------------------------------------------------
 
-EXPORT void init_editor(struct memory *g) {
-    if (g_editor_init) g_editor_init(g);
+EXPORT void init_editor(struct memory *m) {
+    if (g_editor_init) g_editor_init(&m->game, &m->editor);
 }
 
-EXPORT void destroy_editor(struct memory *g) {
-    if (g_editor_destroy) g_editor_destroy(g);
+EXPORT void destroy_editor(struct memory *m) {
+    if (g_editor_destroy) g_editor_destroy(&m->game, &m->editor);
 }
 
-EXPORT void assign_editor_init(init func) {
+EXPORT void assign_editor_init(editor_init_fn func) {
     g_editor_init = func;
 }
 
-EXPORT void assign_editor_destroy(destroy func) {
+EXPORT void assign_editor_destroy(editor_destroy_fn func) {
     g_editor_destroy = func;
 }
 
-EXPORT void assign_editor_update(update func) {
+EXPORT void assign_editor_update(editor_update_fn func) {
     g_editor_update = func;
 }
 
-EXPORT void assign_editor_handle_event(handle_event func) {
+EXPORT void assign_editor_handle_event(editor_handle_event_fn func) {
     g_editor_handle_event = func;
 }

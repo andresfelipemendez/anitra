@@ -18,7 +18,12 @@ static inline vec2 vec2_normalize(vec2 v) {
 }
 
 /* ── 3D types ───────────────────────────────────────────────────── */
-#endif
+typedef struct { float x, y, z; } Vec3;
+typedef struct { float x, y, z, w; } Quat;
+typedef struct { float m[16]; } Mat4;
+
+#define VEC3(x_, y_, z_)      ((Vec3){(x_), (y_), (z_)})
+#define QUAT(x_, y_, z_, w_)  ((Quat){(x_), (y_), (z_), (w_)})
 
 /* ── Vec3 ───────────────────────────────────────────────────────── */
 
