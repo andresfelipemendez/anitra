@@ -82,6 +82,10 @@ typedef struct project_scene_component {
     int has_rigid_body;
     int rigid_body_use_gravity;
 
+    int has_character_controller;
+    float character_controller_move_speed;
+    float character_controller_jump_speed;
+
     int has_health;
     float health_current;
     float health_max;

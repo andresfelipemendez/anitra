@@ -124,6 +124,12 @@ typedef struct rigid_body_component {
     int use_gravity;
 } rigid_body_component;
 
+typedef struct character_controller_component {
+    int entity_index;
+    float move_speed;
+    float jump_speed;
+} character_controller_component;
+
 typedef struct health_component {
     int entity_index;
     float health;
@@ -156,6 +162,16 @@ typedef struct animation_component {
     float anim_time;
     float speed;
 } animation_component;
+
+typedef struct animation_transition_entry {
+    int entity_index;
+    int from_clip;
+    int to_clip;
+    float from_time;
+    float to_time;
+    float elapsed;
+    float duration;
+} animation_transition_entry;
 
 typedef struct camera_component {
     int entity_index;
@@ -212,6 +228,12 @@ typedef struct mesh3d_state {
     Vec3 *pose_trans;
     Quat *pose_rot;
     Vec3 *pose_scale;
+    Vec3 *blend_from_trans;
+    Quat *blend_from_rot;
+    Vec3 *blend_from_scale;
+    Vec3 *blend_to_trans;
+    Quat *blend_to_rot;
+    Vec3 *blend_to_scale;
     Mat4 *world_mats;
     Mat4 *skin_mats;       /* final skinning matrices — read by externals for GPU upload */
 
@@ -291,6 +313,9 @@ typedef struct game_state {
   rigid_body_component *rigid_body_components;
   int rigid_body_component_count;
   int rigid_body_component_capacity;
+  character_controller_component *character_controller_components;
+  int character_controller_component_count;
+  int character_controller_component_capacity;
   health_component *health_components;
   int health_component_count;
   int health_component_capacity;
@@ -306,6 +331,9 @@ typedef struct game_state {
   animation_component *animation_components;
   int animation_component_count;
   int animation_component_capacity;
+  animation_transition_entry *animation_transition_entries;
+  int animation_transition_count;
+  int animation_transition_capacity;
   camera_component *camera_components;
   int camera_component_count;
   int camera_component_capacity;

@@ -550,6 +550,21 @@ static int has_rigid_body_component(const game_state *gs, int entity_index, int 
     return 0;
 }
 
+static int has_character_controller_component(const game_state *gs, int entity_index,
+                                              float *out_move_speed, float *out_jump_speed) {
+    int i;
+    if (!gs->character_controller_components) return 0;
+    for (i = 0; i < gs->character_controller_component_count; i++) {
+        character_controller_component *cc = &gs->character_controller_components[i];
+        if (cc->entity_index == entity_index) {
+            if (out_move_speed) *out_move_speed = cc->move_speed;
+            if (out_jump_speed) *out_jump_speed = cc->jump_speed;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static const mesh_component *find_mesh_component_read(const game_state *gs, int entity_index) {
     int i;
     if (!gs || !gs->mesh_components) return NULL;
@@ -921,6 +936,19 @@ static int editor_save_scene_to_toml(game_state *gs, const char *path) {
             int use_gravity = 1;
             if (!has_rigid_body_component(gs, i, &use_gravity)) continue;
             fprintf(fp, "\"%d\" = { use_gravity = %s }\n", i, use_gravity ? "true" : "false");
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_character_controller_component(gs, i, NULL, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[character_controllers]\n");
+        for (i = 0; i < scene_count; i++) {
+            float move_speed = 5.0f;
+            float jump_speed = 8.5f;
+            if (!has_character_controller_component(gs, i, &move_speed, &jump_speed)) continue;
+            fprintf(fp, "\"%d\" = { move_speed = %.4f, jump_speed = %.4f }\n", i, move_speed, jump_speed);
         }
         fputc('\n', fp);
     }
@@ -2705,6 +2733,11 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 int has_rotation = has_rotation_component(gs, selected, &ry);
                 int has_scale = has_scale_component(gs, selected, &tscale);
                 int has_velocity = has_velocity_component(gs, selected, &vvel);
+                float cc_move_speed = 0.0f;
+                float cc_jump_speed = 0.0f;
+                int has_character_controller = has_character_controller_component(gs, selected,
+                                                                                 &cc_move_speed,
+                                                                                 &cc_jump_speed);
                 int has_health = has_health_component(gs, selected, &hcur, &hmax);
                 int has_collider = has_any_collider_component(gs, selected, &crect,
                                                               &collider_is_capsule,
@@ -2720,7 +2753,8 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 int has_parent_transform = has_parent_transform_component(gs, selected, &parent_transform_idx);
                 int has_parent_rotation = has_parent_rotation_component(gs, selected);
                 int has_components = has_transform || has_rotation || has_scale ||
-                                     has_velocity || has_health || has_collider ||
+                                     has_velocity || has_character_controller ||
+                                     has_health || has_collider ||
                                      has_mesh || has_animation || has_camera || has_parent ||
                                      has_parent_transform || has_parent_rotation;
 
@@ -2772,6 +2806,16 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 if (has_velocity) {
                     snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
                              "- Velocity (%.2f, %.2f)", vvel.x, vvel.y);
+                    {
+                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                    }
+                    line_i++;
+                }
+                if (has_character_controller) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "- Character Controller (move=%.2f jump=%.2f)",
+                             cc_move_speed, cc_jump_speed);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
                         CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));

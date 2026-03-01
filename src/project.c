@@ -440,6 +440,29 @@ static void parse_rigid_body_table(const toml_table_t *tbl, project_data *out) {
     }
 }
 
+static void parse_character_controller_table(const toml_table_t *tbl, project_data *out) {
+    int i, n;
+    if (!tbl || out->scene_entity_count <= 0) return;
+    n = toml_table_len(tbl);
+    for (i = 0; i < n; i++) {
+        int entity_index = -1;
+        toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
+        toml_value_t vd;
+        if (!entry) continue;
+        if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+
+        out->scene_components[entity_index].has_character_controller = 1;
+        out->scene_components[entity_index].character_controller_move_speed = 5.0f;
+        out->scene_components[entity_index].character_controller_jump_speed = 8.5f;
+
+        vd = toml_table_double(entry, "move_speed");
+        if (vd.ok) out->scene_components[entity_index].character_controller_move_speed = (float)vd.u.d;
+        vd = toml_table_double(entry, "jump_speed");
+        if (!vd.ok) vd = toml_table_double(entry, "jump");
+        if (vd.ok) out->scene_components[entity_index].character_controller_jump_speed = (float)vd.u.d;
+    }
+}
+
 static void parse_health_table(const toml_table_t *tbl, project_data *out) {
     int i, n;
     if (!tbl || out->scene_entity_count <= 0) return;
@@ -569,6 +592,7 @@ static void parse_ecs_component_tables(const toml_table_t *root, project_data *o
     parse_animation_table(toml_table_table(root, "animations"), out);
     parse_velocity_table(toml_table_table(root, "velocities"), out);
     parse_rigid_body_table(toml_table_table(root, "rigid_bodies"), out);
+    parse_character_controller_table(toml_table_table(root, "character_controllers"), out);
     parse_health_table(toml_table_table(root, "health"), out);
     parse_box_collider_table(toml_table_table(root, "box_colliders"), out);
     parse_capsule_collider_table(toml_table_table(root, "capsule_colliders"), out);

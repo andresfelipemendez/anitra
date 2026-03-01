@@ -54,12 +54,32 @@ static health_component *find_health_component(game_state *gs, int entity_index)
     return NULL;
 }
 
+static velocity_component *find_velocity_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->velocity_components) return NULL;
+    for (i = 0; i < gs->velocity_component_count; i++) {
+        velocity_component *vc = &gs->velocity_components[i];
+        if (vc->entity_index == entity_index) return vc;
+    }
+    return NULL;
+}
+
 static rigid_body_component *find_rigid_body_component(game_state *gs, int entity_index) {
     int i;
     if (!gs || !gs->rigid_body_components) return NULL;
     for (i = 0; i < gs->rigid_body_component_count; i++) {
         rigid_body_component *rb = &gs->rigid_body_components[i];
         if (rb->entity_index == entity_index) return rb;
+    }
+    return NULL;
+}
+
+static character_controller_component *find_character_controller_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->character_controller_components) return NULL;
+    for (i = 0; i < gs->character_controller_component_count; i++) {
+        character_controller_component *cc = &gs->character_controller_components[i];
+        if (cc->entity_index == entity_index) return cc;
     }
     return NULL;
 }
@@ -136,6 +156,36 @@ static Vec3 resolve_parent_world_offset(game_state *gs, int entity_index) {
 static int query_primary_actor(game_state *gs, physics_actor_view *out_actor) {
     int i;
     if (!gs || !out_actor || !gs->scene_entities || !gs->velocity_components) return 0;
+
+    for (i = 0; i < gs->character_controller_component_count; i++) {
+        character_controller_component *ccmp = &gs->character_controller_components[i];
+        int entity_index = ccmp->entity_index;
+        transform_component *tc;
+        velocity_component *vc;
+        rigid_body_component *rb;
+        box_collider_component *bc;
+        capsule_collider_component *cc;
+
+        if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+        if (!find_character_controller_component(gs, entity_index)) continue;
+
+        tc = find_transform_component(gs, entity_index);
+        vc = find_velocity_component(gs, entity_index);
+        rb = find_rigid_body_component(gs, entity_index);
+        bc = find_box_collider_component(gs, entity_index);
+        cc = find_capsule_collider_component(gs, entity_index);
+        if (!tc || !vc || (!bc && !cc)) continue;
+
+        out_actor->entity_index = entity_index;
+        out_actor->ent = &gs->scene_entities[entity_index];
+        out_actor->transform = tc;
+        out_actor->velocity = vc;
+        out_actor->rigid_body = rb;
+        out_actor->health = find_health_component(gs, entity_index);
+        out_actor->box_collider = bc;
+        out_actor->capsule_collider = cc;
+        return 1;
+    }
 
     for (i = 0; i < gs->velocity_component_count; i++) {
         velocity_component *vc = &gs->velocity_components[i];
