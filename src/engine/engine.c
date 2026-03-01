@@ -30,6 +30,10 @@ void gltf_set_gpu_device(void *dev);
 #define WORLD_CHAIN_MAX 512
 #define ANIMATION_TRANSITION_DEFAULT_DURATION 0.18f
 
+/* Forward declarations for anim SM helpers (used before definition) */
+static anim_instance *anim_sm_find_instance(anim_sm *sm, int entity_index);
+static scene_model_asset *find_scene_model_asset(game_state *gs, int asset_index);
+
 typedef struct camera_query_result {
     int entity_index;
     transform_component *transform;
@@ -1319,8 +1323,21 @@ static void build_mesh_draw_commands(game_state *gs) {
 
         cmd = &gs->dl.meshes[gs->dl.mesh_count++];
         cmd->model_asset_index = mc->model_asset_index;
-        cmd->use_skinned_bones = (asset->has_skeleton &&
-                                  mc->entity_index == gs->scene_primary_skinned_entity) ? 1 : 0;
+        cmd->bone_buffer_offset = 0;
+
+        /* Check SM instance first, then fall back to primary skinned entity */
+        if (asset->has_skeleton && gs->anim.instance_count > 0) {
+            anim_instance *inst = anim_sm_find_instance(&gs->anim, mc->entity_index);
+            if (inst) {
+                cmd->use_skinned_bones = 1;
+                cmd->bone_buffer_offset = inst->skin_mats_offset;
+            } else {
+                cmd->use_skinned_bones = 0;
+            }
+        } else {
+            cmd->use_skinned_bones = (asset->has_skeleton &&
+                                      mc->entity_index == gs->scene_primary_skinned_entity) ? 1 : 0;
+        }
         memcpy(cmd->model, model.m, sizeof(float) * 16);
     }
 }
@@ -1358,6 +1375,153 @@ void update_input(game_state* gs) {
         } else {
             gs->camera.zoom = fmaxf(0.1f, fminf(5.0f, gs->camera.zoom + zoom_delta));
         }
+    }
+}
+
+/* ── Animation SM pool allocation ─────────────────────────────── */
+
+static void anim_sm_init_pool(anim_sm *sm, arena *a) {
+    int total_mats = ANIM_SM_MAX_ENTITIES * ANIM_SM_MAX_JOINTS;
+    sm->pool.skin_mats = (Mat4 *)arena_alloc(a,
+        (uint32_t)(total_mats * sizeof(Mat4)), 16, "anim_sm_skin_mats");
+    if (!sm->pool.skin_mats) {
+        fprintf(stderr, "anim_sm: failed to allocate skin_mats pool (%d bytes)\n",
+                (int)(total_mats * sizeof(Mat4)));
+        return;
+    }
+    sm->pool.skin_mats_count = 0;
+
+    sm->pool.pose_trans      = (Vec3 *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Vec3)), 16, "anim_sm_pose_t");
+    sm->pool.pose_rot        = (Quat *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Quat)), 16, "anim_sm_pose_r");
+    sm->pool.pose_scale      = (Vec3 *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Vec3)), 16, "anim_sm_pose_s");
+    sm->pool.blend_from_trans = (Vec3 *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Vec3)), 16, "anim_sm_bf_t");
+    sm->pool.blend_from_rot   = (Quat *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Quat)), 16, "anim_sm_bf_r");
+    sm->pool.blend_from_scale = (Vec3 *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Vec3)), 16, "anim_sm_bf_s");
+    sm->pool.blend_to_trans   = (Vec3 *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Vec3)), 16, "anim_sm_bt_t");
+    sm->pool.blend_to_rot     = (Quat *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Quat)), 16, "anim_sm_bt_r");
+    sm->pool.blend_to_scale   = (Vec3 *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Vec3)), 16, "anim_sm_bt_s");
+    sm->pool.world_mats       = (Mat4 *)arena_alloc(a, (uint32_t)(ANIM_SM_MAX_JOINTS * sizeof(Mat4)), 16, "anim_sm_world");
+
+    if (!sm->pool.pose_trans || !sm->pool.pose_rot || !sm->pool.pose_scale ||
+        !sm->pool.world_mats) {
+        fprintf(stderr, "anim_sm: failed to allocate scratch buffers\n");
+        sm->pool.skin_mats = NULL;
+        return;
+    }
+
+    sm->pool_initialized = 1;
+}
+
+static int anim_sm_add_state(anim_sm *sm, const char *name, int clip_index, int looping) {
+    anim_state_table *st;
+    if (sm->state_count >= ANIM_SM_MAX_STATES) return -1;
+    st = &sm->states[sm->state_count];
+    memset(st, 0, sizeof(*st));
+    strncpy(st->name, name, ANIM_SM_STATE_NAME_MAX - 1);
+    st->clip_index = clip_index;
+    st->looping = looping;
+    st->count = 0;
+    return sm->state_count++;
+}
+
+static int anim_sm_add_rule(anim_sm *sm, int from_state, int to_state,
+                            anim_condition_type cond, float threshold,
+                            float blend_duration) {
+    anim_transition_rule *r;
+    if (sm->rule_count >= ANIM_SM_MAX_RULES) return -1;
+    r = &sm->rules[sm->rule_count];
+    r->from_state = from_state;
+    r->to_state = to_state;
+    r->condition = cond;
+    r->threshold = threshold;
+    r->blend_duration = blend_duration;
+    return sm->rule_count++;
+}
+
+static void anim_sm_insert_entity_into_state(anim_sm *sm, int state_index,
+                                              int entity_index) {
+    anim_state_table *st;
+    if (state_index < 0 || state_index >= sm->state_count) return;
+    st = &sm->states[state_index];
+    if (st->count >= ANIM_SM_MAX_ENTITIES) return;
+    st->entity_indices[st->count] = entity_index;
+    st->anim_times[st->count] = 0.0f;
+    st->count++;
+}
+
+static void anim_sm_remove_entity_from_state(anim_sm *sm, int state_index,
+                                              int entity_index) {
+    anim_state_table *st;
+    int i;
+    if (state_index < 0 || state_index >= sm->state_count) return;
+    st = &sm->states[state_index];
+    for (i = 0; i < st->count; i++) {
+        if (st->entity_indices[i] == entity_index) {
+            st->entity_indices[i] = st->entity_indices[st->count - 1];
+            st->anim_times[i] = st->anim_times[st->count - 1];
+            st->count--;
+            return;
+        }
+    }
+}
+
+static anim_instance *anim_sm_find_instance(anim_sm *sm, int entity_index) {
+    int i;
+    for (i = 0; i < sm->instance_count; i++) {
+        if (sm->instances[i].entity_index == entity_index) return &sm->instances[i];
+    }
+    return NULL;
+}
+
+static int anim_sm_register_entity(anim_sm *sm, int entity_index,
+                                    int model_asset_index, int initial_state,
+                                    int joint_count) {
+    anim_instance *inst;
+    if (sm->instance_count >= ANIM_SM_MAX_ENTITIES) return -1;
+    if (!sm->pool_initialized) return -1;
+
+    inst = &sm->instances[sm->instance_count++];
+    inst->entity_index = entity_index;
+    inst->model_asset_index = model_asset_index;
+    inst->skin_mats_offset = sm->next_skin_mats_offset;
+    inst->speed = 1.0f;
+    inst->playing = 1;
+
+    sm->next_skin_mats_offset += joint_count;
+    sm->pool.skin_mats_count = sm->next_skin_mats_offset;
+
+    anim_sm_insert_entity_into_state(sm, initial_state, entity_index);
+    return sm->instance_count - 1;
+}
+
+static void anim_sm_register_scene_entities(game_state *gs) {
+    anim_sm *sm = &gs->anim;
+    int i;
+    if (!sm->pool_initialized || sm->state_count == 0) return;
+
+    for (i = 0; i < gs->animation_component_count; i++) {
+        animation_component *ac = &gs->animation_components[i];
+        mesh_component *mc = find_mesh_component(gs, ac->entity_index);
+        scene_model_asset *asset;
+        int initial_state;
+        if (!mc) continue;
+        asset = find_scene_model_asset(gs, mc->model_asset_index);
+        if (!asset || !asset->loaded || !asset->has_skeleton) continue;
+
+        /* Default to first state (idle), or use the active_clip if it matches a state */
+        initial_state = 0;
+        if (ac->active_clip >= 0 && ac->active_clip < sm->state_count) {
+            int s;
+            for (s = 0; s < sm->state_count; s++) {
+                if (sm->states[s].clip_index == ac->active_clip) {
+                    initial_state = s;
+                    break;
+                }
+            }
+        }
+
+        anim_sm_register_entity(sm, ac->entity_index, mc->model_asset_index,
+                                initial_state, (int)asset->model.skeleton.joint_count);
     }
 }
 
@@ -1415,6 +1579,12 @@ EXPORT void init_engine(game_state *gs) {
     }
 
     if (!ensure_scene_storage(gs, target_entities)) return;
+
+    /* Init anim SM pool (arena pointers don't survive hot-reload) */
+    if (!gs->anim.pool_initialized && gs->gameplay) {
+        anim_sm_init_pool(&gs->anim, gs->gameplay);
+    }
+
     clear_scene_storage(gs);
 
     if (gs->project_loaded) {
@@ -1441,6 +1611,20 @@ EXPORT void init_engine(game_state *gs) {
         compute_skinning_matrices(&gs->mesh3d.skeleton, gs->mesh3d.world_mats, gs->mesh3d.skin_mats);
     }
     gs->animation_transition_count = 0;
+
+    /* ── Anim SM: set up default states and register entities ──── */
+    if (gs->anim.pool_initialized && gs->anim.state_count == 0 &&
+        gs->mesh3d.clip_count > 0) {
+        int idle_state = anim_sm_add_state(&gs->anim, "idle", 0, 1);
+        if (gs->mesh3d.clip_count > 1) {
+            int walk_state = anim_sm_add_state(&gs->anim, "walk", 1, 1);
+            anim_sm_add_rule(&gs->anim, idle_state, walk_state,
+                             ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.18f);
+            anim_sm_add_rule(&gs->anim, walk_state, idle_state,
+                             ANIM_COND_VELOCITY_BELOW, 0.1f, 0.18f);
+        }
+        anim_sm_register_scene_entities(gs);
+    }
 }
 
 static void update_mesh3d_from_animation_component(game_state *gs, animation_component *ac) {
@@ -1560,6 +1744,230 @@ static void update_mesh3d_from_animation_component(game_state *gs, animation_com
     }
 }
 
+/* ── Anim SM 5-phase update pipeline ─────────────────────────── */
+
+static float anim_sm_entity_speed(game_state *gs, int entity_index) {
+    velocity_component *vc = find_velocity_component(gs, entity_index);
+    if (!vc) return 0.0f;
+    return sqrtf(vc->velocity.x * vc->velocity.x +
+                 vc->velocity.y * vc->velocity.y);
+}
+
+static int anim_sm_eval_condition(game_state *gs, anim_transition_rule *rule,
+                                  int entity_index, float anim_time,
+                                  int clip_index) {
+    float speed;
+    switch (rule->condition) {
+    case ANIM_COND_VELOCITY_ABOVE:
+        speed = anim_sm_entity_speed(gs, entity_index);
+        return speed > rule->threshold;
+    case ANIM_COND_VELOCITY_BELOW:
+        speed = anim_sm_entity_speed(gs, entity_index);
+        return speed < rule->threshold;
+    case ANIM_COND_CLIP_FINISHED: {
+        scene_model_asset *asset;
+        anim_instance *inst = anim_sm_find_instance(&gs->anim, entity_index);
+        if (!inst) return 0;
+        asset = find_scene_model_asset(gs, inst->model_asset_index);
+        if (!asset || !asset->loaded) return 0;
+        if ((uint32_t)clip_index >= asset->model.clip_count) return 0;
+        return anim_time >= asset->model.clips[clip_index].duration;
+    }
+    case ANIM_COND_ALWAYS:
+        return 1;
+    }
+    return 0;
+}
+
+static void anim_sm_update(anim_sm *sm, game_state *gs, float dt) {
+    int s, r, i, j, b;
+    anim_pose_pool *pool;
+
+    if (!sm->pool_initialized || sm->instance_count == 0) return;
+    pool = &sm->pool;
+
+    /* ── Phase 1: Advance anim_times per state table ──────────── */
+    for (s = 0; s < sm->state_count; s++) {
+        anim_state_table *st = &sm->states[s];
+        for (i = 0; i < st->count; i++) {
+            anim_instance *inst = anim_sm_find_instance(sm, st->entity_indices[i]);
+            float speed = (inst && inst->speed > 0.0f) ? inst->speed : 1.0f;
+            st->anim_times[i] += dt * speed;
+        }
+    }
+
+    /* ── Phase 2: Evaluate rules, move entities to blend table ── */
+    for (r = 0; r < sm->rule_count; r++) {
+        anim_transition_rule *rule = &sm->rules[r];
+        anim_state_table *from_st;
+        if (rule->from_state < 0 || rule->from_state >= sm->state_count) continue;
+        if (rule->to_state < 0 || rule->to_state >= sm->state_count) continue;
+        from_st = &sm->states[rule->from_state];
+
+        for (i = from_st->count - 1; i >= 0; i--) {
+            int eidx = from_st->entity_indices[i];
+            float atime = from_st->anim_times[i];
+            anim_instance *inst;
+            anim_blend_entry *be;
+            int already_blending = 0;
+
+            if (!anim_sm_eval_condition(gs, rule, eidx, atime,
+                                        from_st->clip_index))
+                continue;
+
+            /* Skip if already blending */
+            for (b = 0; b < sm->blend_count; b++) {
+                if (sm->blends[b].entity_index == eidx) {
+                    already_blending = 1;
+                    break;
+                }
+            }
+            if (already_blending) continue;
+            if (sm->blend_count >= ANIM_SM_MAX_BLENDS) continue;
+
+            inst = anim_sm_find_instance(sm, eidx);
+
+            /* Add blend entry */
+            be = &sm->blends[sm->blend_count++];
+            be->entity_index = eidx;
+            be->from_clip = from_st->clip_index;
+            be->to_clip = sm->states[rule->to_state].clip_index;
+            be->from_time = atime;
+            be->to_time = 0.0f;
+            be->elapsed = 0.0f;
+            be->duration = rule->blend_duration > 0.0f ? rule->blend_duration : 0.18f;
+            be->speed = (inst && inst->speed > 0.0f) ? inst->speed : 1.0f;
+            be->to_state = rule->to_state;
+
+            /* Remove from source state table */
+            anim_sm_remove_entity_from_state(sm, rule->from_state, eidx);
+        }
+    }
+
+    /* ── Phase 3: Advance blends, complete finished ones ──────── */
+    for (b = sm->blend_count - 1; b >= 0; b--) {
+        anim_blend_entry *be = &sm->blends[b];
+        be->elapsed += dt;
+        be->from_time += dt * be->speed;
+        be->to_time += dt * be->speed;
+
+        if (be->elapsed >= be->duration) {
+            /* Blend complete: move entity to destination state */
+            anim_state_table *to_st;
+            if (be->to_state >= 0 && be->to_state < sm->state_count) {
+                to_st = &sm->states[be->to_state];
+                if (to_st->count < ANIM_SM_MAX_ENTITIES) {
+                    to_st->entity_indices[to_st->count] = be->entity_index;
+                    to_st->anim_times[to_st->count] = be->to_time;
+                    to_st->count++;
+                }
+            }
+            /* Remove blend entry (swap with last) */
+            sm->blends[b] = sm->blends[sm->blend_count - 1];
+            sm->blend_count--;
+        }
+    }
+
+    /* ── Phase 4: Sample + skin per state table ───────────────── */
+    for (s = 0; s < sm->state_count; s++) {
+        anim_state_table *st = &sm->states[s];
+        for (i = 0; i < st->count; i++) {
+            int eidx = st->entity_indices[i];
+            anim_instance *inst = anim_sm_find_instance(sm, eidx);
+            scene_model_asset *asset;
+            Skeleton *skel;
+            AnimClip *clip;
+            uint32_t jcount;
+            Mat4 *dst;
+            float atime;
+
+            if (!inst) continue;
+            asset = find_scene_model_asset(gs, inst->model_asset_index);
+            if (!asset || !asset->loaded || !asset->has_skeleton) continue;
+            skel = &asset->model.skeleton;
+            jcount = skel->joint_count;
+            if (jcount == 0 || jcount > ANIM_SM_MAX_JOINTS) continue;
+            if ((uint32_t)st->clip_index >= asset->model.clip_count) continue;
+            clip = &asset->model.clips[st->clip_index];
+
+            /* Wrap anim time */
+            atime = st->anim_times[i];
+            if (st->looping && clip->duration > 0.0f) {
+                while (atime > clip->duration) atime -= clip->duration;
+                while (atime < 0.0f) atime += clip->duration;
+                st->anim_times[i] = atime;
+            }
+
+            dst = pool->skin_mats + inst->skin_mats_offset;
+
+            init_pose_from_bind(skel, pool->pose_trans, pool->pose_rot, pool->pose_scale);
+            sample_clip(clip, atime, pool->pose_trans, pool->pose_rot, pool->pose_scale, jcount);
+            compute_world_transforms(skel, pool->pose_trans, pool->pose_rot, pool->pose_scale, pool->world_mats);
+            compute_skinning_matrices(skel, pool->world_mats, dst);
+        }
+    }
+
+    /* ── Phase 5: Sample + skin blending entities ─────────────── */
+    for (b = 0; b < sm->blend_count; b++) {
+        anim_blend_entry *be = &sm->blends[b];
+        anim_instance *inst = anim_sm_find_instance(sm, be->entity_index);
+        scene_model_asset *asset;
+        Skeleton *skel;
+        AnimClip *from_clip, *to_clip;
+        uint32_t jcount;
+        Mat4 *dst;
+        float alpha, from_time, to_time;
+
+        if (!inst) continue;
+        asset = find_scene_model_asset(gs, inst->model_asset_index);
+        if (!asset || !asset->loaded || !asset->has_skeleton) continue;
+        skel = &asset->model.skeleton;
+        jcount = skel->joint_count;
+        if (jcount == 0 || jcount > ANIM_SM_MAX_JOINTS) continue;
+        if ((uint32_t)be->from_clip >= asset->model.clip_count) continue;
+        if ((uint32_t)be->to_clip >= asset->model.clip_count) continue;
+
+        from_clip = &asset->model.clips[be->from_clip];
+        to_clip = &asset->model.clips[be->to_clip];
+
+        from_time = be->from_time;
+        if (from_clip->duration > 0.0f) {
+            while (from_time > from_clip->duration) from_time -= from_clip->duration;
+            while (from_time < 0.0f) from_time += from_clip->duration;
+        }
+        to_time = be->to_time;
+        if (to_clip->duration > 0.0f) {
+            while (to_time > to_clip->duration) to_time -= to_clip->duration;
+            while (to_time < 0.0f) to_time += to_clip->duration;
+        }
+
+        alpha = be->elapsed / be->duration;
+        if (alpha < 0.0f) alpha = 0.0f;
+        if (alpha > 1.0f) alpha = 1.0f;
+
+        /* Sample from-clip */
+        init_pose_from_bind(skel, pool->blend_from_trans, pool->blend_from_rot, pool->blend_from_scale);
+        sample_clip(from_clip, from_time,
+                    pool->blend_from_trans, pool->blend_from_rot, pool->blend_from_scale, jcount);
+
+        /* Sample to-clip */
+        init_pose_from_bind(skel, pool->blend_to_trans, pool->blend_to_rot, pool->blend_to_scale);
+        sample_clip(to_clip, to_time,
+                    pool->blend_to_trans, pool->blend_to_rot, pool->blend_to_scale, jcount);
+
+        /* Blend per joint */
+        for (j = 0; j < (int)jcount; j++) {
+            pool->pose_trans[j] = vec3_lerp(pool->blend_from_trans[j], pool->blend_to_trans[j], alpha);
+            pool->pose_rot[j] = quat_slerp(pool->blend_from_rot[j], pool->blend_to_rot[j], alpha);
+            pool->pose_scale[j] = vec3_lerp(pool->blend_from_scale[j], pool->blend_to_scale[j], alpha);
+        }
+
+        dst = pool->skin_mats + inst->skin_mats_offset;
+        compute_world_transforms(skel, pool->pose_trans, pool->pose_rot, pool->pose_scale, pool->world_mats);
+        compute_skinning_matrices(skel, pool->world_mats, dst);
+    }
+}
+
 /* Profiler zone function pointers — set by core.dll, call into externals.dll */
 static void (*pfn_cache_zone_begin)(const char *name) = NULL;
 static void (*pfn_cache_zone_end)(void) = NULL;
@@ -1617,16 +2025,22 @@ EXPORT void update_engine(game_state *gs) {
     if (gs->editor_play_mode) {
         ENGINE_CPU_ZONE_BEGIN("animation");
         ENGINE_CACHE_ZONE_BEGIN("animation");
-        if (gs->animation_components) {
-            animation_component *ac = query_primary_animation_component_for_mesh(gs);
-            if (ac) {
-                update_mesh3d_from_animation_component(gs, ac);
-                anim_updated = 1;
+        if (gs->anim.instance_count > 0) {
+            /* Tables-as-states SM pipeline */
+            anim_sm_update(&gs->anim, gs, gs->dt);
+        } else {
+            /* Legacy single-entity fallback */
+            if (gs->animation_components) {
+                animation_component *ac = query_primary_animation_component_for_mesh(gs);
+                if (ac) {
+                    update_mesh3d_from_animation_component(gs, ac);
+                    anim_updated = 1;
+                }
             }
-        }
-        if (!anim_updated) {
-            animation_component fallback = {0, 1, (int)gs->mesh3d.active_clip, gs->mesh3d.anim_time, 1.0f};
-            update_mesh3d_from_animation_component(gs, &fallback);
+            if (!anim_updated) {
+                animation_component fallback = {0, 1, (int)gs->mesh3d.active_clip, gs->mesh3d.anim_time, 1.0f};
+                update_mesh3d_from_animation_component(gs, &fallback);
+            }
         }
         ENGINE_CACHE_ZONE_END();
         ENGINE_CPU_ZONE_END();

@@ -4,6 +4,7 @@ layout(set = 1, binding = 0) uniform Uniforms {
     mat4 projection;
     mat4 view;
     mat4 model;
+    uint bone_offset;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer BoneBuffer {
@@ -20,10 +21,10 @@ layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec2 out_uv;
 
 void main() {
-    mat4 skin_mat = bones[in_bone_ids.x] * in_bone_weights.x
-                  + bones[in_bone_ids.y] * in_bone_weights.y
-                  + bones[in_bone_ids.z] * in_bone_weights.z
-                  + bones[in_bone_ids.w] * in_bone_weights.w;
+    mat4 skin_mat = bones[in_bone_ids.x + bone_offset] * in_bone_weights.x
+                  + bones[in_bone_ids.y + bone_offset] * in_bone_weights.y
+                  + bones[in_bone_ids.z + bone_offset] * in_bone_weights.z
+                  + bones[in_bone_ids.w + bone_offset] * in_bone_weights.w;
 
     vec4 skinned_pos = skin_mat * vec4(in_position, 1.0);
     out_normal = mat3(model) * mat3(skin_mat) * in_normal;

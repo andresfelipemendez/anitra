@@ -61,7 +61,7 @@ static SDL_GPUBuffer *bone_storage_buffer = NULL;
 static SDL_GPUBuffer *bone_identity_buffer = NULL;
 static SDL_GPUTexture *white_texture = NULL;
 
-#define MAX_BONES 128
+#define MAX_BONES (ANIM_SM_MAX_ENTITIES * ANIM_SM_MAX_JOINTS)
 #define FLOOR_INSTANCE_MAX 64
 
 // Font MSDF atlas
@@ -324,6 +324,8 @@ typedef struct mesh_uniform_data {
     float projection[16];
     float view[16];
     float model[16];
+    uint32_t bone_offset;
+    uint32_t _pad[3]; /* align to 16 bytes for std140 */
 } mesh_uniform_data;
 
 static scene_model_asset *scene_asset_for_index(game_state *gs, int asset_index) {
@@ -360,16 +362,16 @@ static void draw_scene_meshes(memory *m,
         memcpy(mesh_uniforms.projection, projection.m, sizeof(float) * 16);
         memcpy(mesh_uniforms.view, view.m, sizeof(float) * 16);
         memcpy(mesh_uniforms.model, model.m, sizeof(float) * 16);
-        SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+        mesh_uniforms.bone_offset = 0;
 
         bones_to_bind = bone_identity_buffer;
         if (asset->has_skeleton &&
             mc->use_skinned_bones &&
-            bone_storage_buffer &&
-            gs->mesh3d.skeleton.joint_count > 0 &&
-            gs->mesh3d.skin_mats) {
+            bone_storage_buffer) {
             bones_to_bind = bone_storage_buffer;
+            mesh_uniforms.bone_offset = (uint32_t)mc->bone_buffer_offset;
         }
+        SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
         SDL_BindGPUVertexStorageBuffers(render_pass, 0, &bones_to_bind, 1);
 
         for (p = 0; p < asset->model.mesh.primitive_count; p++) {
@@ -2861,7 +2863,7 @@ EXPORT int init_externals(struct memory *m) {
     }
 
     // Allocate gameplay sub-arena (entities, etc.)
-    m->game.gameplay = arena_alloc_subarena(&m->arena, 256 * 1024, 16, "gameplay");
+    m->game.gameplay = arena_alloc_subarena(&m->arena, 4 * 1024 * 1024, 16, "gameplay");
 
     // Create initial panel textures (dock layout → panel rects → offscreen textures)
     {
@@ -3447,28 +3449,48 @@ EXPORT void update_externals(struct memory *m) {
     sprite_gpu_buf = draw_upload.sprite_gpu_buf;
     line_gpu_buf = draw_upload.line_gpu_buf;
 
-    // --- Upload bone matrices (computed by engine) ---
-    if (m->game.mesh3d.visible && m->game.mesh3d.skeleton.joint_count > 0 && m->game.mesh3d.skin_mats) {
-        FRAME_CPU_ZONE_BEGIN("upload_bone_matrices");
-        Uint32 bone_size = m->game.mesh3d.skeleton.joint_count * sizeof(Mat4);
-        SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
-        tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tbuf_info.size = bone_size;
-        SDL_GPUTransferBuffer *bone_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
-        void *map = SDL_MapGPUTransferBuffer(gpu_device, bone_transfer, false);
-        memcpy(map, m->game.mesh3d.skin_mats, bone_size);
-        SDL_UnmapGPUTransferBuffer(gpu_device, bone_transfer);
+    /* --- Upload bone matrices (computed by engine) --- */
+    {
+        void *bone_src = NULL;
+        Uint32 bone_size = 0;
 
-        SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(cmd_buf);
-        SDL_GPUTransferBufferLocation src_loc = {0};
-        src_loc.transfer_buffer = bone_transfer;
-        SDL_GPUBufferRegion dst_region = {0};
-        dst_region.buffer = bone_storage_buffer;
-        dst_region.size = bone_size;
-        SDL_UploadToGPUBuffer(copy_pass, &src_loc, &dst_region, false);
-        SDL_EndGPUCopyPass(copy_pass);
-        SDL_ReleaseGPUTransferBuffer(gpu_device, bone_transfer);
-        FRAME_CPU_ZONE_END();
+        if (m->game.anim.pool_initialized && m->game.anim.pool.skin_mats &&
+            m->game.anim.pool.skin_mats_count > 0) {
+            bone_src = m->game.anim.pool.skin_mats;
+            bone_size = (Uint32)(m->game.anim.pool.skin_mats_count * sizeof(Mat4));
+        } else if (m->game.mesh3d.visible && m->game.mesh3d.skeleton.joint_count > 0 &&
+                   m->game.mesh3d.skin_mats) {
+            bone_src = m->game.mesh3d.skin_mats;
+            bone_size = m->game.mesh3d.skeleton.joint_count * sizeof(Mat4);
+        }
+
+        if (bone_src && bone_size > 0) {
+            FRAME_CPU_ZONE_BEGIN("upload_bone_matrices");
+            {
+                SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
+                SDL_GPUTransferBuffer *bone_transfer;
+                void *map;
+                SDL_GPUCopyPass *copy_pass;
+                SDL_GPUTransferBufferLocation src_loc = {0};
+                SDL_GPUBufferRegion dst_region = {0};
+
+                tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                tbuf_info.size = bone_size;
+                bone_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
+                map = SDL_MapGPUTransferBuffer(gpu_device, bone_transfer, false);
+                memcpy(map, bone_src, bone_size);
+                SDL_UnmapGPUTransferBuffer(gpu_device, bone_transfer);
+
+                copy_pass = SDL_BeginGPUCopyPass(cmd_buf);
+                src_loc.transfer_buffer = bone_transfer;
+                dst_region.buffer = bone_storage_buffer;
+                dst_region.size = bone_size;
+                SDL_UploadToGPUBuffer(copy_pass, &src_loc, &dst_region, false);
+                SDL_EndGPUCopyPass(copy_pass);
+                SDL_ReleaseGPUTransferBuffer(gpu_device, bone_transfer);
+            }
+            FRAME_CPU_ZONE_END();
+        }
     }
 
     // --- Prepare Clay UI: game window (layout + upload) ---
@@ -4001,6 +4023,7 @@ EXPORT void update_externals(struct memory *m) {
                 memcpy(mesh_uniforms.projection, proj_mat.m, sizeof(mesh_uniforms.projection));
                 memcpy(mesh_uniforms.view, view_mat.m, sizeof(mesh_uniforms.view));
                 memcpy(mesh_uniforms.model, model_mat.m, sizeof(mesh_uniforms.model));
+                mesh_uniforms.bone_offset = 0;
                 SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
 
                 vp.x = req->x * display_density;

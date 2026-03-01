@@ -2,6 +2,7 @@
 #define GAME_H
 
 #include "arena.h"
+#include "anim_sm.h"
 #include "debug_render.h"
 #include "draw_list.h"
 #include "gltf_types.h"
@@ -340,6 +341,7 @@ typedef struct game_state {
   int camera_component_capacity;
 
   mesh3d_state mesh3d;
+  anim_sm anim;
   lighting_state lighting;
   GltfModel loaded_model;       /* loaded 3D model data */
   GltfModel loaded_floor_model; /* loaded floor tile model data */

@@ -22,6 +22,7 @@ typedef struct debug_line_command {
 typedef struct mesh_draw_command {
     int model_asset_index;
     int use_skinned_bones;
+    int bone_buffer_offset;
     float model[16];
 } mesh_draw_command;
 
