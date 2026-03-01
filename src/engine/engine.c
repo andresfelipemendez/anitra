@@ -53,113 +53,80 @@ static Vec3 normalize_scale(Vec3 s) {
 }
 
 static transform_component *find_transform_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->transform_components) return NULL;
-    for (i = 0; i < gs->transform_component_count; i++) {
-        transform_component *tc = &gs->transform_components[i];
-        if (tc->entity_index == entity_index) return tc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->transform_index[entity_index];
+    return idx >= 0 ? &gs->transform_components[idx] : NULL;
 }
 
 static rotation_component *find_rotation_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->rotation_components) return NULL;
-    for (i = 0; i < gs->rotation_component_count; i++) {
-        rotation_component *rc = &gs->rotation_components[i];
-        if (rc->entity_index == entity_index) return rc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->rotation_index[entity_index];
+    return idx >= 0 ? &gs->rotation_components[idx] : NULL;
 }
 
 static scale_component *find_scale_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->scale_components) return NULL;
-    for (i = 0; i < gs->scale_component_count; i++) {
-        scale_component *sc = &gs->scale_components[i];
-        if (sc->entity_index == entity_index) return sc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->scale_index[entity_index];
+    return idx >= 0 ? &gs->scale_components[idx] : NULL;
 }
 
 static parent_transform_component *find_parent_transform_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->parent_transform_components) return NULL;
-    for (i = 0; i < gs->parent_transform_component_count; i++) {
-        parent_transform_component *pt = &gs->parent_transform_components[i];
-        if (pt->entity_index == entity_index) return pt;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->parent_transform_index[entity_index];
+    return idx >= 0 ? &gs->parent_transform_components[idx] : NULL;
 }
 
 static mesh_component *find_mesh_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->mesh_components) return NULL;
-    for (i = 0; i < gs->mesh_component_count; i++) {
-        mesh_component *mc = &gs->mesh_components[i];
-        if (mc->entity_index == entity_index) return mc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->mesh_index[entity_index];
+    return idx >= 0 ? &gs->mesh_components[idx] : NULL;
 }
 
 static velocity_component *find_velocity_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->velocity_components) return NULL;
-    for (i = 0; i < gs->velocity_component_count; i++) {
-        velocity_component *vc = &gs->velocity_components[i];
-        if (vc->entity_index == entity_index) return vc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->velocity_index[entity_index];
+    return idx >= 0 ? &gs->velocity_components[idx] : NULL;
 }
 
 static rigid_body_component *find_rigid_body_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->rigid_body_components) return NULL;
-    for (i = 0; i < gs->rigid_body_component_count; i++) {
-        rigid_body_component *rb = &gs->rigid_body_components[i];
-        if (rb->entity_index == entity_index) return rb;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->rigid_body_index[entity_index];
+    return idx >= 0 ? &gs->rigid_body_components[idx] : NULL;
 }
 
 static character_controller_component *find_character_controller_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->character_controller_components) return NULL;
-    for (i = 0; i < gs->character_controller_component_count; i++) {
-        character_controller_component *cc = &gs->character_controller_components[i];
-        if (cc->entity_index == entity_index) return cc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->character_controller_index[entity_index];
+    return idx >= 0 ? &gs->character_controller_components[idx] : NULL;
 }
 
 static box_collider_component *find_box_collider_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->box_collider_components) return NULL;
-    for (i = 0; i < gs->box_collider_component_count; i++) {
-        box_collider_component *bc = &gs->box_collider_components[i];
-        if (bc->entity_index == entity_index) return bc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->box_collider_index[entity_index];
+    return idx >= 0 ? &gs->box_collider_components[idx] : NULL;
 }
 
 static capsule_collider_component *find_capsule_collider_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->capsule_collider_components) return NULL;
-    for (i = 0; i < gs->capsule_collider_component_count; i++) {
-        capsule_collider_component *cc = &gs->capsule_collider_components[i];
-        if (cc->entity_index == entity_index) return cc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->capsule_collider_index[entity_index];
+    return idx >= 0 ? &gs->capsule_collider_components[idx] : NULL;
 }
 
 static trigger_component *find_trigger_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->trigger_components) return NULL;
-    for (i = 0; i < gs->trigger_component_count; i++) {
-        trigger_component *tc = &gs->trigger_components[i];
-        if (tc->entity_index == entity_index) return tc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->trigger_index[entity_index];
+    return idx >= 0 ? &gs->trigger_components[idx] : NULL;
 }
 
 static scene_model_asset *find_scene_model_asset(game_state *gs, int asset_index) {
@@ -170,37 +137,39 @@ static scene_model_asset *find_scene_model_asset(game_state *gs, int asset_index
 static animation_transition_entry *find_animation_transition_entry(game_state *gs,
                                                                    int entity_index,
                                                                    int *out_index) {
-    int i;
-    if (!gs || !gs->animation_transition_entries) return NULL;
-    for (i = 0; i < gs->animation_transition_count; i++) {
-        animation_transition_entry *entry = &gs->animation_transition_entries[i];
-        if (entry->entity_index != entity_index) continue;
-        if (out_index) *out_index = i;
-        return entry;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->animation_transition_index[entity_index];
+    if (idx < 0) return NULL;
+    if (out_index) *out_index = idx;
+    return &gs->animation_transition_entries[idx];
 }
 
 static animation_transition_entry *upsert_animation_transition_entry(game_state *gs, int entity_index) {
     animation_transition_entry *entry = find_animation_transition_entry(gs, entity_index, NULL);
     int i;
     if (entry) return entry;
-    if (!gs || !gs->animation_transition_entries) return NULL;
+    if (!gs) return NULL;
     if (gs->animation_transition_count >= gs->animation_transition_capacity) return NULL;
     i = gs->animation_transition_count++;
     entry = &gs->animation_transition_entries[i];
     memset(entry, 0, sizeof(*entry));
     entry->entity_index = entity_index;
+    gs->animation_transition_index[entity_index] = i;
     return entry;
 }
 
 static void remove_animation_transition_entry_by_index(game_state *gs, int index) {
     int last;
+    int removed_entity;
     if (!gs || index < 0 || index >= gs->animation_transition_count) return;
+    removed_entity = gs->animation_transition_entries[index].entity_index;
     last = gs->animation_transition_count - 1;
     if (index != last) {
         gs->animation_transition_entries[index] = gs->animation_transition_entries[last];
+        gs->animation_transition_index[gs->animation_transition_entries[index].entity_index] = index;
     }
+    gs->animation_transition_index[removed_entity] = -1;
     gs->animation_transition_count = last;
 }
 
@@ -286,7 +255,7 @@ static Vec3 transform_point(Mat4 m, Vec3 p) {
 
 static int query_active_camera(game_state *gs, camera_query_result *out_camera) {
     int i;
-    if (!gs || !out_camera || !gs->scene_entities || !gs->camera_components) return 0;
+    if (!gs || !out_camera) return 0;
 
     for (i = 0; i < gs->camera_component_count; i++) {
         camera_component *cc = &gs->camera_components[i];
@@ -342,7 +311,7 @@ static void resolve_camera_world_pose(game_state *gs,
 
 static mesh_component *query_primary_mesh_component(game_state *gs) {
     int i;
-    if (!gs || !gs->scene_entities || !gs->mesh_components) return NULL;
+    if (!gs) return NULL;
     for (i = 0; i < gs->mesh_component_count; i++) {
         mesh_component *mc = &gs->mesh_components[i];
         scene_model_asset *asset;
@@ -360,7 +329,7 @@ static mesh_component *query_primary_mesh_component(game_state *gs) {
 
 static animation_component *query_primary_animation_component_for_mesh(game_state *gs) {
     int i;
-    if (!gs || !gs->scene_entities || !gs->animation_components) return NULL;
+    if (!gs) return NULL;
 
     for (i = 0; i < gs->animation_component_count; i++) {
         animation_component *ac = &gs->animation_components[i];
@@ -706,7 +675,7 @@ static int ensure_scene_storage(game_state *gs, int needed_entities) {
                                                                 &gs->trigger_component_capacity, needed_entities,
                                                                 sizeof(trigger_component), "trigger_components");
 
-    if (!gs->scene_entities || !gs->transform_components || !gs->mesh_components || !gs->camera_components) {
+    if (!gs->scene_entities) {
         return 0;
     }
 
@@ -778,6 +747,24 @@ static void clear_scene_storage(game_state *gs) {
         memset(gs->trigger_components, 0, (size_t)gs->trigger_component_capacity * sizeof(trigger_component));
     }
 
+    memset(gs->parent_index, 0xFF, sizeof(gs->parent_index));
+    memset(gs->parent_transform_index, 0xFF, sizeof(gs->parent_transform_index));
+    memset(gs->parent_rotation_index, 0xFF, sizeof(gs->parent_rotation_index));
+    memset(gs->transform_index, 0xFF, sizeof(gs->transform_index));
+    memset(gs->rotation_index, 0xFF, sizeof(gs->rotation_index));
+    memset(gs->scale_index, 0xFF, sizeof(gs->scale_index));
+    memset(gs->velocity_index, 0xFF, sizeof(gs->velocity_index));
+    memset(gs->rigid_body_index, 0xFF, sizeof(gs->rigid_body_index));
+    memset(gs->character_controller_index, 0xFF, sizeof(gs->character_controller_index));
+    memset(gs->health_index, 0xFF, sizeof(gs->health_index));
+    memset(gs->box_collider_index, 0xFF, sizeof(gs->box_collider_index));
+    memset(gs->capsule_collider_index, 0xFF, sizeof(gs->capsule_collider_index));
+    memset(gs->mesh_index, 0xFF, sizeof(gs->mesh_index));
+    memset(gs->animation_index, 0xFF, sizeof(gs->animation_index));
+    memset(gs->animation_transition_index, 0xFF, sizeof(gs->animation_transition_index));
+    memset(gs->camera_index, 0xFF, sizeof(gs->camera_index));
+    memset(gs->trigger_index, 0xFF, sizeof(gs->trigger_index));
+
     gs->scene_entity_count = 0;
     gs->parent_component_count = 0;
     gs->parent_transform_component_count = 0;
@@ -803,75 +790,83 @@ static void clear_scene_storage(game_state *gs) {
 
 static void push_transform_component(game_state *gs, int entity_index, Vec3 position) {
     int i;
-    if (!gs || !gs->transform_components) return;
+    if (!gs) return;
     if (gs->transform_component_count >= gs->transform_component_capacity) return;
     i = gs->transform_component_count++;
     gs->transform_components[i].entity_index = entity_index;
     gs->transform_components[i].position = position;
+    gs->transform_index[entity_index] = i;
 }
 
 static void push_rotation_component(game_state *gs, int entity_index, float rotation_y_deg) {
     int i;
-    if (!gs || !gs->rotation_components) return;
+    if (!gs) return;
     if (gs->rotation_component_count >= gs->rotation_component_capacity) return;
     i = gs->rotation_component_count++;
     gs->rotation_components[i].entity_index = entity_index;
     gs->rotation_components[i].rotation_y_deg = rotation_y_deg;
+    gs->rotation_index[entity_index] = i;
 }
 
 static void push_scale_component(game_state *gs, int entity_index, Vec3 scale) {
     int i;
-    if (!gs || !gs->scale_components) return;
+    if (!gs) return;
     if (gs->scale_component_count >= gs->scale_component_capacity) return;
     i = gs->scale_component_count++;
     gs->scale_components[i].entity_index = entity_index;
     gs->scale_components[i].scale = normalize_scale(scale);
+    gs->scale_index[entity_index] = i;
 }
 
 static void push_parent_transform_component(game_state *gs, int entity_index, int parent_entity_index) {
     int i;
-    if (!gs || !gs->parent_transform_components) return;
+    if (!gs) return;
     if (gs->parent_transform_component_count >= gs->parent_transform_component_capacity) return;
     i = gs->parent_transform_component_count++;
     gs->parent_transform_components[i].entity_index = entity_index;
     gs->parent_transform_components[i].parent_entity_index = parent_entity_index;
+    gs->parent_transform_index[entity_index] = i;
 }
 
 static void push_parent_rotation_component(game_state *gs, int entity_index) {
     int i;
-    if (!gs || !gs->parent_rotation_components) return;
+    if (!gs) return;
     if (gs->parent_rotation_component_count >= gs->parent_rotation_component_capacity) return;
     i = gs->parent_rotation_component_count++;
     gs->parent_rotation_components[i].entity_index = entity_index;
+    gs->parent_rotation_index[entity_index] = i;
 }
 
 static void push_velocity_component(game_state *gs, int entity_index, Vec3 velocity) {
     int i;
-    if (!gs || !gs->velocity_components) return;
+    if (!gs) return;
     if (gs->velocity_component_count >= gs->velocity_component_capacity) return;
     i = gs->velocity_component_count++;
     gs->velocity_components[i].entity_index = entity_index;
     gs->velocity_components[i].velocity = velocity;
+    gs->velocity_index[entity_index] = i;
 }
 
 static void push_rigid_body_component(game_state *gs, int entity_index, int use_gravity) {
     int i;
-    if (!gs || !gs->rigid_body_components) return;
+    if (!gs) return;
     if (gs->rigid_body_component_count >= gs->rigid_body_component_capacity) return;
     i = gs->rigid_body_component_count++;
     gs->rigid_body_components[i].entity_index = entity_index;
     gs->rigid_body_components[i].use_gravity = use_gravity ? 1 : 0;
+    gs->rigid_body_index[entity_index] = i;
 }
 
 static void push_character_controller_component(game_state *gs, int entity_index,
                                                 float move_speed, float jump_speed) {
-    character_controller_component *existing;
+    int idx;
     int i;
-    if (!gs || !gs->character_controller_components) return;
-    existing = find_character_controller_component(gs, entity_index);
-    if (existing) {
-        existing->move_speed = move_speed > 0.01f ? move_speed : 5.0f;
-        existing->jump_speed = jump_speed > 0.01f ? jump_speed : 8.5f;
+    if (!gs) return;
+    idx = (entity_index >= 0 && entity_index < PROJECT_COMP_MAX)
+        ? gs->character_controller_index[entity_index] : -1;
+    if (idx >= 0) {
+        gs->character_controller_components[idx].move_speed = move_speed > 0.01f ? move_speed : 5.0f;
+        gs->character_controller_components[idx].jump_speed = jump_speed > 0.01f ? jump_speed : 8.5f;
         return;
     }
     if (gs->character_controller_component_count >= gs->character_controller_component_capacity) return;
@@ -879,52 +874,57 @@ static void push_character_controller_component(game_state *gs, int entity_index
     gs->character_controller_components[i].entity_index = entity_index;
     gs->character_controller_components[i].move_speed = move_speed > 0.01f ? move_speed : 5.0f;
     gs->character_controller_components[i].jump_speed = jump_speed > 0.01f ? jump_speed : 8.5f;
+    gs->character_controller_index[entity_index] = i;
 }
 
 static void push_health_component(game_state *gs, int entity_index, float health, float max_health) {
     int i;
-    if (!gs || !gs->health_components) return;
+    if (!gs) return;
     if (gs->health_component_count >= gs->health_component_capacity) return;
     i = gs->health_component_count++;
     gs->health_components[i].entity_index = entity_index;
     gs->health_components[i].health = health;
     gs->health_components[i].max_health = max_health;
+    gs->health_index[entity_index] = i;
 }
 
 static void push_box_collider_component(game_state *gs, int entity_index, rect box, float half_height) {
     int i;
-    if (!gs || !gs->box_collider_components) return;
+    if (!gs) return;
     if (gs->box_collider_component_count >= gs->box_collider_component_capacity) return;
     i = gs->box_collider_component_count++;
     gs->box_collider_components[i].entity_index = entity_index;
     gs->box_collider_components[i].rect = box;
     gs->box_collider_components[i].half_height = half_height;
+    gs->box_collider_index[entity_index] = i;
 }
 
 static void push_capsule_collider_component(game_state *gs, int entity_index,
                                             float radius, float half_height) {
     int i;
-    if (!gs || !gs->capsule_collider_components) return;
+    if (!gs) return;
     if (gs->capsule_collider_component_count >= gs->capsule_collider_component_capacity) return;
     i = gs->capsule_collider_component_count++;
     gs->capsule_collider_components[i].entity_index = entity_index;
     gs->capsule_collider_components[i].radius = radius > 0.0f ? radius : 0.5f;
     gs->capsule_collider_components[i].half_height = half_height > 0.0f ? half_height : gs->capsule_collider_components[i].radius;
+    gs->capsule_collider_index[entity_index] = i;
 }
 
 static void push_mesh_component(game_state *gs, int entity_index, int asset_index) {
     int i;
-    if (!gs || !gs->mesh_components) return;
+    if (!gs) return;
     if (gs->mesh_component_count >= gs->mesh_component_capacity) return;
     i = gs->mesh_component_count++;
     gs->mesh_components[i].entity_index = entity_index;
     gs->mesh_components[i].visible = 1;
     gs->mesh_components[i].model_asset_index = asset_index;
+    gs->mesh_index[entity_index] = i;
 }
 
 static void push_animation_component(game_state *gs, int entity_index, int active_clip) {
     int i;
-    if (!gs || !gs->animation_components) return;
+    if (!gs) return;
     if (gs->animation_component_count >= gs->animation_component_capacity) return;
     i = gs->animation_component_count++;
     gs->animation_components[i].entity_index = entity_index;
@@ -932,12 +932,13 @@ static void push_animation_component(game_state *gs, int entity_index, int activ
     gs->animation_components[i].active_clip = active_clip;
     gs->animation_components[i].anim_time = 0.0f;
     gs->animation_components[i].speed = 1.0f;
+    gs->animation_index[entity_index] = i;
 }
 
 static void push_camera_component(game_state *gs, int entity_index, float fov, float near_plane, float far_plane,
                                   Vec3 target, Vec3 up) {
     int i;
-    if (!gs || !gs->camera_components) return;
+    if (!gs) return;
     if (gs->camera_component_count >= gs->camera_component_capacity) return;
     i = gs->camera_component_count++;
     gs->camera_components[i].entity_index = entity_index;
@@ -946,13 +947,14 @@ static void push_camera_component(game_state *gs, int entity_index, float fov, f
     gs->camera_components[i].far_plane = far_plane;
     gs->camera_components[i].target = target;
     gs->camera_components[i].up = up;
+    gs->camera_index[entity_index] = i;
 }
 
 static void push_trigger_component(game_state *gs, int entity_index,
                                    trigger_type type, int target_entity,
                                    float radius) {
     int i;
-    if (!gs || !gs->trigger_components) return;
+    if (!gs) return;
     if (gs->trigger_component_count >= gs->trigger_component_capacity) return;
     i = gs->trigger_component_count++;
     gs->trigger_components[i].entity_index = entity_index;
@@ -960,6 +962,7 @@ static void push_trigger_component(game_state *gs, int entity_index,
     gs->trigger_components[i].target_entity = target_entity;
     gs->trigger_components[i].radius = radius > 0.0f ? radius : 1.0f;
     gs->trigger_components[i].activated = 0;
+    gs->trigger_index[entity_index] = i;
 }
 
 static int scene_name_has_player_token(const char *name) {
@@ -1354,7 +1357,7 @@ static void build_mesh_draw_commands(game_state *gs) {
     if (!gs || !gs->dl.meshes) return;
 
     gs->dl.mesh_count = 0;
-    if (!gs->scene_entities || !gs->mesh_components) return;
+    if (!gs->scene_entities) return;
 
     for (i = 0; i < gs->mesh_component_count; i++) {
         mesh_component *mc = &gs->mesh_components[i];
@@ -2071,33 +2074,44 @@ EXPORT void assign_profiler_fns(
     pfn_cpu_zone_end = cpze;
 }
 
+static void swap_and_pop_trigger(game_state *gs, int index) {
+    int last = gs->trigger_component_count - 1;
+    int removed_entity = gs->trigger_components[index].entity_index;
+    if (index != last) {
+        gs->trigger_components[index] = gs->trigger_components[last];
+        gs->trigger_index[gs->trigger_components[index].entity_index] = index;
+    }
+    gs->trigger_index[removed_entity] = -1;
+    gs->trigger_component_count = last;
+}
+
 static void update_triggers(game_state *gs) {
     int i, player_entity;
     Vec3 player_pos;
-    if (!gs || !gs->trigger_components || gs->trigger_component_count <= 0) return;
+    if (!gs || gs->trigger_component_count <= 0) return;
 
     /* Find player entity (first character controller) */
     if (gs->character_controller_component_count <= 0) return;
     player_entity = gs->character_controller_components[0].entity_index;
     player_pos = resolve_world_position(gs, player_entity);
 
-    for (i = 0; i < gs->trigger_component_count; i++) {
+    for (i = 0; i < gs->trigger_component_count; ) {
         trigger_component *trig = &gs->trigger_components[i];
         Vec3 trig_pos;
         float dx, dz, dist_sq, r_sq;
         mesh_component *mc;
-        trigger_component *door_trig;
+        int door_trig_idx;
         mesh_component *door_mc;
         box_collider_component *door_bc;
 
-        if (trig->type != TRIGGER_PICKUP || trig->activated) continue;
+        if (trig->type != TRIGGER_PICKUP) { i++; continue; }
 
         trig_pos = resolve_world_position(gs, trig->entity_index);
         dx = player_pos.x - trig_pos.x;
         dz = player_pos.z - trig_pos.z;
         dist_sq = dx * dx + dz * dz;
         r_sq = trig->radius * trig->radius;
-        if (dist_sq >= r_sq) continue;
+        if (dist_sq >= r_sq) { i++; continue; }
 
         /* Activate key: hide mesh */
         trig->activated = 1;
@@ -2105,8 +2119,8 @@ static void update_triggers(game_state *gs) {
         if (mc) mc->visible = 0;
 
         /* Activate door: hide mesh, disable collider */
-        door_trig = find_trigger_component(gs, trig->target_entity);
-        if (door_trig) door_trig->activated = 1;
+        door_trig_idx = (trig->target_entity >= 0 && trig->target_entity < PROJECT_COMP_MAX)
+                       ? gs->trigger_index[trig->target_entity] : -1;
 
         door_mc = find_mesh_component(gs, trig->target_entity);
         if (door_mc) door_mc->visible = 0;
@@ -2115,6 +2129,28 @@ static void update_triggers(game_state *gs) {
         if (door_bc) {
             door_bc->rect.w = 0.0f;
             door_bc->rect.h = 0.0f;
+        }
+
+        /* Remove activated door trigger first (if it has a higher index) */
+        if (door_trig_idx >= 0) {
+            gs->trigger_components[door_trig_idx].activated = 1;
+            if (door_trig_idx > i) {
+                swap_and_pop_trigger(gs, door_trig_idx);
+            }
+            /* If door_trig_idx < i, it will be removed when we reach it,
+               but since door triggers have type DOOR they skip the PICKUP check.
+               Mark it and remove after the key trigger. */
+        }
+
+        /* Remove the key trigger (current slot) */
+        swap_and_pop_trigger(gs, i);
+        /* Don't increment i — re-examine the swapped element */
+
+        /* Now remove door trigger if it was at a lower index */
+        if (door_trig_idx >= 0 && door_trig_idx < i) {
+            swap_and_pop_trigger(gs, door_trig_idx);
+            /* Adjust i since an element before us was removed */
+            if (i > 0) i--;
         }
     }
 }

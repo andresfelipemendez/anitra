@@ -492,207 +492,146 @@ static Clay_Dimensions profiler_measure_text(Clay_StringSlice text,
 }
 
 static int find_parent_component(const game_state *gs, int entity_index, int *out_parent_index) {
-    int i;
-    if (!gs->parent_components) return 0;
-    for (i = 0; i < gs->parent_component_count; i++) {
-        parent_component *pc = &gs->parent_components[i];
-        if (pc->entity_index == entity_index) {
-            if (out_parent_index) *out_parent_index = pc->parent_entity_index;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->parent_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_parent_index) *out_parent_index = gs->parent_components[idx].parent_entity_index;
+    return 1;
 }
 
 static int has_parent_transform_component(const game_state *gs, int entity_index, int *out_parent_index) {
-    int i;
-    if (!gs->parent_transform_components) return 0;
-    for (i = 0; i < gs->parent_transform_component_count; i++) {
-        parent_transform_component *pt = &gs->parent_transform_components[i];
-        if (pt->entity_index == entity_index) {
-            if (out_parent_index) *out_parent_index = pt->parent_entity_index;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->parent_transform_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_parent_index) *out_parent_index = gs->parent_transform_components[idx].parent_entity_index;
+    return 1;
 }
 
 static int has_parent_rotation_component(const game_state *gs, int entity_index) {
-    int i;
-    if (!gs->parent_rotation_components) return 0;
-    for (i = 0; i < gs->parent_rotation_component_count; i++) {
-        parent_rotation_component *pr = &gs->parent_rotation_components[i];
-        if (pr->entity_index == entity_index) return 1;
-    }
-    return 0;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    return gs->parent_rotation_index[entity_index] >= 0;
 }
 
 static int has_mesh_component(const game_state *gs, int entity_index, int *out_visible) {
-    int i;
-    if (!gs->mesh_components) return 0;
-    for (i = 0; i < gs->mesh_component_count; i++) {
-        mesh_component *mc = &gs->mesh_components[i];
-        if (mc->entity_index == entity_index) {
-            if (out_visible) *out_visible = mc->visible;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->mesh_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_visible) *out_visible = gs->mesh_components[idx].visible;
+    return 1;
 }
 
 static int has_animation_component(const game_state *gs, int entity_index,
                                    int *out_playing, int *out_clip, float *out_time, float *out_speed) {
-    int i;
-    if (!gs->animation_components) return 0;
-    for (i = 0; i < gs->animation_component_count; i++) {
-        animation_component *ac = &gs->animation_components[i];
-        if (ac->entity_index == entity_index) {
-            if (out_playing) *out_playing = ac->playing;
-            if (out_clip) *out_clip = ac->active_clip;
-            if (out_time) *out_time = ac->anim_time;
-            if (out_speed) *out_speed = ac->speed;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->animation_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_playing) *out_playing = gs->animation_components[idx].playing;
+    if (out_clip) *out_clip = gs->animation_components[idx].active_clip;
+    if (out_time) *out_time = gs->animation_components[idx].anim_time;
+    if (out_speed) *out_speed = gs->animation_components[idx].speed;
+    return 1;
 }
 
 static int has_transform_component(const game_state *gs, int entity_index, Vec3 *out_position) {
-    int i;
-    if (!gs->transform_components) return 0;
-    for (i = 0; i < gs->transform_component_count; i++) {
-        transform_component *tc = &gs->transform_components[i];
-        if (tc->entity_index == entity_index) {
-            if (out_position) *out_position = tc->position;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->transform_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_position) *out_position = gs->transform_components[idx].position;
+    return 1;
 }
 
 static transform_component *find_transform_component_mut(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->transform_components) return NULL;
-    for (i = 0; i < gs->transform_component_count; i++) {
-        transform_component *tc = &gs->transform_components[i];
-        if (tc->entity_index == entity_index) return tc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->transform_index[entity_index];
+    return idx >= 0 ? &gs->transform_components[idx] : NULL;
 }
 
 static const box_collider_component *find_box_collider_component_read(const game_state *gs,
                                                                       int entity_index) {
-    int i;
-    if (!gs || !gs->box_collider_components) return NULL;
-    for (i = 0; i < gs->box_collider_component_count; i++) {
-        const box_collider_component *bc = &gs->box_collider_components[i];
-        if (bc->entity_index == entity_index) return bc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->box_collider_index[entity_index];
+    return idx >= 0 ? &gs->box_collider_components[idx] : NULL;
 }
 
 static const capsule_collider_component *find_capsule_collider_component_read(const game_state *gs,
                                                                               int entity_index) {
-    int i;
-    if (!gs || !gs->capsule_collider_components) return NULL;
-    for (i = 0; i < gs->capsule_collider_component_count; i++) {
-        const capsule_collider_component *cc = &gs->capsule_collider_components[i];
-        if (cc->entity_index == entity_index) return cc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->capsule_collider_index[entity_index];
+    return idx >= 0 ? &gs->capsule_collider_components[idx] : NULL;
 }
 
 static capsule_collider_component *find_capsule_collider_component_mut(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->capsule_collider_components) return NULL;
-    for (i = 0; i < gs->capsule_collider_component_count; i++) {
-        capsule_collider_component *cc = &gs->capsule_collider_components[i];
-        if (cc->entity_index == entity_index) return cc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->capsule_collider_index[entity_index];
+    return idx >= 0 ? &gs->capsule_collider_components[idx] : NULL;
 }
 
 static int has_rotation_component(const game_state *gs, int entity_index, float *out_rotation_y_deg) {
-    int i;
-    if (!gs->rotation_components) return 0;
-    for (i = 0; i < gs->rotation_component_count; i++) {
-        rotation_component *rc = &gs->rotation_components[i];
-        if (rc->entity_index == entity_index) {
-            if (out_rotation_y_deg) *out_rotation_y_deg = rc->rotation_y_deg;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->rotation_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_rotation_y_deg) *out_rotation_y_deg = gs->rotation_components[idx].rotation_y_deg;
+    return 1;
 }
 
 static int has_scale_component(const game_state *gs, int entity_index, Vec3 *out_scale) {
-    int i;
-    if (!gs->scale_components) return 0;
-    for (i = 0; i < gs->scale_component_count; i++) {
-        scale_component *sc = &gs->scale_components[i];
-        if (sc->entity_index == entity_index) {
-            if (out_scale) *out_scale = sc->scale;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->scale_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_scale) *out_scale = gs->scale_components[idx].scale;
+    return 1;
 }
 
 static int has_velocity_component(const game_state *gs, int entity_index, Vec3 *out_velocity) {
-    int i;
-    if (!gs->velocity_components) return 0;
-    for (i = 0; i < gs->velocity_component_count; i++) {
-        velocity_component *vc = &gs->velocity_components[i];
-        if (vc->entity_index == entity_index) {
-            if (out_velocity) *out_velocity = vc->velocity;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->velocity_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_velocity) *out_velocity = gs->velocity_components[idx].velocity;
+    return 1;
 }
 
 static int has_health_component(const game_state *gs, int entity_index, float *out_health, float *out_max) {
-    int i;
-    if (!gs->health_components) return 0;
-    for (i = 0; i < gs->health_component_count; i++) {
-        health_component *hc = &gs->health_components[i];
-        if (hc->entity_index == entity_index) {
-            if (out_health) *out_health = hc->health;
-            if (out_max) *out_max = hc->max_health;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->health_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_health) *out_health = gs->health_components[idx].health;
+    if (out_max) *out_max = gs->health_components[idx].max_health;
+    return 1;
 }
 
 static int has_box_collider_component(const game_state *gs, int entity_index, rect *out_rect) {
-    int i;
-    if (!gs->box_collider_components) return 0;
-    for (i = 0; i < gs->box_collider_component_count; i++) {
-        box_collider_component *cc = &gs->box_collider_components[i];
-        if (cc->entity_index == entity_index) {
-            if (out_rect) *out_rect = cc->rect;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->box_collider_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_rect) *out_rect = gs->box_collider_components[idx].rect;
+    return 1;
 }
 
 static int has_capsule_collider_component(const game_state *gs, int entity_index,
                                           float *out_radius, float *out_half_height,
                                           rect *out_aabb) {
-    int i;
-    if (!gs->capsule_collider_components) return 0;
-    for (i = 0; i < gs->capsule_collider_component_count; i++) {
-        capsule_collider_component *cc = &gs->capsule_collider_components[i];
-        if (cc->entity_index == entity_index) {
-            if (out_radius) *out_radius = cc->radius;
-            if (out_half_height) *out_half_height = cc->half_height;
-            if (out_aabb) *out_aabb = cc->aabb;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->capsule_collider_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_radius) *out_radius = gs->capsule_collider_components[idx].radius;
+    if (out_half_height) *out_half_height = gs->capsule_collider_components[idx].half_height;
+    if (out_aabb) *out_aabb = gs->capsule_collider_components[idx].aabb;
+    return 1;
 }
 
 
@@ -722,76 +661,57 @@ static int has_any_collider_component(const game_state *gs, int entity_index,
 static int has_camera_component(const game_state *gs, int entity_index,
                                 float *out_fov, float *out_near, float *out_far,
                                 Vec3 *out_target, Vec3 *out_up) {
-    int i;
-    if (!gs->camera_components) return 0;
-    for (i = 0; i < gs->camera_component_count; i++) {
-        camera_component *cc = &gs->camera_components[i];
-        if (cc->entity_index == entity_index) {
-            if (out_fov) *out_fov = cc->fov_deg;
-            if (out_near) *out_near = cc->near_plane;
-            if (out_far) *out_far = cc->far_plane;
-            if (out_target) *out_target = cc->target;
-            if (out_up) *out_up = cc->up;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->camera_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_fov) *out_fov = gs->camera_components[idx].fov_deg;
+    if (out_near) *out_near = gs->camera_components[idx].near_plane;
+    if (out_far) *out_far = gs->camera_components[idx].far_plane;
+    if (out_target) *out_target = gs->camera_components[idx].target;
+    if (out_up) *out_up = gs->camera_components[idx].up;
+    return 1;
 }
 
 static int has_trigger_component(const game_state *gs, int entity_index,
                                  trigger_type *out_type, int *out_target_entity,
                                  float *out_radius, int *out_activated) {
-    int i;
-    if (!gs->trigger_components) return 0;
-    for (i = 0; i < gs->trigger_component_count; i++) {
-        trigger_component *tc = &gs->trigger_components[i];
-        if (tc->entity_index == entity_index) {
-            if (out_type) *out_type = tc->type;
-            if (out_target_entity) *out_target_entity = tc->target_entity;
-            if (out_radius) *out_radius = tc->radius;
-            if (out_activated) *out_activated = tc->activated;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->trigger_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_type) *out_type = gs->trigger_components[idx].type;
+    if (out_target_entity) *out_target_entity = gs->trigger_components[idx].target_entity;
+    if (out_radius) *out_radius = gs->trigger_components[idx].radius;
+    if (out_activated) *out_activated = gs->trigger_components[idx].activated;
+    return 1;
 }
 
 static int has_rigid_body_component(const game_state *gs, int entity_index, int *out_use_gravity) {
-    int i;
-    if (!gs->rigid_body_components) return 0;
-    for (i = 0; i < gs->rigid_body_component_count; i++) {
-        rigid_body_component *rb = &gs->rigid_body_components[i];
-        if (rb->entity_index == entity_index) {
-            if (out_use_gravity) *out_use_gravity = rb->use_gravity ? 1 : 0;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->rigid_body_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_use_gravity) *out_use_gravity = gs->rigid_body_components[idx].use_gravity ? 1 : 0;
+    return 1;
 }
 
 static int has_character_controller_component(const game_state *gs, int entity_index,
                                               float *out_move_speed, float *out_jump_speed) {
-    int i;
-    if (!gs->character_controller_components) return 0;
-    for (i = 0; i < gs->character_controller_component_count; i++) {
-        character_controller_component *cc = &gs->character_controller_components[i];
-        if (cc->entity_index == entity_index) {
-            if (out_move_speed) *out_move_speed = cc->move_speed;
-            if (out_jump_speed) *out_jump_speed = cc->jump_speed;
-            return 1;
-        }
-    }
-    return 0;
+    int idx;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    idx = gs->character_controller_index[entity_index];
+    if (idx < 0) return 0;
+    if (out_move_speed) *out_move_speed = gs->character_controller_components[idx].move_speed;
+    if (out_jump_speed) *out_jump_speed = gs->character_controller_components[idx].jump_speed;
+    return 1;
 }
 
 static const mesh_component *find_mesh_component_read(const game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->mesh_components) return NULL;
-    for (i = 0; i < gs->mesh_component_count; i++) {
-        const mesh_component *mc = &gs->mesh_components[i];
-        if (mc->entity_index == entity_index) return mc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->mesh_index[entity_index];
+    return idx >= 0 ? &gs->mesh_components[idx] : NULL;
 }
 
 static const scene_model_asset *find_scene_model_asset_read(const game_state *gs, int asset_index) {
@@ -1745,8 +1665,11 @@ static void remove_parent_transform_component(game_state *gs, int entity_index) 
     for (read_i = 0; read_i < gs->parent_transform_component_count; read_i++) {
         parent_transform_component pt = gs->parent_transform_components[read_i];
         if (pt.entity_index == entity_index) continue;
-        gs->parent_transform_components[write_i++] = pt;
+        gs->parent_transform_components[write_i] = pt;
+        gs->parent_transform_index[pt.entity_index] = write_i;
+        write_i++;
     }
+    gs->parent_transform_index[entity_index] = -1;
     gs->parent_transform_component_count = write_i;
 }
 
@@ -1767,6 +1690,7 @@ static void set_parent_transform_component(game_state *gs, int entity_index, int
     i = gs->parent_transform_component_count++;
     gs->parent_transform_components[i].entity_index = entity_index;
     gs->parent_transform_components[i].parent_entity_index = parent_entity_index;
+    gs->parent_transform_index[entity_index] = i;
 }
 
 static int scene_tree_parent_assignment_is_valid(int child_entity, int parent_entity,

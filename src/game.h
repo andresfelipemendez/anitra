@@ -354,6 +354,25 @@ typedef struct game_state {
   int trigger_component_count;
   int trigger_component_capacity;
 
+  /* Entity -> component index lookup (-1 = no component) */
+  int parent_index[PROJECT_COMP_MAX];
+  int parent_transform_index[PROJECT_COMP_MAX];
+  int parent_rotation_index[PROJECT_COMP_MAX];
+  int transform_index[PROJECT_COMP_MAX];
+  int rotation_index[PROJECT_COMP_MAX];
+  int scale_index[PROJECT_COMP_MAX];
+  int velocity_index[PROJECT_COMP_MAX];
+  int rigid_body_index[PROJECT_COMP_MAX];
+  int character_controller_index[PROJECT_COMP_MAX];
+  int health_index[PROJECT_COMP_MAX];
+  int box_collider_index[PROJECT_COMP_MAX];
+  int capsule_collider_index[PROJECT_COMP_MAX];
+  int mesh_index[PROJECT_COMP_MAX];
+  int animation_index[PROJECT_COMP_MAX];
+  int animation_transition_index[PROJECT_COMP_MAX];
+  int camera_index[PROJECT_COMP_MAX];
+  int trigger_index[PROJECT_COMP_MAX];
+
   mesh3d_state mesh3d;
   anim_sm anim;
   lighting_state lighting;

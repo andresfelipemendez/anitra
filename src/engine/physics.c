@@ -25,110 +25,80 @@ typedef struct collider_target_view {
 } collider_target_view;
 
 static transform_component *find_transform_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->transform_components) return NULL;
-    for (i = 0; i < gs->transform_component_count; i++) {
-        transform_component *tc = &gs->transform_components[i];
-        if (tc->entity_index == entity_index) return tc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->transform_index[entity_index];
+    return idx >= 0 ? &gs->transform_components[idx] : NULL;
 }
 
 static parent_transform_component *find_parent_transform_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->parent_transform_components) return NULL;
-    for (i = 0; i < gs->parent_transform_component_count; i++) {
-        parent_transform_component *pt = &gs->parent_transform_components[i];
-        if (pt->entity_index == entity_index) return pt;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->parent_transform_index[entity_index];
+    return idx >= 0 ? &gs->parent_transform_components[idx] : NULL;
 }
 
 static health_component *find_health_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->health_components) return NULL;
-    for (i = 0; i < gs->health_component_count; i++) {
-        health_component *hc = &gs->health_components[i];
-        if (hc->entity_index == entity_index) return hc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->health_index[entity_index];
+    return idx >= 0 ? &gs->health_components[idx] : NULL;
 }
 
 static velocity_component *find_velocity_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->velocity_components) return NULL;
-    for (i = 0; i < gs->velocity_component_count; i++) {
-        velocity_component *vc = &gs->velocity_components[i];
-        if (vc->entity_index == entity_index) return vc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->velocity_index[entity_index];
+    return idx >= 0 ? &gs->velocity_components[idx] : NULL;
 }
 
 static rigid_body_component *find_rigid_body_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->rigid_body_components) return NULL;
-    for (i = 0; i < gs->rigid_body_component_count; i++) {
-        rigid_body_component *rb = &gs->rigid_body_components[i];
-        if (rb->entity_index == entity_index) return rb;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->rigid_body_index[entity_index];
+    return idx >= 0 ? &gs->rigid_body_components[idx] : NULL;
 }
 
 static character_controller_component *find_character_controller_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->character_controller_components) return NULL;
-    for (i = 0; i < gs->character_controller_component_count; i++) {
-        character_controller_component *cc = &gs->character_controller_components[i];
-        if (cc->entity_index == entity_index) return cc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->character_controller_index[entity_index];
+    return idx >= 0 ? &gs->character_controller_components[idx] : NULL;
 }
 
 static box_collider_component *find_box_collider_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->box_collider_components) return NULL;
-    for (i = 0; i < gs->box_collider_component_count; i++) {
-        box_collider_component *cc = &gs->box_collider_components[i];
-        if (cc->entity_index == entity_index) return cc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->box_collider_index[entity_index];
+    return idx >= 0 ? &gs->box_collider_components[idx] : NULL;
 }
 
 static capsule_collider_component *find_capsule_collider_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->capsule_collider_components) return NULL;
-    for (i = 0; i < gs->capsule_collider_component_count; i++) {
-        capsule_collider_component *cc = &gs->capsule_collider_components[i];
-        if (cc->entity_index == entity_index) return cc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->capsule_collider_index[entity_index];
+    return idx >= 0 ? &gs->capsule_collider_components[idx] : NULL;
 }
 
 static camera_component *find_camera_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->camera_components) return NULL;
-    for (i = 0; i < gs->camera_component_count; i++) {
-        camera_component *cc = &gs->camera_components[i];
-        if (cc->entity_index == entity_index) return cc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->camera_index[entity_index];
+    return idx >= 0 ? &gs->camera_components[idx] : NULL;
 }
 
 static mesh_component *find_mesh_component(game_state *gs, int entity_index) {
-    int i;
-    if (!gs || !gs->mesh_components) return NULL;
-    for (i = 0; i < gs->mesh_component_count; i++) {
-        mesh_component *mc = &gs->mesh_components[i];
-        if (mc->entity_index == entity_index) return mc;
-    }
-    return NULL;
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->mesh_index[entity_index];
+    return idx >= 0 ? &gs->mesh_components[idx] : NULL;
 }
 
 static Vec3 resolve_world_position(game_state *gs, int entity_index) {
     Vec3 world = VEC3(0.0f, 0.0f, 0.0f);
     int current = entity_index;
     int guard = 0;
-    if (!gs || !gs->scene_entities || !gs->transform_components) return world;
+    if (!gs) return world;
 
     while (guard <= gs->scene_entity_count && current >= 0 && current < gs->scene_entity_count) {
         transform_component *tc = find_transform_component(gs, current);
@@ -155,7 +125,7 @@ static Vec3 resolve_parent_world_offset(game_state *gs, int entity_index) {
 
 static int query_primary_actor(game_state *gs, physics_actor_view *out_actor) {
     int i;
-    if (!gs || !out_actor || !gs->scene_entities || !gs->velocity_components) return 0;
+    if (!gs || !out_actor) return 0;
 
     for (i = 0; i < gs->character_controller_component_count; i++) {
         character_controller_component *ccmp = &gs->character_controller_components[i];
@@ -167,7 +137,6 @@ static int query_primary_actor(game_state *gs, physics_actor_view *out_actor) {
         capsule_collider_component *cc;
 
         if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
-        if (!find_character_controller_component(gs, entity_index)) continue;
 
         tc = find_transform_component(gs, entity_index);
         vc = find_velocity_component(gs, entity_index);
@@ -246,26 +215,25 @@ static int query_combat_targets(game_state *gs, int exclude_entity_index,
                                 collider_target_view *out_targets, int max_targets) {
     int i;
     int count = 0;
-    if (!gs || !out_targets || max_targets <= 0 || !gs->scene_entities) {
-        return 0;
-    }
+    if (!gs || !out_targets || max_targets <= 0) return 0;
 
-    for (i = 0; i < gs->scene_entity_count && count < max_targets; i++) {
-        int entity_index = i;
+    /* Iterate health_components — combat targets must have health */
+    for (i = 0; i < gs->health_component_count && count < max_targets; i++) {
+        health_component *hc = &gs->health_components[i];
+        int entity_index = hc->entity_index;
+        transform_component *tc;
         box_collider_component *bc;
         capsule_collider_component *cc;
-        transform_component *tc;
-        health_component *hc;
 
         if (entity_index == exclude_entity_index) continue;
         if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+
+        tc = find_transform_component(gs, entity_index);
+        if (!tc) continue;
+
         bc = find_box_collider_component(gs, entity_index);
         cc = find_capsule_collider_component(gs, entity_index);
         if (!bc && !cc) continue;
-
-        tc = find_transform_component(gs, entity_index);
-        hc = find_health_component(gs, entity_index);
-        if (!tc || !hc) continue;
 
         out_targets[count].entity_index = entity_index;
         out_targets[count].ent = &gs->scene_entities[entity_index];
@@ -283,33 +251,49 @@ static int query_movement_obstacles(game_state *gs, int exclude_entity_index,
                                     collider_target_view *out_targets, int max_targets) {
     int i;
     int count = 0;
-    if (!gs || !out_targets || max_targets <= 0 || !gs->scene_entities) {
-        return 0;
-    }
+    if (!gs || !out_targets || max_targets <= 0) return 0;
 
-    for (i = 0; i < gs->scene_entity_count && count < max_targets; i++) {
-        int entity_index = i;
-        box_collider_component *bc;
-        capsule_collider_component *cc;
-        entity *ent;
+    /* Pass 1: box colliders */
+    for (i = 0; i < gs->box_collider_component_count && count < max_targets; i++) {
+        box_collider_component *bc = &gs->box_collider_components[i];
+        int entity_index = bc->entity_index;
         transform_component *tc;
 
         if (entity_index == exclude_entity_index) continue;
         if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
-        bc = find_box_collider_component(gs, entity_index);
-        cc = find_capsule_collider_component(gs, entity_index);
-        if (!bc && !cc) continue;
-        ent = &gs->scene_entities[entity_index];
         if (find_camera_component(gs, entity_index)) continue;
 
         tc = find_transform_component(gs, entity_index);
         if (!tc) continue;
 
         out_targets[count].entity_index = entity_index;
-        out_targets[count].ent = ent;
+        out_targets[count].ent = &gs->scene_entities[entity_index];
         out_targets[count].transform = tc;
         out_targets[count].health = NULL;
         out_targets[count].box_collider = bc;
+        out_targets[count].capsule_collider = NULL;
+        count++;
+    }
+
+    /* Pass 2: capsule colliders (skip entities already added via box pass) */
+    for (i = 0; i < gs->capsule_collider_component_count && count < max_targets; i++) {
+        capsule_collider_component *cc = &gs->capsule_collider_components[i];
+        int entity_index = cc->entity_index;
+        transform_component *tc;
+
+        if (entity_index == exclude_entity_index) continue;
+        if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+        if (gs->box_collider_index[entity_index] >= 0) continue; /* already in box pass */
+        if (find_camera_component(gs, entity_index)) continue;
+
+        tc = find_transform_component(gs, entity_index);
+        if (!tc) continue;
+
+        out_targets[count].entity_index = entity_index;
+        out_targets[count].ent = &gs->scene_entities[entity_index];
+        out_targets[count].transform = tc;
+        out_targets[count].health = NULL;
+        out_targets[count].box_collider = NULL;
         out_targets[count].capsule_collider = cc;
         count++;
     }
@@ -390,7 +374,7 @@ void collision(game_state* gs) {
     int ti;
     float cross_size = 8.0f;
     Vec3 actor_world;
-    if (!gs || !gs->scene_entities || gs->scene_entity_count <= 0) return;
+    if (!gs || gs->scene_entity_count <= 0) return;
 
     if (!query_primary_actor(gs, &actor)) return;
     if (!actor.health) return;
@@ -492,7 +476,7 @@ void apply_movement(game_state* gs) {
     Vec3 actor_parent_offset;
     float actor_hh;
     const float gravity = -18.0f;
-    if (!gs || !gs->scene_entities || gs->scene_entity_count <= 0) return;
+    if (!gs || gs->scene_entity_count <= 0) return;
 
     if (!query_primary_actor(gs, &actor)) return;
     actor_world = resolve_world_position(gs, actor.entity_index);

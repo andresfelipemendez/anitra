@@ -302,6 +302,25 @@ static game_state *setup_game_state(void) {
         (uint32_t)(8 * sizeof(trigger_component)), 8, "trig_comps");
     gs->trigger_component_capacity = 8;
 
+    /* Init entity->component index lookup arrays */
+    memset(gs->parent_index, 0xFF, sizeof(gs->parent_index));
+    memset(gs->parent_transform_index, 0xFF, sizeof(gs->parent_transform_index));
+    memset(gs->parent_rotation_index, 0xFF, sizeof(gs->parent_rotation_index));
+    memset(gs->transform_index, 0xFF, sizeof(gs->transform_index));
+    memset(gs->rotation_index, 0xFF, sizeof(gs->rotation_index));
+    memset(gs->scale_index, 0xFF, sizeof(gs->scale_index));
+    memset(gs->velocity_index, 0xFF, sizeof(gs->velocity_index));
+    memset(gs->rigid_body_index, 0xFF, sizeof(gs->rigid_body_index));
+    memset(gs->character_controller_index, 0xFF, sizeof(gs->character_controller_index));
+    memset(gs->health_index, 0xFF, sizeof(gs->health_index));
+    memset(gs->box_collider_index, 0xFF, sizeof(gs->box_collider_index));
+    memset(gs->capsule_collider_index, 0xFF, sizeof(gs->capsule_collider_index));
+    memset(gs->mesh_index, 0xFF, sizeof(gs->mesh_index));
+    memset(gs->animation_index, 0xFF, sizeof(gs->animation_index));
+    memset(gs->animation_transition_index, 0xFF, sizeof(gs->animation_transition_index));
+    memset(gs->camera_index, 0xFF, sizeof(gs->camera_index));
+    memset(gs->trigger_index, 0xFF, sizeof(gs->trigger_index));
+
     /* Draw list */
     gs->dl.meshes = (mesh_draw_command *)arena_alloc(gs->gameplay,
         (uint32_t)(DRAW_LIST_MAX_MESH_COMMANDS * sizeof(mesh_draw_command)), 8, "dl_meshes");
@@ -336,6 +355,7 @@ static void add_animated_entity(game_state *gs, int entity_index, int model_asse
     gs->mesh_components[mi].entity_index = entity_index;
     gs->mesh_components[mi].visible = 1;
     gs->mesh_components[mi].model_asset_index = model_asset;
+    gs->mesh_index[entity_index] = mi;
 
     ai = gs->animation_component_count++;
     gs->animation_components[ai].entity_index = entity_index;
@@ -343,6 +363,7 @@ static void add_animated_entity(game_state *gs, int entity_index, int model_asse
     gs->animation_components[ai].active_clip = clip;
     gs->animation_components[ai].anim_time = 0.0f;
     gs->animation_components[ai].speed = speed;
+    gs->animation_index[entity_index] = ai;
 }
 
 /* ── Tests: Pool allocation ──────────────────────────────────────────── */
@@ -544,6 +565,7 @@ TEST(velocity_above_triggers_transition_to_blend) {
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
     gs->velocity_components[vi].velocity = VEC3(1.0f, 0.0f, 0.0f);
+    gs->velocity_index[0] = vi;
 
     ASSERT_EQ(sm->states[0].count, 1);
     ASSERT_EQ(sm->blend_count, 0);
@@ -578,6 +600,7 @@ TEST(velocity_below_threshold_no_transition) {
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
     gs->velocity_components[vi].velocity = VEC3(0.1f, 0.0f, 0.0f);
+    gs->velocity_index[0] = vi;
 
     anim_sm_update(sm, gs, 1.0f / 60.0f);
 
@@ -607,6 +630,7 @@ TEST(blend_completes_and_entity_moves_to_dest_state) {
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
     gs->velocity_components[vi].velocity = VEC3(1.0f, 0.0f, 0.0f);
+    gs->velocity_index[0] = vi;
 
     /* First frame: triggers blend */
     anim_sm_update(sm, gs, 1.0f / 60.0f);
@@ -677,6 +701,7 @@ TEST(phase5_writes_blended_skin_mats) {
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
     gs->velocity_components[vi].velocity = VEC3(1.0f, 0.0f, 0.0f);
+    gs->velocity_index[0] = vi;
 
     /* First frame triggers blend */
     anim_sm_update(sm, gs, 1.0f / 60.0f);
@@ -773,6 +798,7 @@ TEST(bidirectional_transition_idle_to_walk_and_back) {
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
     gs->velocity_components[vi].velocity = VEC3(1.0f, 0.0f, 0.0f);
+    gs->velocity_index[0] = vi;
 
     /* Run until blend completes */
     for (frame = 0; frame < 20; frame++)
@@ -814,6 +840,7 @@ TEST(velocity_on_same_entity_triggers_transition) {
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
     gs->velocity_components[vi].velocity = VEC3(5.0f, 0.0f, 0.0f);
+    gs->velocity_index[0] = vi;
 
     anim_sm_update(sm, gs, 1.0f / 60.0f);
 
@@ -840,6 +867,7 @@ TEST(zero_velocity_stays_idle) {
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
     gs->velocity_components[vi].velocity = VEC3(0.0f, 0.0f, 0.0f);
+    gs->velocity_index[0] = vi;
 
     anim_sm_update(sm, gs, 1.0f / 60.0f);
 
@@ -875,47 +903,57 @@ static void setup_project_scene(game_state *gs) {
     ti = gs->transform_component_count++;
     gs->transform_components[ti].entity_index = 0;
     gs->transform_components[ti].position = VEC3(1.57f, -0.10f, -2.58f);
+    gs->transform_index[0] = ti;
 
     ri = gs->rotation_component_count++;
     gs->rotation_components[ri].entity_index = 0;
     gs->rotation_components[ri].rotation_y_deg = -180.0f;
+    gs->rotation_index[0] = ri;
 
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
     gs->velocity_components[vi].velocity = VEC3(0, 0, 0);
+    gs->velocity_index[0] = vi;
 
     rbi = gs->rigid_body_component_count++;
     gs->rigid_body_components[rbi].entity_index = 0;
     gs->rigid_body_components[rbi].use_gravity = 1;
+    gs->rigid_body_index[0] = rbi;
 
     cci = gs->character_controller_component_count++;
     gs->character_controller_components[cci].entity_index = 0;
     gs->character_controller_components[cci].move_speed = 5.0f;
     gs->character_controller_components[cci].jump_speed = 8.5f;
+    gs->character_controller_index[0] = cci;
 
     hi = gs->health_component_count++;
     gs->health_components[hi].entity_index = 0;
     gs->health_components[hi].health = 100.0f;
     gs->health_components[hi].max_health = 100.0f;
+    gs->health_index[0] = hi;
 
     ci = gs->capsule_collider_component_count++;
     gs->capsule_collider_components[ci].entity_index = 0;
     gs->capsule_collider_components[ci].radius = 0.38f;
     gs->capsule_collider_components[ci].half_height = 0.46f;
+    gs->capsule_collider_index[0] = ci;
 
     /* Entity 1: camera — transform, parent_transform(parent=0) */
     ti = gs->transform_component_count++;
     gs->transform_components[ti].entity_index = 1;
     gs->transform_components[ti].position = VEC3(0, 8, 10);
+    gs->transform_index[1] = ti;
 
     pti = gs->parent_transform_component_count++;
     gs->parent_transform_components[pti].entity_index = 1;
     gs->parent_transform_components[pti].parent_entity_index = 0;
+    gs->parent_transform_index[1] = pti;
 
     /* Entity 2: floor_root — transform(0,-1,0) */
     ti = gs->transform_component_count++;
     gs->transform_components[ti].entity_index = 2;
     gs->transform_components[ti].position = VEC3(0, -1, 0);
+    gs->transform_index[2] = ti;
 
     /* Entities 3-18: floor tiles — transform, parent_transform(parent=2),
        mesh, box_collider */
@@ -926,20 +964,24 @@ static void setup_project_scene(game_state *gs) {
         gs->transform_components[ti].entity_index = eidx;
         gs->transform_components[ti].position = VEC3(
             floor_pos[i][0], floor_pos[i][1], floor_pos[i][2]);
+        gs->transform_index[eidx] = ti;
 
         pti = gs->parent_transform_component_count++;
         gs->parent_transform_components[pti].entity_index = eidx;
         gs->parent_transform_components[pti].parent_entity_index = 2;
+        gs->parent_transform_index[eidx] = pti;
 
         mi = gs->mesh_component_count++;
         gs->mesh_components[mi].entity_index = eidx;
         gs->mesh_components[mi].visible = 1;
         gs->mesh_components[mi].model_asset_index = -1; /* no model in test */
+        gs->mesh_index[eidx] = mi;
 
         bi = gs->box_collider_component_count++;
         gs->box_collider_components[bi].entity_index = eidx;
         gs->box_collider_components[bi].rect = (rect){0, 0, 4.0f, 4.0f};
         gs->box_collider_components[bi].half_height = 0.2f;
+        gs->box_collider_index[eidx] = bi;
     }
 
     /* Entity 19: player_mesh — transform, parent_transform(parent=0),
@@ -948,10 +990,12 @@ static void setup_project_scene(game_state *gs) {
     pti = gs->parent_transform_component_count++;
     gs->parent_transform_components[pti].entity_index = 19;
     gs->parent_transform_components[pti].parent_entity_index = 0;
+    gs->parent_transform_index[19] = pti;
 
     ti = gs->transform_component_count++;
     gs->transform_components[ti].entity_index = 19;
     gs->transform_components[ti].position = VEC3(0, -0.86f, 0);
+    gs->transform_index[19] = ti;
 
     /* Entities 20-23: south wall segments at z=-8, parented to floor_root.
        4 units wide (X), 0.5 thick (Z), 4 tall (Y). */
@@ -963,15 +1007,18 @@ static void setup_project_scene(game_state *gs) {
             ti = gs->transform_component_count++;
             gs->transform_components[ti].entity_index = eidx;
             gs->transform_components[ti].position = VEC3(wall_x[w], 0.0f, -8.0f);
+            gs->transform_index[eidx] = ti;
 
             pti = gs->parent_transform_component_count++;
             gs->parent_transform_components[pti].entity_index = eidx;
             gs->parent_transform_components[pti].parent_entity_index = 2;
+            gs->parent_transform_index[eidx] = pti;
 
             bi = gs->box_collider_component_count++;
             gs->box_collider_components[bi].entity_index = eidx;
             gs->box_collider_components[bi].rect = (rect){0, 0, 4.0f, 0.5f};
             gs->box_collider_components[bi].half_height = 2.0f;
+            gs->box_collider_index[eidx] = bi;
         }
         gs->scene_entity_count = 24;
     }
@@ -1150,56 +1197,67 @@ TEST(key_pickup_opens_door) {
     ti = gs->transform_component_count++;
     gs->transform_components[ti].entity_index = 0;
     gs->transform_components[ti].position = VEC3(0.0f, 0.0f, -4.0f);
+    gs->transform_index[0] = ti;
     gs->velocity_component_count++;
     gs->velocity_components[0].entity_index = 0;
     gs->velocity_components[0].velocity = VEC3(0, 0, 0);
+    gs->velocity_index[0] = 0;
     gs->character_controller_component_count++;
     gs->character_controller_components[0].entity_index = 0;
     gs->character_controller_components[0].move_speed = 5.0f;
     gs->character_controller_components[0].jump_speed = 8.5f;
+    gs->character_controller_index[0] = 0;
     gs->capsule_collider_component_count++;
     gs->capsule_collider_components[0].entity_index = 0;
     gs->capsule_collider_components[0].radius = 0.38f;
     gs->capsule_collider_components[0].half_height = 0.46f;
+    gs->capsule_collider_index[0] = 0;
 
     /* Entity 1: key — transform, mesh (visible), PICKUP trigger targeting entity 2 */
     ti = gs->transform_component_count++;
     gs->transform_components[ti].entity_index = 1;
     gs->transform_components[ti].position = VEC3(2.0f, 0.0f, -4.0f);
+    gs->transform_index[1] = ti;
     mi = gs->mesh_component_count++;
     gs->mesh_components[mi].entity_index = 1;
     gs->mesh_components[mi].visible = 1;
     gs->mesh_components[mi].model_asset_index = 0;
+    gs->mesh_index[1] = mi;
     tgi = gs->trigger_component_count++;
     gs->trigger_components[tgi].entity_index = 1;
     gs->trigger_components[tgi].type = TRIGGER_PICKUP;
     gs->trigger_components[tgi].target_entity = 2;
     gs->trigger_components[tgi].radius = 1.0f;
     gs->trigger_components[tgi].activated = 0;
+    gs->trigger_index[1] = tgi;
 
     /* Entity 2: door — transform, mesh (visible), box collider, DOOR trigger */
     ti = gs->transform_component_count++;
     gs->transform_components[ti].entity_index = 2;
     gs->transform_components[ti].position = VEC3(-2.0f, 0.0f, -8.0f);
+    gs->transform_index[2] = ti;
     mi = gs->mesh_component_count++;
     gs->mesh_components[mi].entity_index = 2;
     gs->mesh_components[mi].visible = 1;
     gs->mesh_components[mi].model_asset_index = 0;
+    gs->mesh_index[2] = mi;
     bci = gs->box_collider_component_count++;
     gs->box_collider_components[bci].entity_index = 2;
     gs->box_collider_components[bci].rect.w = 4.0f;
     gs->box_collider_components[bci].rect.h = 0.5f;
     gs->box_collider_components[bci].half_height = 2.0f;
+    gs->box_collider_index[2] = bci;
     tgi = gs->trigger_component_count++;
     gs->trigger_components[tgi].entity_index = 2;
     gs->trigger_components[tgi].type = TRIGGER_DOOR;
     gs->trigger_components[tgi].target_entity = 0;
     gs->trigger_components[tgi].radius = 0.0f;
     gs->trigger_components[tgi].activated = 0;
+    gs->trigger_index[2] = tgi;
 
     /* Player at (0,0,-4), key at (2,0,-4) — distance = 2.0, radius = 1.0 → not triggered */
     update_triggers(gs);
-    ASSERT_EQ(gs->trigger_components[0].activated, 0);
+    ASSERT_EQ(gs->trigger_component_count, 2);
     ASSERT_EQ(gs->mesh_components[0].visible, 1); /* key mesh still visible */
     ASSERT_EQ(gs->mesh_components[1].visible, 1); /* door mesh still visible */
     ASSERT(gs->box_collider_components[0].rect.w > 0.0f); /* door collider active */
@@ -1208,12 +1266,15 @@ TEST(key_pickup_opens_door) {
     gs->transform_components[0].position = VEC3(2.0f, 0.0f, -4.0f);
     update_triggers(gs);
 
-    /* Key trigger activated, key mesh hidden */
-    ASSERT_EQ(gs->trigger_components[0].activated, 1);
+    /* Both triggers removed from array by swap-and-pop */
+    ASSERT_EQ(gs->trigger_component_count, 0);
+    ASSERT_EQ(gs->trigger_index[1], -1); /* key entity no longer indexed */
+    ASSERT_EQ(gs->trigger_index[2], -1); /* door entity no longer indexed */
+
+    /* Key mesh hidden */
     ASSERT_EQ(gs->mesh_components[0].visible, 0);
 
-    /* Door trigger activated, door mesh hidden, door collider disabled */
-    ASSERT_EQ(gs->trigger_components[1].activated, 1);
+    /* Door mesh hidden, door collider disabled */
     ASSERT_EQ(gs->mesh_components[1].visible, 0);
     ASSERT_FLOAT_EQ(gs->box_collider_components[0].rect.w, 0.0f);
     ASSERT_FLOAT_EQ(gs->box_collider_components[0].rect.h, 0.0f);
@@ -1370,6 +1431,89 @@ TEST(build_scene_fallback_camera_when_no_project_camera) {
     ASSERT_EQ(gs->scene_entity_count, 3); /* grew by 1 for fallback camera */
 }
 
+/* ── Index table tests ────────────────────────────────────────────────── */
+
+TEST(lookup_table_after_push) {
+    game_state *gs = setup_game_state();
+    ensure_scene_storage(gs, 8);
+    gs->scene_entity_count = 4;
+
+    /* Push components to entities 0, 2, 3 (skip 1) */
+    push_transform_component(gs, 0, VEC3(1.0f, 0.0f, 0.0f));
+    push_transform_component(gs, 2, VEC3(3.0f, 0.0f, 0.0f));
+    push_transform_component(gs, 3, VEC3(4.0f, 0.0f, 0.0f));
+
+    push_velocity_component(gs, 0, VEC3(0.0f, 0.0f, 1.0f));
+    push_health_component(gs, 2, 100.0f, 100.0f);
+    push_mesh_component(gs, 3, 0);
+
+    /* Verify index arrays point to correct slots */
+    ASSERT_EQ(gs->transform_index[0], 0);
+    ASSERT_EQ(gs->transform_index[1], -1);
+    ASSERT_EQ(gs->transform_index[2], 1);
+    ASSERT_EQ(gs->transform_index[3], 2);
+
+    ASSERT_EQ(gs->velocity_index[0], 0);
+    ASSERT_EQ(gs->velocity_index[1], -1);
+
+    ASSERT_EQ(gs->health_index[2], 0);
+    ASSERT_EQ(gs->health_index[0], -1);
+
+    ASSERT_EQ(gs->mesh_index[3], 0);
+    ASSERT_EQ(gs->mesh_index[0], -1); /* only from add_animated_entity, not pushed here */
+
+    /* Verify O(1) find returns correct data */
+    ASSERT(find_transform_component(gs, 0) != NULL);
+    ASSERT_FLOAT_EQ(find_transform_component(gs, 0)->position.x, 1.0f);
+    ASSERT(find_transform_component(gs, 1) == NULL);
+    ASSERT_FLOAT_EQ(find_transform_component(gs, 2)->position.x, 3.0f);
+    ASSERT_FLOAT_EQ(find_transform_component(gs, 3)->position.x, 4.0f);
+}
+
+TEST(trigger_swap_and_pop_on_activation) {
+    game_state *gs = setup_game_state();
+    ensure_scene_storage(gs, 8);
+    gs->scene_entity_count = 5;
+
+    /* Entity 0: player with character_controller, velocity, transform, capsule collider */
+    push_transform_component(gs, 0, VEC3(0.0f, 0.0f, 0.0f));
+    push_velocity_component(gs, 0, VEC3(0.0f, 0.0f, 0.0f));
+    push_character_controller_component(gs, 0, 5.0f, 10.0f);
+    push_capsule_collider_component(gs, 0, 0.3f, 0.9f);
+
+    /* Entity 1: key pickup trigger (target = entity 2) */
+    push_transform_component(gs, 1, VEC3(0.0f, 0.0f, 0.0f));
+    push_mesh_component(gs, 1, 0);
+    push_trigger_component(gs, 1, TRIGGER_PICKUP, 2, 1.0f);
+
+    /* Entity 2: door trigger */
+    push_transform_component(gs, 2, VEC3(0.0f, 0.0f, 0.0f));
+    push_mesh_component(gs, 2, 0);
+    push_box_collider_component(gs, 2, (rect){0.0f, 0.0f, 1.0f, 1.0f}, 0.5f);
+    push_trigger_component(gs, 2, TRIGGER_DOOR, -1, 1.0f);
+
+    /* Entity 3: another trigger (should survive swap-and-pop) */
+    push_transform_component(gs, 3, VEC3(10.0f, 0.0f, 0.0f));
+    push_mesh_component(gs, 3, 0);
+    push_trigger_component(gs, 3, TRIGGER_PICKUP, -1, 1.0f);
+
+    ASSERT_EQ(gs->trigger_component_count, 3);
+    ASSERT_EQ(gs->trigger_index[1], 0);
+    ASSERT_EQ(gs->trigger_index[2], 1);
+    ASSERT_EQ(gs->trigger_index[3], 2);
+
+    /* Run trigger update — entity 0 overlaps entities 1 and 2 (at origin) */
+    gs->dt = 1.0f / 60.0f;
+    update_triggers(gs);
+
+    /* Key and door triggers removed via swap-and-pop, entity 3 trigger survives */
+    ASSERT_EQ(gs->trigger_component_count, 1);
+    ASSERT_EQ(gs->trigger_components[0].entity_index, 3);
+    ASSERT_EQ(gs->trigger_index[3], 0);
+    ASSERT_EQ(gs->trigger_index[1], -1);
+    ASSERT_EQ(gs->trigger_index[2], -1);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1436,6 +1580,10 @@ int main(void) {
 
     /* Trigger system */
     run_key_pickup_opens_door();
+
+    /* Index table correctness */
+    run_lookup_table_after_push();
+    run_trigger_swap_and_pop_on_activation();
 
     /* Scene building from project */
     run_build_scene_from_project_creates_runtime_components();
