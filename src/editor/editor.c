@@ -12,6 +12,9 @@
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
 
+#include "cache_profiler.h"
+#include "cpu_profiler.h"
+
 #define PROFILER_MAX_FLAT_RECORDS 65536
 
 enum {
@@ -98,6 +101,15 @@ enum {
 #define UI_RADIUS_SM       3
 #define UI_RADIUS_MD       4
 #define UI_RADIUS_LG       6
+
+/* Bootstrap icon UTF-8 codepoints (from bootstrap-icons.css). */
+#define UI_ICON_PLAY_FILL       "\xEF\x93\xB4" /* U+F4F4 */
+#define UI_ICON_STOP_FILL       "\xEF\x96\x92" /* U+F592 */
+#define UI_ICON_CAMERA          "\xEF\x88\xA0" /* U+F220 */
+#define UI_ICON_BOUNDING_BOX    "\xEF\x86\xB6" /* U+F1B6 */
+#define UI_ICON_ARROW_LEFT      "\xEF\x84\xAF" /* U+F12F */
+#define UI_ICON_ARROW_RIGHT     "\xEF\x84\xB8" /* U+F138 */
+#define UI_ICON_ARROW_UP        "\xEF\x85\x88" /* U+F148 */
 
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
@@ -309,18 +321,61 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
     }
 }
 
-/* Simple text measurement for Clay — uses pre-computed font advance table.
-   No HarfBuzz, no kerning. Good enough for profiler UI (ASCII, single font). */
+static int editor_utf8_decode_at(const char *text, int len, int index, int *out_cp, int *out_next) {
+    unsigned char c0;
+    int cp;
+    int next;
+
+    if (!text || index < 0 || index >= len || !out_cp) return 0;
+
+    c0 = (unsigned char)text[index];
+    cp = (int)c0;
+    next = index + 1;
+
+    if ((c0 & 0x80u) == 0) {
+        /* ASCII */
+    } else if ((c0 & 0xE0u) == 0xC0u && index + 1 < len) {
+        cp = ((int)(c0 & 0x1Fu) << 6) |
+             ((int)(text[index + 1] & 0x3F));
+        next = index + 2;
+    } else if ((c0 & 0xF0u) == 0xE0u && index + 2 < len) {
+        cp = ((int)(c0 & 0x0Fu) << 12) |
+             ((int)(text[index + 1] & 0x3F) << 6) |
+             ((int)(text[index + 2] & 0x3F));
+        next = index + 3;
+    } else if ((c0 & 0xF8u) == 0xF0u && index + 3 < len) {
+        cp = ((int)(c0 & 0x07u) << 18) |
+             ((int)(text[index + 1] & 0x3F) << 12) |
+             ((int)(text[index + 2] & 0x3F) << 6) |
+             ((int)(text[index + 3] & 0x3F));
+        next = index + 4;
+    }
+
+    *out_cp = cp;
+    if (out_next) *out_next = next;
+    return 1;
+}
+
+/* Simple text measurement for Clay — mostly ASCII metrics from externals.
+   For UTF-8 glyphs (e.g. icon font codepoints), fall back to ~1em width. */
 static Clay_Dimensions profiler_measure_text(Clay_StringSlice text,
                                               Clay_TextElementConfig *config,
                                               void *userData) {
     editor_state *e = (editor_state *)userData;
     float scale = (float)config->fontSize;
     float width = 0;
-    int i;
-    for (i = 0; i < text.length; i++) {
-        int ch = (unsigned char)text.chars[i];
-        if (ch < 128) width += e->font_advances[ch] * scale;
+    int i = 0;
+    while (i < text.length) {
+        int ch = 0;
+        int next = i + 1;
+        if (!editor_utf8_decode_at(text.chars, text.length, i, &ch, &next)) break;
+        if (ch >= 0 && ch < 128) {
+            width += e->font_advances[ch] * scale;
+        } else {
+            width += 1.0f * scale;
+        }
+        if (next <= i) break;
+        i = next;
     }
     return (Clay_Dimensions){
         ceilf(width + 1.0f),
@@ -2235,6 +2290,30 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             Clay_SetMeasureTextFunction(profiler_measure_text, e);
         }
     }
+
+    if (!e->cache_prof_clay_ctx && es->editor_arena) {
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_cache_prof");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->cache_prof_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->cache_prof_clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+        }
+    }
+
+    if (!e->cpu_prof_clay_ctx && es->editor_arena) {
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_cpu_prof");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->cpu_prof_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->cpu_prof_clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+        }
+    }
 }
 
 /* ── Profiler Clay layout (produces render commands for externals GPU upload) ── */
@@ -3863,7 +3942,8 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                 menu_click_handled = 1;
             }
             {
-                const char *label = play_mode ? "Stop" : "Play";
+                const char *label = play_mode ? UI_ICON_STOP_FILL " Stop"
+                                              : UI_ICON_PLAY_FILL " Play";
                 Clay_String text = { false, (int32_t)strlen(label), label };
                 CLAY_TEXT(text, CLAY_TEXT_CONFIG({
                     .textColor = {238, 242, 248, 255},
@@ -3955,7 +4035,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                                        : ((Clay_Color){56, 66, 84, 220}),
                     .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
-                    Clay_String cs = CLAY_STRING("Perspective");
+                    Clay_String cs = CLAY_STRING(UI_ICON_CAMERA " Perspective");
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
 
@@ -3970,7 +4050,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                                        : ((Clay_Color){80, 120, 176, 230}),
                     .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
-                    Clay_String cs = CLAY_STRING("Orthographic");
+                    Clay_String cs = CLAY_STRING(UI_ICON_BOUNDING_BOX " Orthographic");
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
             }
@@ -3992,7 +4072,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                     .backgroundColor = {56, 66, 84, 220},
                     .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
-                    Clay_String cs = CLAY_STRING("Front");
+                    Clay_String cs = CLAY_STRING(UI_ICON_ARROW_LEFT " Front");
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
 
@@ -4005,7 +4085,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                     .backgroundColor = {56, 66, 84, 220},
                     .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
-                    Clay_String cs = CLAY_STRING("Side");
+                    Clay_String cs = CLAY_STRING(UI_ICON_ARROW_RIGHT " Side");
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
 
@@ -4018,7 +4098,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                     .backgroundColor = {56, 66, 84, 220},
                     .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
-                    Clay_String cs = CLAY_STRING("Top");
+                    Clay_String cs = CLAY_STRING(UI_ICON_ARROW_UP " Top");
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
             }
@@ -4030,6 +4110,317 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
     commands = Clay_EndLayout();
     e->editor_toolbar_cmd_count = commands.length;
     e->editor_toolbar_cmd_array = commands.internalArray;
+}
+
+/* ── Cache Profiler Clay layout ── */
+
+static void cache_profiler_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    Clay_Context *ctx = (Clay_Context *)e->cache_prof_clay_ctx;
+    int win_idx, node;
+    int win_w, win_h;
+    Clay_RenderCommandArray commands;
+    cache_prof_frame *frame;
+    int i;
+    static char bufs[CACHE_PROF_MAX_ZONES][5][32];
+
+    if (!ctx) return;
+
+    Clay_SetCurrentContext(ctx);
+
+    node = dock_find_leaf_for_panel_global(d, PANEL_CACHE_PROFILER, &win_idx);
+    if (node >= 0) {
+        DockNode *pn = &d->nodes[node];
+        win_w = (int)pn->w;
+        win_h = (int)(pn->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    } else {
+        win_w = 800;
+        win_h = 600;
+    }
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+
+    {
+        Clay_Vector2 mpos = {e->cache_prof_mouse_x, e->cache_prof_mouse_y};
+        Clay_Vector2 sdelta = {0, e->cache_prof_scroll_y};
+        Clay_SetPointerState(mpos, e->cache_prof_mouse_down);
+        Clay_UpdateScrollContainers(true, sdelta, gs->dt);
+        e->cache_prof_scroll_y = 0;
+    }
+
+    Clay_BeginLayout();
+
+    CLAY(CLAY_ID("CPRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 4,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {25, 25, 30, 255}
+    }) {
+        /* Title */
+        {
+            Clay_String ts = CLAY_STRING("Cache Profiler");
+            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+        }
+
+        if (!cache_prof_available()) {
+            Clay_String msg = CLAY_STRING("Hardware counters not available on this platform");
+            CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = {170, 120, 120, 255}, .fontSize = 14}));
+        } else {
+            /* Column headers */
+            CLAY(CLAY_ID("CPHeader"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 },
+                    .childGap = 8,
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                CLAY(CLAY_IDI("CPHCol", 0), { .layout = { .sizing = { CLAY_SIZING_FIXED(140), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Zone");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("L1D Miss");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Branch Miss");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 3), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Instructions");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 4), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Cycles");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+            }
+
+            /* Zone rows — sorted by L1D misses descending */
+            frame = cache_prof_get_frame();
+            cache_prof_sort_zones();
+
+            /* Scrollable zone list */
+            CLAY(CLAY_ID("CPScroll"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+            }) {
+                for (i = 0; i < frame->count && i < CACHE_PROF_MAX_ZONES; i++) {
+                    /* Each row */
+                    CLAY(CLAY_IDI("CPRow", i), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = 8, .right = 8, .top = 3, .bottom = 3 },
+                            .childGap = 8,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT
+                        },
+                        .backgroundColor = (i % 2 == 0) ? (Clay_Color){35, 35, 40, 255} : (Clay_Color){30, 30, 35, 255}
+                    }) {
+                        /* Zone name */
+                        CLAY(CLAY_IDI("CPName", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(140), CLAY_SIZING_FIT({0}) } } }) {
+                            Clay_String ns = {false, (int32_t)strlen(frame->names[i]), (char*)frame->names[i]};
+                            CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14}));
+                        }
+                        /* L1D miss */
+                        CLAY(CLAY_IDI("CPL1D", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                            snprintf(bufs[i][0], sizeof(bufs[i][0]), "%llu", (unsigned long long)frame->l1d_miss[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][0]), bufs[i][0]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 180, 100, 255}, .fontSize = 14}));
+                            }
+                        }
+                        /* Branch miss */
+                        CLAY(CLAY_IDI("CPBr", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                            snprintf(bufs[i][1], sizeof(bufs[i][1]), "%llu", (unsigned long long)frame->branch_miss[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][1]), bufs[i][1]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {180, 200, 255, 255}, .fontSize = 14}));
+                            }
+                        }
+                        /* Instructions */
+                        CLAY(CLAY_IDI("CPIns", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                            if (frame->instructions[i] > 1000000)
+                                snprintf(bufs[i][2], sizeof(bufs[i][2]), "%.1fM", (double)frame->instructions[i] / 1000000.0);
+                            else if (frame->instructions[i] > 1000)
+                                snprintf(bufs[i][2], sizeof(bufs[i][2]), "%.1fK", (double)frame->instructions[i] / 1000.0);
+                            else
+                                snprintf(bufs[i][2], sizeof(bufs[i][2]), "%llu", (unsigned long long)frame->instructions[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][2]), bufs[i][2]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
+                            }
+                        }
+                        /* Cycles */
+                        CLAY(CLAY_IDI("CPCyc", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                            if (frame->cycles[i] > 1000000)
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fM", (double)frame->cycles[i] / 1000000.0);
+                            else if (frame->cycles[i] > 1000)
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fK", (double)frame->cycles[i] / 1000.0);
+                            else
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%llu", (unsigned long long)frame->cycles[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][3]), bufs[i][3]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    e->cache_prof_cmd_count = commands.length;
+    e->cache_prof_cmd_array = commands.internalArray;
+    e->cache_prof_click = 0;
+}
+
+/* ── CPU Profiler Clay layout ── */
+
+static void cpu_profiler_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    Clay_Context *ctx = (Clay_Context *)e->cpu_prof_clay_ctx;
+    int win_idx, node;
+    int win_w, win_h;
+    Clay_RenderCommandArray commands;
+    cpu_prof_frame *frame;
+    int i;
+    static char bufs[CPU_PROF_MAX_ZONES][3][32];
+
+    if (!ctx) return;
+
+    Clay_SetCurrentContext(ctx);
+
+    node = dock_find_leaf_for_panel_global(d, PANEL_CPU_PROFILER, &win_idx);
+    if (node >= 0) {
+        DockNode *pn = &d->nodes[node];
+        win_w = (int)pn->w;
+        win_h = (int)(pn->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    } else {
+        win_w = 800;
+        win_h = 600;
+    }
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+
+    {
+        Clay_Vector2 mpos = {e->cpu_prof_mouse_x, e->cpu_prof_mouse_y};
+        Clay_Vector2 sdelta = {0, e->cpu_prof_scroll_y};
+        Clay_SetPointerState(mpos, e->cpu_prof_mouse_down);
+        Clay_UpdateScrollContainers(true, sdelta, gs->dt);
+        e->cpu_prof_scroll_y = 0;
+    }
+
+    Clay_BeginLayout();
+
+    CLAY(CLAY_ID("CURoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 4,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {25, 25, 30, 255}
+    }) {
+        /* Title */
+        {
+            Clay_String ts = CLAY_STRING("CPU Profiler");
+            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+        }
+
+        /* Column headers */
+        CLAY(CLAY_ID("CUHeader"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 },
+                .childGap = 8,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT
+            }
+        }) {
+            CLAY(CLAY_IDI("CUHCol", 0), { .layout = { .sizing = { CLAY_SIZING_FIXED(160), CLAY_SIZING_FIT({0}) } } }) {
+                Clay_String h = CLAY_STRING("Name");
+                CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+            }
+            CLAY(CLAY_IDI("CUHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                Clay_String h = CLAY_STRING("Duration");
+                CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+            }
+            CLAY(CLAY_IDI("CUHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) } } }) {
+                Clay_String h = CLAY_STRING("Depth");
+                CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+            }
+        }
+
+        /* Zone rows — sorted by duration descending */
+        frame = cpu_prof_get_frame();
+        cpu_prof_sort_zones();
+
+        /* Scrollable zone list */
+        CLAY(CLAY_ID("CUScroll"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .childGap = 2,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+        }) {
+            for (i = 0; i < frame->count && i < CPU_PROF_MAX_ZONES; i++) {
+                /* Each row */
+                CLAY(CLAY_IDI("CURow", i), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                        .padding = { .left = 8, .right = 8, .top = 3, .bottom = 3 },
+                        .childGap = 8,
+                        .layoutDirection = CLAY_LEFT_TO_RIGHT
+                    },
+                    .backgroundColor = (i % 2 == 0) ? (Clay_Color){35, 35, 40, 255} : (Clay_Color){30, 30, 35, 255}
+                }) {
+                    /* Zone name */
+                    CLAY(CLAY_IDI("CUName", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(160), CLAY_SIZING_FIT({0}) } } }) {
+                        Clay_String ns = {false, (int32_t)strlen(frame->names[i]), (char*)frame->names[i]};
+                        CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14}));
+                    }
+                    /* Duration */
+                    CLAY(CLAY_IDI("CUDur", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                        {
+                            uint64_t duration_ns = frame->duration_ns[i];
+                            if (duration_ns > 1000000)
+                                snprintf(bufs[i][0], sizeof(bufs[i][0]), "%.2f ms", (double)duration_ns / 1000000.0);
+                            else
+                                snprintf(bufs[i][0], sizeof(bufs[i][0]), "%.1f us", (double)duration_ns / 1000.0);
+                        }
+                        {
+                            Clay_String vs = {false, (int32_t)strlen(bufs[i][0]), bufs[i][0]};
+                            CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 200, 120, 255}, .fontSize = 14}));
+                        }
+                    }
+                    /* Depth */
+                    CLAY(CLAY_IDI("CUDep", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) } } }) {
+                        snprintf(bufs[i][1], sizeof(bufs[i][1]), "%u", (unsigned)frame->depth[i]);
+                        {
+                            Clay_String vs = {false, (int32_t)strlen(bufs[i][1]), bufs[i][1]};
+                            CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    e->cpu_prof_cmd_count = commands.length;
+    e->cpu_prof_cmd_array = commands.internalArray;
+    e->cpu_prof_click = 0;
 }
 
 EXPORT void update_editor(game_state *gs, editor_state *es) {
@@ -4100,6 +4491,8 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     inspector_layout(gs, es);
     menu_bar_layout(gs, es);
     editor_toolbar_layout(gs, es);
+    cache_profiler_layout(gs, es);
+    cpu_profiler_layout(gs, es);
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
     if (!editor_is_play_mode(gs)) {
@@ -4614,6 +5007,14 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->project_browser_mouse_x = -10000.0f;
                 e->project_browser_mouse_y = -10000.0f;
             }
+            if (panel_event_hit(d, PANEL_CACHE_PROFILER, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
+                e->cache_prof_mouse_x = lx;
+                e->cache_prof_mouse_y = ly;
+            }
+            if (panel_event_hit(d, PANEL_CPU_PROFILER, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
+                e->cpu_prof_mouse_x = lx;
+                e->cpu_prof_mouse_y = ly;
+            }
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_WHEEL) {
@@ -4655,6 +5056,14 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->project_browser_scroll_y += ev->wheel.y * 3.0f;
                 consumed = 1;
             }
+            if (panel_event_hit(d, PANEL_CACHE_PROFILER, evwin, mx, my, NULL, NULL)) {
+                e->cache_prof_scroll_y += ev->wheel.y * 3.0f;
+                consumed = 1;
+            }
+            if (panel_event_hit(d, PANEL_CPU_PROFILER, evwin, mx, my, NULL, NULL)) {
+                e->cpu_prof_scroll_y += ev->wheel.y * 3.0f;
+                consumed = 1;
+            }
             if (consumed) return 1;
         }
     }
@@ -4685,12 +5094,30 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->project_browser_mouse_y = ly;
                 e->project_browser_click = 1;
             }
+
+            e->cache_prof_mouse_down = panel_event_hit(d, PANEL_CACHE_PROFILER, evwin,
+                ev->button.x, ev->button.y, &lx, &ly);
+            if (e->cache_prof_mouse_down) {
+                e->cache_prof_mouse_x = lx;
+                e->cache_prof_mouse_y = ly;
+                e->cache_prof_click = 1;
+            }
+
+            e->cpu_prof_mouse_down = panel_event_hit(d, PANEL_CPU_PROFILER, evwin,
+                ev->button.x, ev->button.y, &lx, &ly);
+            if (e->cpu_prof_mouse_down) {
+                e->cpu_prof_mouse_x = lx;
+                e->cpu_prof_mouse_y = ly;
+                e->cpu_prof_click = 1;
+            }
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT) {
         e->prof_mouse_down = 0;
         e->scene_tree_mouse_down = 0;
         e->project_browser_mouse_down = 0;
+        e->cache_prof_mouse_down = 0;
+        e->cpu_prof_mouse_down = 0;
     }
 
     return 0;
