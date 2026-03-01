@@ -14,6 +14,12 @@
 #endif
 
 
+/* Profiler zone wrappers exported from externals.dll */
+extern void ext_cache_zone_begin(const char *name);
+extern void ext_cache_zone_end(void);
+extern void ext_cpu_zone_begin(const char *name);
+extern void ext_cpu_zone_end(void);
+
 static volatile int reloadFlag = 0;
 static volatile int editorReloadFlag = 0;
 static volatile int shutdownRequested = 0;
@@ -243,6 +249,13 @@ EXPORT int init_core(const char *project_path) {
     assign_destroy(destroy_e);
     assign_update(update_e);
 
+    /* Wire profiler zone functions: externals -> engine */
+    {
+        typedef void (*assign_profiler_fns_t)(void(*)(const char*), void(*)(void), void(*)(const char*), void(*)(void));
+        assign_profiler_fns_t assign_pfns = (assign_profiler_fns_t)getfunction(engine_lib, "assign_profiler_fns");
+        if (assign_pfns) assign_pfns(ext_cache_zone_begin, ext_cache_zone_end, ext_cpu_zone_begin, ext_cpu_zone_end);
+    }
+
     /* Load editor DLL (copy first so editor.dll stays unlocked) */
     copylibrary("editor", "editor_copy");
     editor_lib = loadlibrary("editor_copy");
@@ -360,6 +373,14 @@ engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine")
       assign_init(new_init);
       assign_destroy(new_destroy);
       assign_update(new_update);
+
+      /* Re-wire profiler zone functions after engine reload */
+      {
+          typedef void (*assign_profiler_fns_t)(void(*)(const char*), void(*)(void), void(*)(const char*), void(*)(void));
+          assign_profiler_fns_t assign_pfns = (assign_profiler_fns_t)getfunction(engine_lib, "assign_profiler_fns");
+          if (assign_pfns) assign_pfns(ext_cache_zone_begin, ext_cache_zone_end, ext_cpu_zone_begin, ext_cpu_zone_end);
+      }
+
       init_engine(g);
     }
 

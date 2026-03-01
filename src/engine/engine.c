@@ -1413,10 +1413,34 @@ static void update_mesh3d_from_animation_component(game_state *gs, animation_com
     }
 }
 
+/* Profiler zone function pointers — set by core.dll, call into externals.dll */
+static void (*pfn_cache_zone_begin)(const char *name) = NULL;
+static void (*pfn_cache_zone_end)(void) = NULL;
+static void (*pfn_cpu_zone_begin)(const char *name) = NULL;
+static void (*pfn_cpu_zone_end)(void) = NULL;
+
+EXPORT void assign_profiler_fns(
+    void (*czb)(const char *), void (*cze)(void),
+    void (*cpzb)(const char *), void (*cpze)(void))
+{
+    pfn_cache_zone_begin = czb;
+    pfn_cache_zone_end = cze;
+    pfn_cpu_zone_begin = cpzb;
+    pfn_cpu_zone_end = cpze;
+}
+
+#define ENGINE_CACHE_ZONE_BEGIN(name) do { if (pfn_cache_zone_begin) pfn_cache_zone_begin(name); } while(0)
+#define ENGINE_CACHE_ZONE_END()      do { if (pfn_cache_zone_end) pfn_cache_zone_end(); } while(0)
+#define ENGINE_CPU_ZONE_BEGIN(name)  do { if (pfn_cpu_zone_begin) pfn_cpu_zone_begin(name); } while(0)
+#define ENGINE_CPU_ZONE_END()        do { if (pfn_cpu_zone_end) pfn_cpu_zone_end(); } while(0)
+
 EXPORT void update_engine(game_state *gs) {
     int i;
     int anim_updated = 0;
     if (!gs) return;
+
+    ENGINE_CPU_ZONE_BEGIN("update_engine");
+    ENGINE_CACHE_ZONE_BEGIN("update_engine");
 
     gs->dl.sprite_count = 0;
     gs->dl.line_count = 0;
@@ -1424,17 +1448,28 @@ EXPORT void update_engine(game_state *gs) {
     gs->dbg.current_line_count = 0;
 
     if (gs->editor_play_mode) {
+        ENGINE_CPU_ZONE_BEGIN("input");
         update_input(gs);
+        ENGINE_CPU_ZONE_END();
+
+        ENGINE_CPU_ZONE_BEGIN("physics");
+        ENGINE_CACHE_ZONE_BEGIN("physics");
         run_character_controller_system(gs);
         apply_movement(gs);
         collision(gs);
+        ENGINE_CACHE_ZONE_END();
+        ENGINE_CPU_ZONE_END();
     }
 
+    ENGINE_CPU_ZONE_BEGIN("mesh_sync");
     sync_primary_mesh3d_asset(gs);
     sync_mesh_camera_from_components(gs);
     build_mesh_draw_commands(gs);
+    ENGINE_CPU_ZONE_END();
 
     if (gs->editor_play_mode) {
+        ENGINE_CPU_ZONE_BEGIN("animation");
+        ENGINE_CACHE_ZONE_BEGIN("animation");
         if (gs->animation_components) {
             animation_component *ac = query_primary_animation_component_for_mesh(gs);
             if (ac) {
@@ -1446,6 +1481,8 @@ EXPORT void update_engine(game_state *gs) {
             animation_component fallback = {0, 1, (int)gs->mesh3d.active_clip, gs->mesh3d.anim_time, 1.0f};
             update_mesh3d_from_animation_component(gs, &fallback);
         }
+        ENGINE_CACHE_ZONE_END();
+        ENGINE_CPU_ZONE_END();
     } else {
         gs->animation_transition_count = 0;
     }
@@ -1464,6 +1501,9 @@ EXPORT void update_engine(game_state *gs) {
         line->x2 = gs->dbg.vertex_buffer[idx+5];
         line->y2 = gs->dbg.vertex_buffer[idx+6];
     }
+
+    ENGINE_CACHE_ZONE_END();
+    ENGINE_CPU_ZONE_END();
 }
 
 EXPORT void destroy_engine(game_state *gs) {

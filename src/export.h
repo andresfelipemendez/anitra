@@ -120,4 +120,10 @@ typedef handle_event handle_event_func;
   EXPORT void func(editor_handle_event_fn f);                \
   typedef void (*func##_func)(editor_handle_event_fn f);
 
+/* Profiler zone function pointers — called by engine.dll, implemented in externals.dll */
+typedef void (*cache_zone_begin_fn)(const char *name);
+typedef void (*cache_zone_end_fn)(void);
+typedef void (*cpu_zone_begin_fn)(const char *name);
+typedef void (*cpu_zone_end_fn)(void);
+
 #endif /* EXPORT_H */
