@@ -272,6 +272,11 @@ static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, const ch
     result.primitives = (GltfPrimitive *)arena_alloc(ar,
         (uint32_t)(result.primitive_count * sizeof(GltfPrimitive)), 16, "mesh_primitives");
 
+    /* bounding-box accumulators for bounding sphere computation */
+    float bb_min[3] = { 1e30f, 1e30f, 1e30f };
+    float bb_max[3] = {-1e30f,-1e30f,-1e30f};
+    int total_verts = 0;
+
     /* check if we actually need to apply the transform */
     apply_transform = node_world && !mat4_is_identity_check(node_world);
 
@@ -323,6 +328,18 @@ static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, const ch
                     transform_normal(node_world, verts[vi].normal);
             }
 
+            /* accumulate bounding box */
+            {
+                float *p = verts[vi].position;
+                if (p[0] < bb_min[0]) bb_min[0] = p[0];
+                if (p[1] < bb_min[1]) bb_min[1] = p[1];
+                if (p[2] < bb_min[2]) bb_min[2] = p[2];
+                if (p[0] > bb_max[0]) bb_max[0] = p[0];
+                if (p[1] > bb_max[1]) bb_max[1] = p[1];
+                if (p[2] > bb_max[2]) bb_max[2] = p[2];
+                total_verts++;
+            }
+
             if (joints_acc) {
                 cgltf_uint jids[4] = {0};
                 cgltf_accessor_read_uint(joints_acc, vi, jids, 4);
@@ -366,6 +383,19 @@ static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, const ch
             cgltf_image *img = prim->material->pbr_metallic_roughness
                                    .base_color_texture.texture->image;
             out->texture = extract_texture(img, asset_dir);
+        }
+    }
+
+    /* compute bounding sphere from accumulated AABB */
+    if (total_verts > 0) {
+        result.bounds_center[0] = (bb_min[0] + bb_max[0]) * 0.5f;
+        result.bounds_center[1] = (bb_min[1] + bb_max[1]) * 0.5f;
+        result.bounds_center[2] = (bb_min[2] + bb_max[2]) * 0.5f;
+        {
+            float dx = bb_max[0] - bb_min[0];
+            float dy = bb_max[1] - bb_min[1];
+            float dz = bb_max[2] - bb_min[2];
+            result.bounds_radius = sqrtf(dx*dx + dy*dy + dz*dz) * 0.5f;
         }
     }
 
@@ -578,6 +608,9 @@ GltfModel load_glb(const char *path, arena *ar) {
 
     if (total_prims > 0) {
         float inv_skel_world[16];
+        float bb_min[3] = { 1e30f, 1e30f, 1e30f };
+        float bb_max[3] = {-1e30f,-1e30f,-1e30f};
+        int has_bounds = 0;
         uint32_t prim_idx = 0;
 
         model.mesh.primitive_count = total_prims;
@@ -633,11 +666,37 @@ GltfModel load_glb(const char *path, arena *ar) {
             mul_mat4(inv_skel_world, mesh_world, mesh_to_skel);
 
             sub = extract_mesh(node->mesh, mesh_to_skel, asset_dir, ar);
+            if (sub.primitive_count > 0) {
+                float r = sub.bounds_radius > 0.0f ? sub.bounds_radius : 0.0f;
+                float sx0 = sub.bounds_center[0] - r;
+                float sy0 = sub.bounds_center[1] - r;
+                float sz0 = sub.bounds_center[2] - r;
+                float sx1 = sub.bounds_center[0] + r;
+                float sy1 = sub.bounds_center[1] + r;
+                float sz1 = sub.bounds_center[2] + r;
+                if (sx0 < bb_min[0]) bb_min[0] = sx0;
+                if (sy0 < bb_min[1]) bb_min[1] = sy0;
+                if (sz0 < bb_min[2]) bb_min[2] = sz0;
+                if (sx1 > bb_max[0]) bb_max[0] = sx1;
+                if (sy1 > bb_max[1]) bb_max[1] = sy1;
+                if (sz1 > bb_max[2]) bb_max[2] = sz1;
+                has_bounds = 1;
+            }
             for (p = 0; p < sub.primitive_count; p++) {
                 model.mesh.primitives[prim_idx++] = sub.primitives[p];
             }
         }
         model.mesh.primitive_count = prim_idx;
+        if (has_bounds) {
+            float dx, dy, dz;
+            model.mesh.bounds_center[0] = (bb_min[0] + bb_max[0]) * 0.5f;
+            model.mesh.bounds_center[1] = (bb_min[1] + bb_max[1]) * 0.5f;
+            model.mesh.bounds_center[2] = (bb_min[2] + bb_max[2]) * 0.5f;
+            dx = bb_max[0] - bb_min[0];
+            dy = bb_max[1] - bb_min[1];
+            dz = bb_max[2] - bb_min[2];
+            model.mesh.bounds_radius = sqrtf(dx*dx + dy*dy + dz*dz) * 0.5f;
+        }
     }
 
     if (skin) {

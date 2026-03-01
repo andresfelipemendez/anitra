@@ -3072,6 +3072,195 @@ EXPORT void update_externals(struct memory *m) {
         }
 
         SDL_EndGPURenderPass(pb_pass);
+
+        /* Thumbnail 3D preview pass over project-browser swatches. */
+        if (m->editor.pb_thumbnail_count > 0 && mesh_pipeline && bone_identity_buffer) {
+            SDL_GPUColorTargetInfo tb_ct = {0};
+            SDL_GPUDepthStencilTargetInfo tb_dt = {0};
+            SDL_GPURenderPass *tb_pass;
+            SDL_GPUBuffer *identity_bones = bone_identity_buffer;
+            int ti;
+
+            tb_ct.texture = panel_color[PANEL_ASSETS];
+            tb_ct.load_op = SDL_GPU_LOADOP_LOAD;
+            tb_ct.store_op = SDL_GPU_STOREOP_STORE;
+
+            tb_dt.texture = panel_depth[PANEL_ASSETS];
+            tb_dt.clear_depth = 1.0f;
+            tb_dt.load_op = SDL_GPU_LOADOP_CLEAR;
+            tb_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
+            tb_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+            tb_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+
+            tb_pass = SDL_BeginGPURenderPass(cmd_buf, &tb_ct, 1, &tb_dt);
+            SDL_BindGPUGraphicsPipeline(tb_pass, mesh_pipeline);
+            SDL_BindGPUVertexStorageBuffers(tb_pass, 0, &identity_bones, 1);
+
+            for (ti = 0; ti < m->editor.pb_thumbnail_count; ti++) {
+                pb_thumbnail_request *req = &m->editor.pb_thumbnails[ti];
+                scene_model_asset *asset = NULL;
+                GltfMesh *mesh;
+                float radius;
+                float fov_rad;
+                float aspect;
+                float dist;
+                float near_plane;
+                float far_plane;
+                Vec3 center;
+                Vec3 eye;
+                Mat4 view_mat;
+                Mat4 proj_mat;
+                Mat4 model_mat;
+                mesh_uniform_data mesh_uniforms;
+                SDL_GPUViewport vp;
+                SDL_Rect scissor;
+                int ai;
+                uint32_t p;
+
+                /* Deferred in this pass: sprites only. */
+                if (req->type == 3) continue;
+                if (req->w < 1.0f || req->h < 1.0f) continue;
+
+                if (req->type == 1) {
+                    const char *mesh_key = NULL;
+                    int si;
+
+                    /* Find a scene mesh explicitly paired with this animation asset. */
+                    for (si = 0; si < m->game.project.scene_entity_count; si++) {
+                        const project_scene_component *comp = &m->game.project.scene_components[si];
+                        if (!comp->has_mesh || !comp->has_animation) continue;
+                        if (!comp->mesh_model[0] || !comp->animation_asset[0]) continue;
+                        if (strcmp(comp->animation_asset, req->key) == 0) {
+                            mesh_key = comp->mesh_model;
+                            break;
+                        }
+                    }
+
+                    /* Prefer the paired mesh (same rig relationship as scene setup). */
+                    if (mesh_key) {
+                        for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
+                            scene_model_asset *cand = &m->game.scene_model_assets[ai];
+                            if (strcmp(cand->key, mesh_key) != 0) continue;
+                            if (!cand->loaded || cand->model.mesh.primitive_count == 0) continue;
+                            if (!cand->has_skeleton) continue;
+                            asset = cand;
+                            break;
+                        }
+                        if (!asset) {
+                            for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
+                                scene_model_asset *cand = &m->game.scene_model_assets[ai];
+                                if (strcmp(cand->key, mesh_key) != 0) continue;
+                                if (!cand->loaded || cand->model.mesh.primitive_count == 0) continue;
+                                asset = cand;
+                                break;
+                            }
+                        }
+                    }
+
+                    /* Fallback: first loaded skinned mesh, then any loaded mesh. */
+                    if (!asset) {
+                        for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
+                            scene_model_asset *cand = &m->game.scene_model_assets[ai];
+                            if (!cand->loaded || cand->model.mesh.primitive_count == 0) continue;
+                            if (!cand->has_skeleton) continue;
+                            asset = cand;
+                            break;
+                        }
+                    }
+                    if (!asset) {
+                        for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
+                            scene_model_asset *cand = &m->game.scene_model_assets[ai];
+                            if (!cand->loaded || cand->model.mesh.primitive_count == 0) continue;
+                            asset = cand;
+                            break;
+                        }
+                    }
+                } else {
+                    for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
+                        if (strcmp(m->game.scene_model_assets[ai].key, req->key) == 0) {
+                            asset = &m->game.scene_model_assets[ai];
+                            break;
+                        }
+                    }
+                }
+                if (!asset || !asset->loaded || asset->model.mesh.primitive_count == 0) continue;
+
+                mesh = &asset->model.mesh;
+                radius = mesh->bounds_radius > 0.001f ? mesh->bounds_radius : 1.0f;
+                center = VEC3(mesh->bounds_center[0], mesh->bounds_center[1], mesh->bounds_center[2]);
+
+                fov_rad = 45.0f * 3.14159265f / 180.0f;
+                aspect = req->w / req->h;
+                if (aspect < 0.01f) aspect = 1.0f;
+
+                dist = radius / sinf(fov_rad * 0.5f);
+                eye = vec3_add(center, vec3_scale(vec3_normalize(VEC3(0.612f, 0.5f, 0.612f)), dist));
+
+                near_plane = dist * 0.01f;
+                if (near_plane < 0.01f) near_plane = 0.01f;
+                far_plane = dist * 4.0f;
+                if (far_plane <= near_plane + 0.01f) far_plane = near_plane + 10.0f;
+
+                view_mat = mat4_look_at(eye, center, VEC3(0, 1, 0));
+                proj_mat = mat4_perspective(fov_rad, aspect, near_plane, far_plane);
+                model_mat = mat4_identity();
+
+                memcpy(mesh_uniforms.projection, proj_mat.m, sizeof(mesh_uniforms.projection));
+                memcpy(mesh_uniforms.view, view_mat.m, sizeof(mesh_uniforms.view));
+                memcpy(mesh_uniforms.model, model_mat.m, sizeof(mesh_uniforms.model));
+                SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
+
+                vp.x = req->x * display_density;
+                vp.y = req->y * display_density;
+                vp.w = req->w * display_density;
+                vp.h = req->h * display_density;
+                vp.min_depth = 0.0f;
+                vp.max_depth = 1.0f;
+                SDL_SetGPUViewport(tb_pass, &vp);
+
+                scissor.x = (int)(req->x * display_density);
+                scissor.y = (int)(req->y * display_density);
+                scissor.w = (int)(req->w * display_density);
+                scissor.h = (int)(req->h * display_density);
+                if (scissor.x < 0) {
+                    scissor.w += scissor.x;
+                    scissor.x = 0;
+                }
+                if (scissor.y < 0) {
+                    scissor.h += scissor.y;
+                    scissor.y = 0;
+                }
+                if (scissor.x + scissor.w > (int)aw) {
+                    scissor.w = (int)aw - scissor.x;
+                }
+                if (scissor.y + scissor.h > (int)ah) {
+                    scissor.h = (int)ah - scissor.y;
+                }
+                if (scissor.w < 1 || scissor.h < 1) continue;
+                SDL_SetGPUScissor(tb_pass, &scissor);
+
+                for (p = 0; p < mesh->primitive_count; p++) {
+                    GltfPrimitive *prim = &mesh->primitives[p];
+                    SDL_GPUBufferBinding vbuf_binding = {0};
+                    SDL_GPUBufferBinding ibuf_binding = {0};
+                    SDL_GPUTextureSamplerBinding tex_bind = {0};
+
+                    vbuf_binding.buffer = (SDL_GPUBuffer *)prim->vertex_buffer;
+                    SDL_BindGPUVertexBuffers(tb_pass, 0, &vbuf_binding, 1);
+
+                    ibuf_binding.buffer = (SDL_GPUBuffer *)prim->index_buffer;
+                    SDL_BindGPUIndexBuffer(tb_pass, &ibuf_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+                    tex_bind.texture = prim->texture ? (SDL_GPUTexture *)prim->texture : white_texture;
+                    tex_bind.sampler = mesh_sampler;
+                    SDL_BindGPUFragmentSamplers(tb_pass, 0, &tex_bind, 1);
+
+                    SDL_DrawGPUIndexedPrimitives(tb_pass, prim->index_count, 1, 0, 0, 0);
+                }
+            }
+
+            SDL_EndGPURenderPass(tb_pass);
+        }
     }
 
     // --- INSPECTOR PANEL RENDER PASS (offscreen) ---

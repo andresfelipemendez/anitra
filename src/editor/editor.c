@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 
 #define CLAY_IMPLEMENTATION
@@ -2121,6 +2122,12 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->project_browser_mouse_y = -10000.0f;
     e->project_browser_scroll_y = 0.0f;
     e->project_browser_mouse_down = 0;
+    e->project_browser_click = 0;
+    e->pb_selected_path[0] = '\0';
+    e->pb_selected_asset_key[0] = '\0';
+    e->pb_selected_asset_path[0] = '\0';
+    e->pb_selected_asset_type = -1;
+    e->pb_thumbnail_count = 0;
     e->initialized = 1;
 
     /* Create profiler Clay context (one-time, backed by editor_arena).
@@ -2533,6 +2540,120 @@ static const char *project_browser_path_basename(const char *path) {
     return last ? (last + 1) : path;
 }
 
+/* ── Folder tree helpers for project browser ────────────────────────── */
+
+#define PB_MAX_FOLDERS 64
+
+static int pb_folder_cmp(const void *a, const void *b) {
+    return strcmp((const char *)a, (const char *)b);
+}
+
+static int pb_count_depth(const char *path) {
+    int d = 0;
+    const char *p;
+    for (p = path; *p; p++) if (*p == '/') d++;
+    return d;
+}
+
+static const char *pb_last_component(const char *path) {
+    const char *s = strrchr(path, '/');
+    return s ? (s + 1) : path;
+}
+
+/* Extract directory portion of a file path (everything before last '/') */
+static void pb_extract_dir(const char *path, char *out, int max_len) {
+    const char *last = strrchr(path, '/');
+    int len;
+    if (!last) { out[0] = '\0'; return; }
+    len = (int)(last - path);
+    if (len >= max_len) len = max_len - 1;
+    memcpy(out, path, (size_t)len);
+    out[len] = '\0';
+}
+
+/* Check if folder path is already in the list */
+static int pb_has_folder(char folders[][256], int count, const char *path) {
+    int i;
+    for (i = 0; i < count; i++)
+        if (strcmp(folders[i], path) == 0) return 1;
+    return 0;
+}
+
+/* Add a directory and all its parent directories to the folder list */
+static void pb_add_folder_chain(char folders[][256], int *count, const char *dir) {
+    char buf[256];
+    char *last;
+    strncpy(buf, dir, 255);
+    buf[255] = '\0';
+    while (buf[0] && *count < PB_MAX_FOLDERS) {
+        if (!pb_has_folder(folders, *count, buf)) {
+            strncpy(folders[*count], buf, 255);
+            folders[*count][255] = '\0';
+            (*count)++;
+        }
+        last = strrchr(buf, '/');
+        if (last) *last = '\0';
+        else break;
+    }
+}
+
+/* Build sorted folder list from all asset paths. Returns folder count. */
+static int pb_build_folder_list(project_data *proj, char folders[][256]) {
+    int count = 0;
+    int i;
+    char dir[256];
+    for (i = 0; i < proj->model_count; i++) {
+        pb_extract_dir(proj->model_paths[i], dir, 256);
+        if (dir[0]) pb_add_folder_chain(folders, &count, dir);
+    }
+    for (i = 0; i < proj->animation_count; i++) {
+        pb_extract_dir(proj->animation_paths[i], dir, 256);
+        if (dir[0]) pb_add_folder_chain(folders, &count, dir);
+    }
+    for (i = 0; i < proj->dungeon_piece_count; i++) {
+        pb_extract_dir(proj->dungeon_piece_paths[i], dir, 256);
+        if (dir[0]) pb_add_folder_chain(folders, &count, dir);
+    }
+    for (i = 0; i < proj->sprite_count; i++) {
+        pb_extract_dir(proj->sprite_paths[i], dir, 256);
+        if (dir[0]) pb_add_folder_chain(folders, &count, dir);
+    }
+    qsort(folders, (size_t)count, 256, pb_folder_cmp);
+    return count;
+}
+
+/* Check if an asset path is under the given folder (or subfolder) */
+static int pb_path_matches(const char *asset_path, const char *folder_path) {
+    char dir[256];
+    int flen;
+    if (!folder_path[0]) return 1; /* empty = show all */
+    pb_extract_dir(asset_path, dir, 256);
+    flen = (int)strlen(folder_path);
+    return (strncmp(dir, folder_path, (size_t)flen) == 0 &&
+            (dir[flen] == '\0' || dir[flen] == '/'));
+}
+
+/* Determine swatch color for an asset type: 0=model 1=anim 2=dungeon 3=sprite */
+static Clay_Color pb_asset_type_color(int type) {
+    switch (type) {
+        case 0: return (Clay_Color){94, 138, 216, 255};
+        case 1: return (Clay_Color){198, 138, 84, 255};
+        case 2: return (Clay_Color){116, 172, 118, 255};
+        case 3: return (Clay_Color){166, 132, 204, 255};
+        default: return (Clay_Color){160, 170, 190, 255};
+    }
+}
+
+static const char *pb_asset_type_name(int type) {
+    switch (type) {
+        case 0: return "Model";
+        case 1: return "Animation";
+        case 2: return "Dungeon Piece";
+        case 3: return "Sprite";
+        default: return "Unknown";
+    }
+}
+
 static void project_browser_emit_asset_row(int row_id,
                                            const char *key,
                                            const char *path,
@@ -2759,14 +2880,27 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
     int browser_win_idx;
     int browser_node;
     int win_w, win_h;
-    int row_id = 0;
     int total_assets;
-    static char title_buf[128];
+    int click;
+    int i, vis_count, cols, row, col, num_rows;
+    int folder_count;
     Clay_RenderCommandArray commands;
+
+    static char title_buf[128];
+    static char folders[PB_MAX_FOLDERS][256];
+    const char *sel_path;
+
+    /* Visible asset refs (filtered by selected folder) */
+    #define PB_MAX_VIS 128
+    const char *vis_keys[PB_MAX_VIS];
+    const char *vis_paths[PB_MAX_VIS];
+    Clay_Color  vis_swatch[PB_MAX_VIS];
+    int         vis_type[PB_MAX_VIS];
 
     if (!ctx) {
         e->project_browser_cmd_count = 0;
         e->project_browser_cmd_array = NULL;
+        e->pb_thumbnail_count = 0;
         return;
     }
 
@@ -2775,6 +2909,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
     if (browser_node < 0) {
         e->project_browser_cmd_count = 0;
         e->project_browser_cmd_array = NULL;
+        e->pb_thumbnail_count = 0;
         return;
     }
     {
@@ -2785,6 +2920,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
     }
     Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
 
+    click = e->project_browser_click;
     {
         Clay_Vector2 mpos = {e->project_browser_mouse_x, e->project_browser_mouse_y};
         Clay_Vector2 sdelta = {0, e->project_browser_scroll_y};
@@ -2793,64 +2929,306 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
         e->project_browser_scroll_y = 0.0f;
     }
 
-    total_assets = gs->project.model_count +
-                   gs->project.animation_count +
-                   gs->project.dungeon_piece_count +
-                   gs->project.sprite_count;
+    total_assets = gs->project.model_count + gs->project.animation_count +
+                   gs->project.dungeon_piece_count + gs->project.sprite_count;
     snprintf(title_buf, sizeof(title_buf), "Project Browser  (%d assets)", total_assets);
+    sel_path = e->pb_selected_path;
+
+    /* Build folder tree from asset paths */
+    folder_count = pb_build_folder_list(&gs->project, folders);
+
+    /* Build visible asset list filtered by selected folder */
+    vis_count = 0;
+    for (i = 0; i < gs->project.model_count && vis_count < PB_MAX_VIS; i++) {
+        if (pb_path_matches(gs->project.model_paths[i], sel_path)) {
+            vis_keys[vis_count] = gs->project.model_keys[i];
+            vis_paths[vis_count] = gs->project.model_paths[i];
+            vis_swatch[vis_count] = pb_asset_type_color(0);
+            vis_type[vis_count] = 0;
+            vis_count++;
+        }
+    }
+    for (i = 0; i < gs->project.animation_count && vis_count < PB_MAX_VIS; i++) {
+        if (pb_path_matches(gs->project.animation_paths[i], sel_path)) {
+            vis_keys[vis_count] = gs->project.animation_keys[i];
+            vis_paths[vis_count] = gs->project.animation_paths[i];
+            vis_swatch[vis_count] = pb_asset_type_color(1);
+            vis_type[vis_count] = 1;
+            vis_count++;
+        }
+    }
+    for (i = 0; i < gs->project.dungeon_piece_count && vis_count < PB_MAX_VIS; i++) {
+        if (pb_path_matches(gs->project.dungeon_piece_paths[i], sel_path)) {
+            vis_keys[vis_count] = gs->project.dungeon_piece_keys[i];
+            vis_paths[vis_count] = gs->project.dungeon_piece_paths[i];
+            vis_swatch[vis_count] = pb_asset_type_color(2);
+            vis_type[vis_count] = 2;
+            vis_count++;
+        }
+    }
+    for (i = 0; i < gs->project.sprite_count && vis_count < PB_MAX_VIS; i++) {
+        if (pb_path_matches(gs->project.sprite_paths[i], sel_path)) {
+            vis_keys[vis_count] = gs->project.sprite_keys[i];
+            vis_paths[vis_count] = gs->project.sprite_paths[i];
+            vis_swatch[vis_count] = pb_asset_type_color(3);
+            vis_type[vis_count] = 3;
+            vis_count++;
+        }
+    }
+
+    /* Compute grid columns from available width */
+    {
+        int grid_w = win_w - PB_FOLDER_TREE_WIDTH - 24;
+        cols = grid_w / (PB_ICON_SIZE + PB_ICON_GAP);
+        if (cols < 1) cols = 1;
+    }
+    num_rows = vis_count > 0 ? (vis_count + cols - 1) / cols : 0;
 
     Clay_BeginLayout();
+
+    /* Root: 2-column horizontal layout */
     CLAY(CLAY_ID("PBRoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-            .padding = CLAY_PADDING_ALL(12),
-            .childGap = 8,
-            .layoutDirection = CLAY_TOP_TO_BOTTOM
+            .layoutDirection = CLAY_LEFT_TO_RIGHT
         },
         .backgroundColor = {24, 28, 36, 255}
     }) {
-        Clay_String title = { false, (int32_t)strlen(title_buf), title_buf };
-        CLAY_TEXT(title, CLAY_TEXT_CONFIG({.textColor = {220, 226, 236, 255}, .fontSize = 16}));
 
-        CLAY(CLAY_ID("PBList"), {
+        /* ── LEFT COLUMN: Folder tree ── */
+        CLAY(CLAY_ID("PBFolderTree"), {
             .layout = {
-                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-                .childGap = 10,
+                .sizing = { CLAY_SIZING_FIXED(PB_FOLDER_TREE_WIDTH), CLAY_SIZING_GROW({0}) },
+                .padding = { .left = 6, .right = 6, .top = 8, .bottom = 8 },
+                .childGap = 1,
                 .layoutDirection = CLAY_TOP_TO_BOTTOM
             },
+            .backgroundColor = {28, 32, 42, 255},
             .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
         }) {
-            CLAY(CLAY_ID("PBListContent"), {
+            CLAY(CLAY_ID("PBTreeContent"), {
                 .layout = {
                     .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                    .childGap = 12,
+                    .childGap = 1,
                     .layoutDirection = CLAY_TOP_TO_BOTTOM
                 }
             }) {
-                project_browser_emit_asset_group("Models",
-                                                 gs->project.model_keys,
-                                                 gs->project.model_paths,
-                                                 gs->project.model_count,
-                                                 (Clay_Color){94, 138, 216, 255},
-                                                 &row_id);
-                project_browser_emit_asset_group("Animations",
-                                                 gs->project.animation_keys,
-                                                 gs->project.animation_paths,
-                                                 gs->project.animation_count,
-                                                 (Clay_Color){198, 138, 84, 255},
-                                                 &row_id);
-                project_browser_emit_asset_group("Dungeon Pieces",
-                                                 gs->project.dungeon_piece_keys,
-                                                 gs->project.dungeon_piece_paths,
-                                                 gs->project.dungeon_piece_count,
-                                                 (Clay_Color){116, 172, 118, 255},
-                                                 &row_id);
-                project_browser_emit_asset_group("Sprites",
-                                                 gs->project.sprite_keys,
-                                                 gs->project.sprite_paths,
-                                                 gs->project.sprite_count,
-                                                 (Clay_Color){166, 132, 204, 255},
-                                                 &row_id);
+                /* "All" root entry */
+                {
+                    int is_root_sel = (sel_path[0] == '\0');
+                    CLAY(CLAY_ID("PBFolderAll"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = 4, .right = 4, .top = 4, .bottom = 4 },
+                            .childGap = 4,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = is_root_sel ? ((Clay_Color){60, 90, 140, 255})
+                                         : Clay_Hovered() ? ((Clay_Color){44, 52, 68, 255})
+                                         : ((Clay_Color){0, 0, 0, 0}),
+                        .cornerRadius = CLAY_CORNER_RADIUS(3)
+                    }) {
+                        {
+                            Clay_String n = CLAY_STRING("All");
+                            CLAY_TEXT(n, CLAY_TEXT_CONFIG({
+                                .textColor = is_root_sel ? ((Clay_Color){255, 255, 255, 255})
+                                                         : ((Clay_Color){200, 210, 225, 255}),
+                                .fontSize = 13
+                            }));
+                        }
+                        if (Clay_Hovered() && click) {
+                            e->pb_selected_path[0] = '\0';
+                        }
+                    }
+                }
+
+                /* Folder entries */
+                for (i = 0; i < folder_count; i++) {
+                    int depth = pb_count_depth(folders[i]);
+                    const char *display = pb_last_component(folders[i]);
+                    int is_selected = (strcmp(folders[i], sel_path) == 0);
+                    int indent = depth * 12;
+
+                    CLAY(CLAY_IDI("PBFolder", i), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = (uint16_t)(4 + indent), .right = 4,
+                                         .top = 3, .bottom = 3 },
+                            .childGap = 4,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = is_selected ? ((Clay_Color){60, 90, 140, 255})
+                                         : Clay_Hovered() ? ((Clay_Color){44, 52, 68, 255})
+                                         : ((Clay_Color){0, 0, 0, 0}),
+                        .cornerRadius = CLAY_CORNER_RADIUS(3)
+                    }) {
+                        /* Folder icon */
+                        CLAY(CLAY_IDI("PBFIcon", i), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) }
+                            },
+                            .backgroundColor = {140, 160, 190, 255},
+                            .cornerRadius = CLAY_CORNER_RADIUS(2)
+                        }) {}
+
+                        /* Folder name */
+                        {
+                            Clay_String fname = {false, (int32_t)strlen(display), display};
+                            CLAY_TEXT(fname, CLAY_TEXT_CONFIG({
+                                .textColor = is_selected ? ((Clay_Color){255, 255, 255, 255})
+                                                         : ((Clay_Color){190, 200, 218, 255}),
+                                .fontSize = 12
+                            }));
+                        }
+
+                        /* Handle click */
+                        if (Clay_Hovered() && click) {
+                            strncpy(e->pb_selected_path, folders[i], 255);
+                            e->pb_selected_path[255] = '\0';
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ── Separator ── */
+        CLAY(CLAY_ID("PBSep"), {
+            .layout = { .sizing = { CLAY_SIZING_FIXED(1), CLAY_SIZING_GROW({0}) } },
+            .backgroundColor = {50, 58, 75, 255}
+        }) {}
+
+        /* ── RIGHT COLUMN: Icon grid ── */
+        CLAY(CLAY_ID("PBGridArea"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .padding = { .left = 10, .right = 10, .top = 8, .bottom = 8 },
+                .childGap = 6,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            }
+        }) {
+            /* Header with path breadcrumb */
+            {
+                static char header_buf[300];
+                Clay_String ts;
+                if (sel_path[0])
+                    snprintf(header_buf, sizeof(header_buf), "%s", sel_path);
+                else
+                    snprintf(header_buf, sizeof(header_buf), "%s", title_buf);
+                ts = (Clay_String){ false, (int32_t)strlen(header_buf), header_buf };
+                CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {180, 190, 208, 255}, .fontSize = 13}));
+            }
+
+            /* Scrollable grid */
+            CLAY(CLAY_ID("PBGridScroll"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) }
+                },
+                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+            }) {
+                CLAY(CLAY_ID("PBGridContent"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                        .childGap = PB_ICON_GAP,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    }
+                }) {
+                    if (vis_count == 0) {
+                        Clay_String cs = CLAY_STRING("(no assets in this folder)");
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({
+                            .textColor = {130, 142, 166, 255}, .fontSize = 13
+                        }));
+                    } else {
+                        for (row = 0; row < num_rows; row++) {
+                            CLAY(CLAY_IDI("PBRow", row), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_GROW({0}),
+                                                CLAY_SIZING_FIT({0}) },
+                                    .childGap = PB_ICON_GAP,
+                                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                                }
+                            }) {
+                                for (col = 0; col < cols; col++) {
+                                    int idx = row * cols + col;
+                                    if (idx >= vis_count) break;
+                                    {
+                                        const char *key = vis_keys[idx];
+                                        const char *path = vis_paths[idx];
+                                        Clay_Color sw = vis_swatch[idx];
+                                        Clay_String ks;
+                                        int tile_selected = (strcmp(e->pb_selected_asset_key, key) == 0 &&
+                                                             e->pb_selected_asset_type == vis_type[idx]);
+
+                                        CLAY(CLAY_IDI("PBTile", idx), {
+                                            .layout = {
+                                                .sizing = {
+                                                    CLAY_SIZING_FIXED(PB_ICON_SIZE),
+                                                    CLAY_SIZING_FIT({0})
+                                                },
+                                                .padding = CLAY_PADDING_ALL(4),
+                                                .childGap = 4,
+                                                .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                                                .childAlignment = {
+                                                    CLAY_ALIGN_X_CENTER,
+                                                    CLAY_ALIGN_Y_TOP
+                                                }
+                                            },
+                                            .backgroundColor = tile_selected
+                                                ? ((Clay_Color){58, 72, 98, 255})
+                                                : Clay_Hovered()
+                                                    ? ((Clay_Color){52, 62, 82, 255})
+                                                    : ((Clay_Color){34, 40, 54, 255}),
+                                            .cornerRadius = CLAY_CORNER_RADIUS(6)
+                                        }) {
+                                            /* Color swatch */
+                                            CLAY(CLAY_IDI("PBSwFrame", idx), {
+                                                .layout = {
+                                                    .sizing = {
+                                                        CLAY_SIZING_FIXED(PB_ICON_SIZE - 8),
+                                                        CLAY_SIZING_FIXED(44)
+                                                    },
+                                                    .padding = CLAY_PADDING_ALL(2)
+                                                },
+                                                .backgroundColor = sw,
+                                                .cornerRadius = CLAY_CORNER_RADIUS(4)
+                                            }) {
+                                                CLAY(CLAY_IDI("PBSw", idx), {
+                                                    .layout = {
+                                                        .sizing = {
+                                                            CLAY_SIZING_GROW({0}),
+                                                            CLAY_SIZING_GROW({0})
+                                                        }
+                                                    },
+                                                    .backgroundColor = {24, 30, 40, 255},
+                                                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                                                }) {}
+                                            }
+
+                                            /* Asset name */
+                                            ks = (Clay_String){false,
+                                                (int32_t)strlen(key), key};
+                                            CLAY_TEXT(ks, CLAY_TEXT_CONFIG({
+                                                .textColor = {210, 218, 230, 255},
+                                                .fontSize = 11
+                                            }));
+
+                                            if (Clay_Hovered() && click) {
+                                                strncpy(e->pb_selected_asset_key, key,
+                                                        sizeof(e->pb_selected_asset_key) - 1);
+                                                e->pb_selected_asset_key[sizeof(e->pb_selected_asset_key) - 1] = '\0';
+                                                strncpy(e->pb_selected_asset_path, path,
+                                                        sizeof(e->pb_selected_asset_path) - 1);
+                                                e->pb_selected_asset_path[sizeof(e->pb_selected_asset_path) - 1] = '\0';
+                                                e->pb_selected_asset_type = vis_type[idx];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2858,6 +3236,27 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
     commands = Clay_EndLayout();
     e->project_browser_cmd_count = commands.length;
     e->project_browser_cmd_array = commands.internalArray;
+
+    /* Build thumbnail requests from swatch bounding boxes */
+    e->pb_thumbnail_count = 0;
+    for (i = 0; i < vis_count && i < PB_MAX_THUMBNAILS; i++) {
+        Clay_ElementData ed = Clay_GetElementData(
+            Clay_GetElementIdWithIndex(CLAY_STRING("PBSw"), (uint32_t)i));
+        if (!ed.found) continue;
+        {
+            pb_thumbnail_request *req = &e->pb_thumbnails[e->pb_thumbnail_count];
+            strncpy(req->key, vis_keys[i], sizeof(req->key) - 1);
+            req->key[sizeof(req->key) - 1] = '\0';
+            req->type = vis_type[i];
+            req->x = ed.boundingBox.x;
+            req->y = ed.boundingBox.y;
+            req->w = ed.boundingBox.width;
+            req->h = ed.boundingBox.height;
+            e->pb_thumbnail_count++;
+        }
+    }
+
+    e->project_browser_click = 0;
 }
 
 static void inspector_layout(game_state *gs, editor_state *es) {
@@ -2868,8 +3267,9 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     int insp_node;
     int win_w, win_h;
     int selected;
+    int has_asset_selected;
     static char title_buf[96];
-    static char line_bufs[32][160];
+    static char line_bufs[96][256];
     Clay_RenderCommandArray commands;
 
     if (!ctx) {
@@ -2896,6 +3296,9 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     selected = e->scene_selected_entity;
     if (!gs->scene_entities) selected = -1;
     if (selected < 0 || selected >= gs->scene_entity_count) selected = -1;
+    has_asset_selected = (e->pb_selected_asset_key[0] != '\0' &&
+                          e->pb_selected_asset_type >= 0 &&
+                          e->pb_selected_asset_type <= 3);
 
     snprintf(title_buf, sizeof(title_buf), "Inspector");
     Clay_BeginLayout();
@@ -2922,10 +3325,140 @@ static void inspector_layout(game_state *gs, editor_state *es) {
             .backgroundColor = {36, 42, 56, 255},
             .cornerRadius = CLAY_CORNER_RADIUS(4)
         }) {
-            if (selected < 0) {
-                Clay_String cs = CLAY_STRING("No entity selected.");
-                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = 16}));
-            } else {
+            if (has_asset_selected) {
+                int line_i = 0;
+                const char *asset_file = project_browser_path_basename(e->pb_selected_asset_path);
+                const char *asset_ext = strrchr(asset_file, '.');
+                const char *type_name = pb_asset_type_name(e->pb_selected_asset_type);
+                const char *bound_mesh_key = NULL;
+                scene_model_asset *asset_model = NULL;
+                int ai;
+
+                if (e->pb_selected_asset_type == 0 || e->pb_selected_asset_type == 2) {
+                    for (ai = 0; ai < gs->scene_model_asset_count; ai++) {
+                        if (strcmp(gs->scene_model_assets[ai].key, e->pb_selected_asset_key) == 0) {
+                            asset_model = &gs->scene_model_assets[ai];
+                            break;
+                        }
+                    }
+                } else if (e->pb_selected_asset_type == 1) {
+                    for (ai = 0; ai < gs->project.scene_entity_count; ai++) {
+                        const project_scene_component *comp = &gs->project.scene_components[ai];
+                        if (!comp->has_mesh || !comp->has_animation) continue;
+                        if (strcmp(comp->animation_asset, e->pb_selected_asset_key) != 0) continue;
+                        bound_mesh_key = comp->mesh_model;
+                        break;
+                    }
+                    if (bound_mesh_key) {
+                        for (ai = 0; ai < gs->scene_model_asset_count; ai++) {
+                            if (strcmp(gs->scene_model_assets[ai].key, bound_mesh_key) == 0) {
+                                asset_model = &gs->scene_model_assets[ai];
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                CLAY(CLAY_ID("INAssetDetails"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                        .padding = CLAY_PADDING_ALL(8),
+                        .childGap = 4,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .backgroundColor = {30, 36, 48, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    Clay_String hs = CLAY_STRING("Selected Asset");
+                    CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = {228, 236, 248, 255}, .fontSize = 15}));
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "Type: %s", type_name);
+                    {
+                        Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {188, 206, 236, 255}, .fontSize = 14}));
+                    }
+                    line_i++;
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "Key: %s", e->pb_selected_asset_key);
+                    {
+                        Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {214, 222, 236, 255}, .fontSize = 14}));
+                    }
+                    line_i++;
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "File: %s", asset_file);
+                    {
+                        Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {184, 194, 210, 255}, .fontSize = 14}));
+                    }
+                    line_i++;
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "Path: %s", e->pb_selected_asset_path);
+                    {
+                        Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = 13}));
+                    }
+                    line_i++;
+
+                    if (asset_ext) {
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "Extension: %s", asset_ext);
+                        {
+                            Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = 13}));
+                        }
+                        line_i++;
+                    }
+
+                    if (e->pb_selected_asset_type == 1) {
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "Rig Mesh: %s", bound_mesh_key ? bound_mesh_key : "(no matching scene rig)");
+                        {
+                            Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {198, 178, 146, 255}, .fontSize = 13}));
+                        }
+                        line_i++;
+                    }
+
+                    if (asset_model) {
+                        GltfMesh *mesh = &asset_model->model.mesh;
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "Loaded: %s  Meshes: %u  Skinned: %s  Clips: %u",
+                                 asset_model->loaded ? "yes" : "no",
+                                 (unsigned int)mesh->primitive_count,
+                                 asset_model->has_skeleton ? "yes" : "no",
+                                 (unsigned int)asset_model->model.clip_count);
+                        {
+                            Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = 13}));
+                        }
+                        line_i++;
+
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "Bounds center=(%.2f, %.2f, %.2f) radius=%.2f",
+                                 mesh->bounds_center[0], mesh->bounds_center[1],
+                                 mesh->bounds_center[2], mesh->bounds_radius);
+                        {
+                            Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = 13}));
+                        }
+                        line_i++;
+                    } else if (e->pb_selected_asset_type != 3) {
+                        Clay_String ms = CLAY_STRING("Loaded mesh info unavailable.");
+                        CLAY_TEXT(ms, CLAY_TEXT_CONFIG({.textColor = {180, 152, 152, 255}, .fontSize = 13}));
+                    }
+                }
+            }
+
+            if (!has_asset_selected) {
+                if (selected < 0) {
+                    Clay_String cs = CLAY_STRING("No entity selected.");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = 16}));
+                } else {
                 int line_i = 0;
                 int parent_idx = -1;
                 int parent_transform_idx = -1;
@@ -3130,6 +3663,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 if (has_parent_rotation) {
                     Clay_String cs = CLAY_STRING("- Parent Rotation");
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = 16}));
+                }
                 }
             }
         }
@@ -4104,6 +4638,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             if (e->project_browser_mouse_down) {
                 e->project_browser_mouse_x = lx;
                 e->project_browser_mouse_y = ly;
+                e->project_browser_click = 1;
             }
         }
     }

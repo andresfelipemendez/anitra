@@ -473,6 +473,21 @@ static int register_scene_model_asset(game_state *gs,
     return i;
 }
 
+/* Register all project browser 3D assets so thumbnails can resolve by key. */
+static void register_project_model_assets(game_state *gs) {
+    const project_data *project;
+    int i;
+    if (!gs || !gs->project_loaded) return;
+
+    project = &gs->project;
+    for (i = 0; i < project->model_count; i++) {
+        register_scene_model_asset(gs, project->model_keys[i], project->model_paths[i], NULL);
+    }
+    for (i = 0; i < project->dungeon_piece_count; i++) {
+        register_scene_model_asset(gs, project->dungeon_piece_keys[i], project->dungeon_piece_paths[i], NULL);
+    }
+}
+
 static rect collider_rect_from_half_extents(const float half_extents[3], float fallback_half_extent) {
     float hx = fallback_half_extent;
     float hz = fallback_half_extent;
@@ -926,6 +941,7 @@ static void build_scene_from_project(game_state *gs) {
     if (!gs) return;
 
     project = &gs->project;
+    register_project_model_assets(gs);
     if (project->scene_entity_count <= 0) {
         build_fallback_scene(gs);
         return;

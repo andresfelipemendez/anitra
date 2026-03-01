@@ -38,6 +38,8 @@ typedef struct {
 typedef struct {
     GltfPrimitive *primitives;
     uint32_t primitive_count;
+    float bounds_center[3];
+    float bounds_radius;
 } GltfMesh;
 
 /* ── Skeleton ─────────────────────────────────────────────────── */

@@ -18,6 +18,18 @@ typedef struct { float x, y, z, r, g, b; } editor_line_vert;
 #define PROFILER_TREE_MAX_NODES 65536
 #define SCENE_TREE_MAX_ENTITIES 512
 
+/* Project browser icon grid */
+#define PB_ICON_SIZE         80
+#define PB_ICON_GAP          6
+#define PB_FOLDER_TREE_WIDTH 180
+#define PB_MAX_THUMBNAILS    32
+
+typedef struct {
+    char  key[64];  /* asset key for scene_model_asset lookup */
+    int   type;     /* 0=model, 1=animation, 2=dungeon piece, 3=sprite */
+    float x, y, w, h;
+} pb_thumbnail_request;
+
 #ifndef MENU_BAR_HEIGHT
 #define MENU_BAR_HEIGHT 28
 #endif
@@ -219,7 +231,8 @@ static void dock_init(dock_state *d) {
 }
 
 static void dock_init_default(dock_state *d) {
-    int root, left, center_right_split, center_split, game_leaf, editor_leaf, right;
+    int root, left, center_right_split, center_vert_split, center_split;
+    int game_leaf, editor_leaf, assets_leaf, right;
     memset(d, 0, sizeof(dock_state));
 
     /* Root: horizontal split (Scene Tree | rest) */
@@ -227,19 +240,23 @@ static void dock_init_default(dock_state *d) {
     d->nodes[root].type = DOCK_SPLIT_H;
     d->nodes[root].ratio = 0.19f;
 
-    /* Left leaf: Scene Tree + Project tabs */
+    /* Left leaf: Scene Tree only */
     left = dock_alloc_node(d);
     d->nodes[left].panels[0] = PANEL_SCENE_TREE;
-    d->nodes[left].panels[1] = PANEL_ASSETS;
-    d->nodes[left].panel_count = 2;
+    d->nodes[left].panel_count = 1;
     d->nodes[left].active_tab = 0;
 
-    /* Right side: horizontal split ((Game | Editor) | Profiler/Inspector) */
+    /* Right side: horizontal split (center area | Profiler/Inspector) */
     center_right_split = dock_alloc_node(d);
     d->nodes[center_right_split].type = DOCK_SPLIT_H;
     d->nodes[center_right_split].ratio = 0.78f;
 
-    /* Center area: horizontal split (Game | Editor) */
+    /* Center area: vertical split (Game+Editor top | Assets bottom) */
+    center_vert_split = dock_alloc_node(d);
+    d->nodes[center_vert_split].type = DOCK_SPLIT_V;
+    d->nodes[center_vert_split].ratio = 0.68f;
+
+    /* Top of center: horizontal split (Game | Editor) */
     center_split = dock_alloc_node(d);
     d->nodes[center_split].type = DOCK_SPLIT_H;
     d->nodes[center_split].ratio = 0.5f;
@@ -252,6 +269,11 @@ static void dock_init_default(dock_state *d) {
     d->nodes[editor_leaf].panels[0] = PANEL_EDITOR;
     d->nodes[editor_leaf].panel_count = 1;
 
+    /* Bottom of center: Assets panel */
+    assets_leaf = dock_alloc_node(d);
+    d->nodes[assets_leaf].panels[0] = PANEL_ASSETS;
+    d->nodes[assets_leaf].panel_count = 1;
+
     /* Right leaf: Profiler + Inspector tabs (Inspector active by default) */
     right = dock_alloc_node(d);
     d->nodes[right].panels[0] = PANEL_PROFILER;
@@ -262,8 +284,10 @@ static void dock_init_default(dock_state *d) {
     /* Wire up children */
     d->nodes[root].children[0] = left;
     d->nodes[root].children[1] = center_right_split;
-    d->nodes[center_right_split].children[0] = center_split;
+    d->nodes[center_right_split].children[0] = center_vert_split;
     d->nodes[center_right_split].children[1] = right;
+    d->nodes[center_vert_split].children[0] = center_split;
+    d->nodes[center_vert_split].children[1] = assets_leaf;
     d->nodes[center_split].children[0] = game_leaf;
     d->nodes[center_split].children[1] = editor_leaf;
 
@@ -749,6 +773,13 @@ typedef struct editor_state {
     float project_browser_mouse_x, project_browser_mouse_y;
     float project_browser_scroll_y;
     int   project_browser_mouse_down;
+    int   project_browser_click;       /* 1 on the frame left button was pressed */
+    char  pb_selected_path[256];       /* selected folder path, empty = show all */
+    char  pb_selected_asset_key[64];
+    char  pb_selected_asset_path[256];
+    int   pb_selected_asset_type;      /* -1=none, 0=model, 1=animation, 2=dungeon, 3=sprite */
+    pb_thumbnail_request pb_thumbnails[PB_MAX_THUMBNAILS];
+    int   pb_thumbnail_count;
 
     /* Scrollbar data — set by profiler_layout after EndLayout, read by externals renderer */
     float prof_scroll_pos;            /* current scroll Y offset (<=0) */
