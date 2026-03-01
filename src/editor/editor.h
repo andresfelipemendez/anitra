@@ -833,6 +833,10 @@ typedef struct editor_state {
     int   cpu_prof_timeline_paused;
     int   cpu_prof_timeline_offset;
     uint64_t cpu_prof_timeline_frame_id;
+    char  cpu_prof_hover_zone_name[64];
+    int   cpu_prof_hover_zone_active;
+    char  cpu_prof_selected_zone_name[64];
+    int   cpu_prof_selected_zone_active;
 
     /* Dock state — allocated from editor_arena. */
     dock_state *dock;

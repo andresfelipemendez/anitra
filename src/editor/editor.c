@@ -127,6 +127,96 @@ static const Clay_Color profiler_colors[] = {
 };
 static const int profiler_color_count = (int)(sizeof(profiler_colors) / sizeof(profiler_colors[0]));
 
+static int editor_cpu_prof_enabled(const editor_state *e) {
+    return e && cpu_prof_get_capture_enabled();
+}
+
+#define EDITOR_CPU_ZONE_BEGIN(es, name) do { \
+    if (editor_cpu_prof_enabled((es))) cpu_zone_begin(name); \
+} while (0)
+#define EDITOR_CPU_ZONE_END(es) do { \
+    if (editor_cpu_prof_enabled((es))) cpu_zone_end(); \
+} while (0)
+#define EDITOR_CACHE_ZONE_BEGIN(name) do { cache_zone_begin(name); } while (0)
+#define EDITOR_CACHE_ZONE_END()       do { cache_zone_end(); } while (0)
+
+static int cpu_zone_highlights_record_tag(const char *zone, const char *record_tag) {
+    if (!zone || !zone[0] || !record_tag || !record_tag[0]) return 0;
+
+    if (strcmp(zone, record_tag) == 0) return 1;
+
+    /* Precise Clay context mapping for profiler/editor UI zones. */
+    if (strcmp(record_tag, "clay_editor") == 0 &&
+        (strcmp(zone, "layout_memory_profiler") == 0 ||
+         strcmp(zone, "ui_prepare_profiler") == 0)) return 1;
+    if (strcmp(record_tag, "clay_scene_tree") == 0 &&
+        (strcmp(zone, "layout_scene_tree") == 0 ||
+         strcmp(zone, "ui_prepare_scene_tree") == 0)) return 1;
+    if (strcmp(record_tag, "clay_project_browser") == 0 &&
+        (strcmp(zone, "layout_project_browser") == 0 ||
+         strcmp(zone, "ui_prepare_project_browser") == 0)) return 1;
+    if (strcmp(record_tag, "clay_inspector") == 0 &&
+        (strcmp(zone, "layout_inspector") == 0 ||
+         strcmp(zone, "ui_prepare_inspector") == 0)) return 1;
+    if (strcmp(record_tag, "clay_menu_bar") == 0 &&
+        (strcmp(zone, "layout_menu_bar") == 0 ||
+         strcmp(zone, "ui_prepare_menu_bar") == 0)) return 1;
+    if (strcmp(record_tag, "clay_editor_toolbar") == 0 &&
+        (strcmp(zone, "layout_editor_toolbar") == 0 ||
+         strcmp(zone, "ui_prepare_editor_toolbar") == 0)) return 1;
+    if (strcmp(record_tag, "clay_cache_prof") == 0 &&
+        (strcmp(zone, "layout_cache_profiler") == 0 ||
+         strcmp(zone, "ui_prepare_cache_profiler") == 0)) return 1;
+    if (strcmp(record_tag, "clay_cpu_prof") == 0 &&
+        (strcmp(zone, "layout_cpu_profiler") == 0 ||
+         strcmp(zone, "ui_prepare_cpu_profiler") == 0)) return 1;
+
+    /* Rendering pipeline zones map to rendering-owned arena records. */
+    if (strncmp(zone, "render_", 7) == 0 ||
+        strncmp(zone, "ui_prepare_", 11) == 0 ||
+        strcmp(zone, "composite_windows") == 0 ||
+        strcmp(zone, "build_composite_quads") == 0 ||
+        strcmp(zone, "draw_upload_build") == 0 ||
+        strcmp(zone, "upload_editor_lines") == 0 ||
+        strcmp(zone, "upload_bone_matrices") == 0 ||
+        strcmp(zone, "gpu_submit") == 0 ||
+        strcmp(zone, "release_frame_resources") == 0) {
+        if (strcmp(record_tag, "draw_commands") == 0 ||
+            strcmp(record_tag, "mesh_commands") == 0 ||
+            strcmp(record_tag, "debug_lines") == 0 ||
+            strcmp(record_tag, "debug_vertices") == 0) {
+            return 1;
+        }
+    }
+
+    /* Editor update zones map to editor-owned arena records. */
+    if (strcmp(zone, "editor_update") == 0 ||
+        strcmp(zone, "editor_update_frame") == 0 ||
+        strncmp(zone, "editor_", 7) == 0 ||
+        strncmp(zone, "layout_", 7) == 0) {
+        if (strcmp(record_tag, "dock_state") == 0 ||
+            strncmp(record_tag, "clay_", 5) == 0) {
+            return 1;
+        }
+    }
+
+    /* Gameplay/engine zones map to gameplay ECS record buckets. */
+    if (strcmp(zone, "engine_update_call") == 0 ||
+        strcmp(zone, "update_engine") == 0 ||
+        strcmp(zone, "input") == 0 ||
+        strcmp(zone, "physics") == 0 ||
+        strcmp(zone, "mesh_sync") == 0 ||
+        strcmp(zone, "animation") == 0) {
+        if (strstr(record_tag, "_components") ||
+            strcmp(record_tag, "entities") == 0 ||
+            strcmp(record_tag, "scene_models") == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 /* Format bytes as human-readable string (rotating static buffers).
    Static buffers reset to zero on hot-reload — fine, overwritten before read. */
 static const char *format_bytes(uint32_t bytes) {
@@ -211,14 +301,21 @@ static int count_arena_records(arena *a) {
    This keeps colors in sync with profiler_flatten_arena(). */
 static void profiler_tree_arena(arena *a, int depth, int *row_id,
                                 uint32_t base_offset, HoverInfo *hover,
-                                int *color_id, int click, int *collapsed_nodes) {
+                                int *color_id, int click, int *collapsed_nodes,
+                                const char *cpu_focus_tag) {
     uint32_t i;
     for (i = 0; i < a->record_count; i++) {
         arena_record *r = &a->records[i];
         int rid = *row_id;
         int is_parent = r->child && r->child->record_count > 0;
         int hovered;
+        int cpu_match = 0;
         Clay_Color swatch;
+
+        if (cpu_focus_tag && cpu_focus_tag[0] && r->tag &&
+            cpu_zone_highlights_record_tag(cpu_focus_tag, r->tag)) {
+            cpu_match = 1;
+        }
 
         /* Color assignment matches profiler_flatten_arena logic:
            parent sub-arenas use neutral gray, leaves get sequential colors */
@@ -259,7 +356,9 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
                     .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
                     .layoutDirection = CLAY_LEFT_TO_RIGHT
                 },
-                .backgroundColor = Clay_Hovered() ? ((Clay_Color){60, 60, 70, 255}) : ((Clay_Color){0, 0, 0, 0})
+                .backgroundColor = Clay_Hovered()
+                    ? ((Clay_Color){60, 60, 70, 255})
+                    : (cpu_match ? ((Clay_Color){52, 68, 92, 255}) : ((Clay_Color){0, 0, 0, 0}))
             }) {
                 hovered = Clay_Hovered();
 
@@ -289,7 +388,8 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
                     Clay_String tag_s = {false, (int32_t)strlen(label_bufs[bidx]), label_bufs[bidx]};
                     CLAY_TEXT(tag_s, CLAY_TEXT_CONFIG({
                         .textColor = hovered ? ((Clay_Color){255, 255, 255, 255})
-                                             : ((Clay_Color){200, 200, 200, 255}),
+                                             : (cpu_match ? ((Clay_Color){220, 232, 255, 255})
+                                                          : ((Clay_Color){200, 200, 200, 255})),
                         .fontSize = UI_FONT_BODY
                     }));
                 }
@@ -307,7 +407,7 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
         if (r->child && !(rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid])) {
             profiler_tree_arena(r->child, depth + 1, row_id,
                                 base_offset + r->offset + (uint32_t)sizeof(arena),
-                                hover, color_id, click, collapsed_nodes);
+                                hover, color_id, click, collapsed_nodes, cpu_focus_tag);
         } else if (is_parent && rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid]) {
             /* Skip children — advance both row_id and color_id to keep
                them stable regardless of expand/collapse state */
@@ -2214,6 +2314,10 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->pb_selected_asset_path[0] = '\0';
     e->pb_selected_asset_type = -1;
     e->pb_thumbnail_count = 0;
+    e->cpu_prof_hover_zone_name[0] = '\0';
+    e->cpu_prof_hover_zone_active = 0;
+    e->cpu_prof_selected_zone_name[0] = '\0';
+    e->cpu_prof_selected_zone_active = 0;
     e->initialized = 1;
 
     /* Create profiler Clay context (one-time, backed by editor_arena).
@@ -2332,6 +2436,8 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     int flat_color, flat_count;
     uint32_t hover_offset, hover_size; /* byte range of hovered record (for range match) */
     int have_hover;
+    const char *cpu_focus_tag;
+    int have_cpu_focus;
     int click;    /* snapshot of prof_click — consumed after layout */
     Clay_RenderCommandArray commands;
 
@@ -2390,6 +2496,13 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     /* Flatten records for grid */
     flat_color = 0;
     flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
+    cpu_focus_tag = NULL;
+    if (e->cpu_prof_hover_zone_active && e->cpu_prof_hover_zone_name[0]) {
+        cpu_focus_tag = e->cpu_prof_hover_zone_name;
+    } else if (e->cpu_prof_selected_zone_active && e->cpu_prof_selected_zone_name[0]) {
+        cpu_focus_tag = e->cpu_prof_selected_zone_name;
+    }
+    have_cpu_focus = (cpu_focus_tag && cpu_focus_tag[0]) ? 1 : 0;
 
     /* Root container */
     CLAY(CLAY_ID("PRoot"), {
@@ -2405,11 +2518,22 @@ static void profiler_layout(game_state *gs, editor_state *es) {
         CLAY(CLAY_ID("PTitleBar"), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                .padding = { .left = 8, .right = 8, .top = 6, .bottom = 10 }
+                .padding = { .left = 8, .right = 8, .top = 6, .bottom = 10 },
+                .childGap = 4,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
             }
         }) {
             Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
             CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = UI_FONT_BODY}));
+            if (have_cpu_focus) {
+                static char focus_buf[96];
+                snprintf(focus_buf, sizeof(focus_buf), "CPU focus: %s",
+                         cpu_focus_tag ? cpu_focus_tag : "");
+                {
+                    Clay_String fs = {false, (int32_t)strlen(focus_buf), focus_buf};
+                    CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {176, 204, 245, 255}, .fontSize = UI_FONT_BODY}));
+                }
+            }
         }
 
         /* Two-panel row */
@@ -2474,7 +2598,8 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                             int row_id = 0;
                             int tree_color = 0;
                             profiler_tree_arena(a, 1, &row_id, 0, &hi,
-                                                &tree_color, click, e->profiler_tree_collapsed);
+                                                &tree_color, click, e->profiler_tree_collapsed,
+                                                cpu_focus_tag);
                             hover_offset = hi.offset;
                             hover_size = hi.size;
                             have_hover = hi.found;
@@ -2608,8 +2733,10 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                                 int is_hovered = have_hover &&
                                     flat[fi].offset >= hover_offset &&
                                     flat[fi].offset + flat[fi].size <= hover_offset + hover_size;
-                                if (have_hover) {
-                                    if (is_hovered) {
+                                int is_cpu_match = have_cpu_focus && flat[fi].tag &&
+                                    cpu_zone_highlights_record_tag(cpu_focus_tag, flat[fi].tag);
+                                if (have_hover || have_cpu_focus) {
+                                    if (is_hovered || is_cpu_match) {
                                         cr = (uint8_t)(cc.r + (255 - cc.r) * 0.5f);
                                         cg = (uint8_t)(cc.g + (255 - cc.g) * 0.5f);
                                         cb = (uint8_t)(cc.b + (255 - cc.b) * 0.5f);
@@ -4326,6 +4453,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
     int i, j;
     uint16_t sorted[CPU_PROF_MAX_ZONES];
     int hovered_zone = -1;
+    int clicked_zone = -1;
     static char bufs[CPU_PROF_MAX_ZONES][4][80];
     char frame_info[128];
     char hover_line[192];
@@ -4353,6 +4481,8 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
         Clay_UpdateScrollContainers(true, sdelta, gs->dt);
         e->cpu_prof_scroll_y = 0;
     }
+    e->cpu_prof_hover_zone_active = 0;
+    e->cpu_prof_hover_zone_name[0] = '\0';
 
     Clay_BeginLayout();
 
@@ -4662,6 +4792,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                             }
                             if (Clay_Hovered()) {
                                 hovered_zone = i;
+                                if (e->cpu_prof_click) clicked_zone = i;
                             }
                         }
                     }
@@ -4750,6 +4881,10 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                             ? (Clay_Color){48, 58, 78, 255}
                             : ((i % 2 == 0) ? (Clay_Color){35, 35, 40, 255} : (Clay_Color){30, 30, 35, 255})
                     }) {
+                        if (Clay_Hovered()) {
+                            hovered_zone = idx;
+                            if (e->cpu_prof_click) clicked_zone = idx;
+                        }
                         CLAY(CLAY_IDI("CUName", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(180), CLAY_SIZING_FIT({0}) } } }) {
                             Clay_String ns = {false, (int32_t)strlen(name), (char*)name};
                             CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14}));
@@ -4792,6 +4927,16 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
     }
 
     commands = Clay_EndLayout();
+    if (frame && hovered_zone >= 0 && hovered_zone < frame->count && frame->names[hovered_zone]) {
+        snprintf(e->cpu_prof_hover_zone_name, sizeof(e->cpu_prof_hover_zone_name), "%s",
+                 frame->names[hovered_zone]);
+        e->cpu_prof_hover_zone_active = 1;
+    }
+    if (frame && clicked_zone >= 0 && clicked_zone < frame->count && frame->names[clicked_zone]) {
+        snprintf(e->cpu_prof_selected_zone_name, sizeof(e->cpu_prof_selected_zone_name), "%s",
+                 frame->names[clicked_zone]);
+        e->cpu_prof_selected_zone_active = 1;
+    }
     if (history_count > 0 && e->cpu_prof_click) {
         Clay_ElementData tl = Clay_GetElementData(CLAY_ID("CUTimelineStrip"));
         if (tl.found) {
@@ -4821,7 +4966,11 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
 
     if (!e->open) return;
 
+    EDITOR_CPU_ZONE_BEGIN(e, "editor_update_frame");
+    EDITOR_CACHE_ZONE_BEGIN("editor_update_frame");
+
     /* ── Dock layout — compute pixel rects for all windows ── */
+    EDITOR_CPU_ZONE_BEGIN(e, "editor_dock_layout");
     {
         int wi;
         for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
@@ -4831,8 +4980,10 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
             dock_layout(d, wi, ww, wh);
         }
     }
+    EDITOR_CPU_ZONE_END(e);
 
     /* ── Game panel size (for ortho projection in engine) ── */
+    EDITOR_CPU_ZONE_BEGIN(e, "editor_game_panel_size");
     {
         int game_win_idx;
         int game_node = dock_find_leaf_for_panel_global(d, PANEL_GAME, &game_win_idx);
@@ -4848,8 +4999,10 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
             gs->height = dh2;
         }
     }
+    EDITOR_CPU_ZONE_END(e);
 
     /* ── Editor panel rect (for coordinate transforms) ── */
+    EDITOR_CPU_ZONE_BEGIN(e, "editor_panel_rect");
     {
         int ed_win_idx;
         int ed_node = dock_find_leaf_for_panel_global(d, PANEL_EDITOR, &ed_win_idx);
@@ -4868,8 +5021,10 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
             e->window = d->windows[0].sdl_window;
         }
     }
+    EDITOR_CPU_ZONE_END(e);
 
     /* ── Profiler Clay layout (produces render commands for externals) ── */
+    EDITOR_CPU_ZONE_BEGIN(e, "editor_layout_prepass");
     {
         int scene_count = gs->scene_entities ? gs->scene_entity_count : 0;
         if (e->scene_selected_entity >= scene_count)
@@ -4877,16 +5032,34 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
         if (e->scene_selected_entity < 0 && scene_count > 0)
             e->scene_selected_entity = 0;
     }
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_memory_profiler");
     profiler_layout(gs, es);
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_scene_tree");
     scene_tree_layout(gs, es);
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_project_browser");
     project_browser_layout(gs, es);
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_inspector");
     inspector_layout(gs, es);
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_menu_bar");
     menu_bar_layout(gs, es);
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_editor_toolbar");
     editor_toolbar_layout(gs, es);
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_cache_profiler");
     cache_profiler_layout(gs, es);
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_cpu_profiler");
     cpu_profiler_layout(gs, es);
+    EDITOR_CPU_ZONE_END(e);
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
+    EDITOR_CPU_ZONE_BEGIN(e, "editor_camera_and_gizmo");
     if (!editor_is_play_mode(gs)) {
         update_camera(gs, es);
         update_gizmo_hover(gs, es);
@@ -4896,7 +5069,13 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
         e->gizmo_active = GIZMO_NONE;
         e->gizmo_entity_index = -1;
     }
+    EDITOR_CPU_ZONE_END(e);
+    EDITOR_CPU_ZONE_BEGIN(e, "editor_build_lines");
     build_lines(gs, es);
+    EDITOR_CPU_ZONE_END(e);
+
+    EDITOR_CACHE_ZONE_END();
+    EDITOR_CPU_ZONE_END(e);
 }
 
 EXPORT void destroy_editor(game_state *gs, editor_state *es) {

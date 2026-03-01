@@ -124,6 +124,11 @@ static editor_handle_event_fn g_editor_handle_event = NULL;
 static int cpu_prof_capture_paused = 0;
 static int cpu_prof_capture_was_paused = 0;
 
+#define FRAME_CPU_ZONE_BEGIN(name) do { if (!cpu_prof_capture_paused) cpu_zone_begin(name); } while (0)
+#define FRAME_CPU_ZONE_END()       do { if (!cpu_prof_capture_paused) cpu_zone_end(); } while (0)
+#define FRAME_CACHE_ZONE_BEGIN(name) do { cache_zone_begin(name); } while (0)
+#define FRAME_CACHE_ZONE_END()       do { cache_zone_end(); } while (0)
+
 // ---------------------------------------------------------------------------
 // Vertex structures
 // ---------------------------------------------------------------------------
@@ -3133,12 +3138,17 @@ EXPORT void update_externals(struct memory *m) {
     }
 
     // --- Input ---
+    FRAME_CPU_ZONE_BEGIN("ext_input_update");
+    FRAME_CACHE_ZONE_BEGIN("ext_input_update");
     update_input(m);
+    FRAME_CACHE_ZONE_END();
+    FRAME_CPU_ZONE_END();
 
     // --- Process dock commands from editor.dll ---
 
     // Tear-off: editor set cmd_tear_off, we create the window + mutate tree
     if (dock->cmd_tear_off) {
+        FRAME_CPU_ZONE_BEGIN("dock_tear_off");
         PanelId tp = dock->drag.panel;
         int twi, new_win_idx = -1;
         for (twi = 1; twi < MAX_DOCK_WINDOWS; twi++) {
@@ -3184,10 +3194,12 @@ EXPORT void update_externals(struct memory *m) {
         }
         dock->cmd_tear_off = 0;
         dock->drag.phase = DRAG_IDLE;
+        FRAME_CPU_ZONE_END();
     }
 
     // Re-dock: editor set cmd_redock, we add panel as tab + destroy empty source
     if (dock->cmd_redock) {
+        FRAME_CPU_ZONE_BEGIN("dock_redock");
         PanelId rp = dock->drag.panel;
         int src_win_idx = dock->drag.source_window;
         int src_node = dock->drag.source_node;
@@ -3230,10 +3242,12 @@ EXPORT void update_externals(struct memory *m) {
 
         dock->cmd_redock = 0;
         dock->drag.phase = DRAG_IDLE;
+        FRAME_CPU_ZONE_END();
     }
 
     // Cleanup: destroy any empty dock windows (editor set cmd_cleanup_windows)
     if (dock->cmd_cleanup_windows) {
+        FRAME_CPU_ZONE_BEGIN("dock_cleanup_windows");
         int cwi2;
         for (cwi2 = 1; cwi2 < MAX_DOCK_WINDOWS; cwi2++) {
             if (!dock->windows[cwi2].in_use) continue;
@@ -3249,16 +3263,23 @@ EXPORT void update_externals(struct memory *m) {
             }
         }
         dock->cmd_cleanup_windows = 0;
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Update editor (dock layout, panel rects, profiler Clay, camera, gizmo, lines) ---
     // Editor.dll now does: dock_layout for all windows, game panel size, editor panel
     // rect, profiler Clay layout. Must run BEFORE ensure_panel_textures and ortho.
     // Sync game Clay arena usage so profiler display is accurate
+    FRAME_CPU_ZONE_BEGIN("editor_update");
+    FRAME_CACHE_ZONE_BEGIN("editor_update");
     if (clay_arena_game && clay_context)
         clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
     if (m->editor.open && g_editor_update) g_editor_update(&m->game, &m->editor);
+    FRAME_CACHE_ZONE_END();
+    FRAME_CPU_ZONE_END();
+
     cpu_prof_capture_paused = (m->editor.cpu_prof_timeline_paused != 0);
+    cpu_prof_set_capture_enabled(!cpu_prof_capture_paused);
     if (!cpu_prof_capture_paused) {
         if (cpu_prof_capture_was_paused) {
             /* Discard stale pre-pause data so resumed capture starts cleanly. */
@@ -3270,9 +3291,12 @@ EXPORT void update_externals(struct memory *m) {
     cpu_prof_capture_was_paused = cpu_prof_capture_paused;
 
     // --- Panel textures (after dock_layout in editor, which set node rects) ---
+    FRAME_CPU_ZONE_BEGIN("ensure_panel_textures");
     ensure_panel_textures(dock);
+    FRAME_CPU_ZONE_END();
 
     // --- Ortho projection (based on game panel size, set by editor.dll) ---
+    FRAME_CPU_ZONE_BEGIN("ortho_projection");
     {
         float w = (float)m->game.width;
         float h = (float)m->game.height;
@@ -3284,18 +3308,27 @@ EXPORT void update_externals(struct memory *m) {
         };
         memcpy(m->game.dl.ortho_projection, ortho, sizeof(ortho));
     }
+    FRAME_CPU_ZONE_END();
 
     // --- Reset draw list ---
+    FRAME_CPU_ZONE_BEGIN("reset_draw_list");
     m->game.dl.sprite_count = 0;
     m->game.dl.line_count = 0;
     m->game.dl.mesh_count = 0;
+    FRAME_CPU_ZONE_END();
 
     // --- Call engine update (fills draw_list + updates mesh3d animation) ---
+    FRAME_CPU_ZONE_BEGIN("engine_update_call");
+    FRAME_CACHE_ZONE_BEGIN("engine_update_call");
     cache_prof_frame_reset();
     g_update(&m->game);
+    FRAME_CACHE_ZONE_END();
+    FRAME_CPU_ZONE_END();
 
     // --- Render ---
+    FRAME_CPU_ZONE_BEGIN("gpu_cmd_acquire");
     SDL_GPUCommandBuffer *cmd_buf = SDL_AcquireGPUCommandBuffer(gpu_device);
+    FRAME_CPU_ZONE_END();
     if (!cmd_buf) {
         fprintf(stderr, "Failed to acquire command buffer: %s\n", SDL_GetError());
         TracyCZoneEnd(ctx_update);
@@ -3314,7 +3347,11 @@ EXPORT void update_externals(struct memory *m) {
     SDL_GPUBuffer *sprite_gpu_buf;
     SDL_GPUBuffer *line_gpu_buf;
 
+    FRAME_CPU_ZONE_BEGIN("draw_upload_build");
+    FRAME_CACHE_ZONE_BEGIN("draw_upload_build");
     draw_upload_build(gpu_device, cmd_buf, &m->game.dl, &draw_upload);
+    FRAME_CACHE_ZONE_END();
+    FRAME_CPU_ZONE_END();
     sprite_count = draw_upload.sprite_count;
     line_count = draw_upload.line_count;
     line_vertex_count = draw_upload.line_vertex_count;
@@ -3323,6 +3360,7 @@ EXPORT void update_externals(struct memory *m) {
 
     // --- Upload bone matrices (computed by engine) ---
     if (m->game.mesh3d.visible && m->game.mesh3d.skeleton.joint_count > 0 && m->game.mesh3d.skin_mats) {
+        FRAME_CPU_ZONE_BEGIN("upload_bone_matrices");
         Uint32 bone_size = m->game.mesh3d.skeleton.joint_count * sizeof(Mat4);
         SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
         tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
@@ -3341,53 +3379,73 @@ EXPORT void update_externals(struct memory *m) {
         SDL_UploadToGPUBuffer(copy_pass, &src_loc, &dst_region, false);
         SDL_EndGPUCopyPass(copy_pass);
         SDL_ReleaseGPUTransferBuffer(gpu_device, bone_transfer);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: game window (layout + upload) ---
+    FRAME_CPU_ZONE_BEGIN("ui_prepare_game");
     ui_prepare_game(cmd_buf, m);
+    FRAME_CPU_ZONE_END();
 
     // --- Prepare Clay UI: menu bar (main window overlay) ---
+    FRAME_CPU_ZONE_BEGIN("ui_prepare_menu_bar");
     menu_bar_prepare(cmd_buf, m);
+    FRAME_CPU_ZONE_END();
 
     // --- Prepare Clay UI: profiler window (layout + upload) ---
     if (panel_color[PANEL_PROFILER]) {
+        FRAME_CPU_ZONE_BEGIN("ui_prepare_profiler");
         profiler_prepare(cmd_buf, m);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: scene tree window (layout + upload) ---
     if (panel_color[PANEL_SCENE_TREE]) {
+        FRAME_CPU_ZONE_BEGIN("ui_prepare_scene_tree");
         scene_tree_prepare(cmd_buf, m);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: project browser window (layout + upload) ---
     if (panel_color[PANEL_ASSETS]) {
+        FRAME_CPU_ZONE_BEGIN("ui_prepare_project_browser");
         project_browser_prepare(cmd_buf, m);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: inspector window (layout + upload) ---
     if (panel_color[PANEL_INSPECTOR]) {
+        FRAME_CPU_ZONE_BEGIN("ui_prepare_inspector");
         inspector_prepare(cmd_buf, m);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: cache profiler (layout + upload) ---
     if (panel_color[PANEL_CACHE_PROFILER]) {
+        FRAME_CPU_ZONE_BEGIN("ui_prepare_cache_profiler");
         cache_profiler_prepare(cmd_buf, m);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: cpu profiler (layout + upload) ---
     if (panel_color[PANEL_CPU_PROFILER]) {
+        FRAME_CPU_ZONE_BEGIN("ui_prepare_cpu_profiler");
         cpu_profiler_prepare(cmd_buf, m);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: editor viewport toolbar (layout + upload) ---
     if (panel_color[PANEL_EDITOR]) {
+        FRAME_CPU_ZONE_BEGIN("ui_prepare_editor_toolbar");
         editor_toolbar_prepare(cmd_buf, m);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Upload editor 3D lines (populated by editor.dll) ---
     SDL_GPUBuffer *editor_line_gpu_buf = NULL;
     int editor_vert_count = m->editor.line_count * 2;
     if (m->editor.open && editor_vert_count > 0) {
+        FRAME_CPU_ZONE_BEGIN("upload_editor_lines");
         Uint32 ed_buf_size = (Uint32)(editor_vert_count * sizeof(editor_line_vert));
 
         SDL_GPUTransferBufferCreateInfo ed_tbuf_info = {0};
@@ -3413,11 +3471,13 @@ EXPORT void update_externals(struct memory *m) {
         SDL_UploadToGPUBuffer(ed_copy, &ed_src, &ed_dst, false);
         SDL_EndGPUCopyPass(ed_copy);
         SDL_ReleaseGPUTransferBuffer(gpu_device, ed_transfer);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- Pre-build composite quads PER WINDOW (copy pass BEFORE render) ---
     // Each visible leaf produces: N tab header quads + 1 panel content quad.
     CompWindowData comp_data[MAX_DOCK_WINDOWS];
+    FRAME_CPU_ZONE_BEGIN("build_composite_quads");
     {
         int cwi;
         for (cwi = 0; cwi < MAX_DOCK_WINDOWS; cwi++) {
@@ -3489,6 +3549,7 @@ EXPORT void update_externals(struct memory *m) {
             SDL_ReleaseGPUTransferBuffer(gpu_device, comp_transfer);
         }
     }
+    FRAME_CPU_ZONE_END();
 
     // ================================================================
     // RENDER PASSES — each panel renders to its offscreen texture
@@ -3496,6 +3557,7 @@ EXPORT void update_externals(struct memory *m) {
 
     // --- GAME PANEL RENDER PASS (offscreen) ---
     if (panel_color[PANEL_GAME] && panel_depth[PANEL_GAME]) {
+        FRAME_CPU_ZONE_BEGIN("render_game_panel");
         Uint32 gw = (Uint32)panel_tex_w[PANEL_GAME];
         Uint32 gh = (Uint32)panel_tex_h[PANEL_GAME];
 
@@ -3587,10 +3649,12 @@ EXPORT void update_externals(struct memory *m) {
         }
 
         SDL_EndGPURenderPass(render_pass);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- PROFILER PANEL RENDER PASS (offscreen) ---
     if (panel_color[PANEL_PROFILER]) {
+        FRAME_CPU_ZONE_BEGIN("render_memory_profiler_panel");
         Uint32 pw = (Uint32)panel_tex_w[PANEL_PROFILER];
         Uint32 ph = (Uint32)panel_tex_h[PANEL_PROFILER];
 
@@ -3627,10 +3691,12 @@ EXPORT void update_externals(struct memory *m) {
         grid_tex_draw(prof_pass, cmd_buf);
 
         SDL_EndGPURenderPass(prof_pass);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- SCENE TREE PANEL RENDER PASS (offscreen) ---
     if (panel_color[PANEL_SCENE_TREE] && panel_depth[PANEL_SCENE_TREE]) {
+        FRAME_CPU_ZONE_BEGIN("render_scene_tree_panel");
         Uint32 sw = (Uint32)panel_tex_w[PANEL_SCENE_TREE];
         Uint32 sh = (Uint32)panel_tex_h[PANEL_SCENE_TREE];
 
@@ -3667,10 +3733,12 @@ EXPORT void update_externals(struct memory *m) {
         }
 
         SDL_EndGPURenderPass(st_pass);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- PROJECT BROWSER PANEL RENDER PASS (offscreen) ---
     if (panel_color[PANEL_ASSETS] && panel_depth[PANEL_ASSETS]) {
+        FRAME_CPU_ZONE_BEGIN("render_project_panel");
         Uint32 aw = (Uint32)panel_tex_w[PANEL_ASSETS];
         Uint32 ah = (Uint32)panel_tex_h[PANEL_ASSETS];
 
@@ -3710,6 +3778,7 @@ EXPORT void update_externals(struct memory *m) {
 
         /* Thumbnail 3D preview pass over project-browser swatches. */
         if (m->editor.pb_thumbnail_count > 0 && mesh_pipeline && bone_identity_buffer) {
+            FRAME_CPU_ZONE_BEGIN("render_project_thumbnails");
             SDL_GPUColorTargetInfo tb_ct = {0};
             SDL_GPUDepthStencilTargetInfo tb_dt = {0};
             SDL_GPURenderPass *tb_pass;
@@ -3895,11 +3964,14 @@ EXPORT void update_externals(struct memory *m) {
             }
 
             SDL_EndGPURenderPass(tb_pass);
+            FRAME_CPU_ZONE_END();
         }
+        FRAME_CPU_ZONE_END();
     }
 
     // --- INSPECTOR PANEL RENDER PASS (offscreen) ---
     if (panel_color[PANEL_INSPECTOR] && panel_depth[PANEL_INSPECTOR]) {
+        FRAME_CPU_ZONE_BEGIN("render_inspector_panel");
         Uint32 iw = (Uint32)panel_tex_w[PANEL_INSPECTOR];
         Uint32 ih = (Uint32)panel_tex_h[PANEL_INSPECTOR];
 
@@ -3936,10 +4008,12 @@ EXPORT void update_externals(struct memory *m) {
         }
 
         SDL_EndGPURenderPass(in_pass);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- CACHE PROFILER PANEL RENDER PASS (offscreen) ---
     if (panel_color[PANEL_CACHE_PROFILER] && panel_depth[PANEL_CACHE_PROFILER]) {
+        FRAME_CPU_ZONE_BEGIN("render_cache_profiler_panel");
         Uint32 cpw = (Uint32)panel_tex_w[PANEL_CACHE_PROFILER];
         Uint32 cph = (Uint32)panel_tex_h[PANEL_CACHE_PROFILER];
 
@@ -3974,10 +4048,12 @@ EXPORT void update_externals(struct memory *m) {
             ui_draw(cp_pass, cmd_buf, &cp_uniforms, &ui_cache_profiler);
         }
         SDL_EndGPURenderPass(cp_pass);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- CPU PROFILER PANEL RENDER PASS (offscreen) ---
     if (panel_color[PANEL_CPU_PROFILER] && panel_depth[PANEL_CPU_PROFILER]) {
+        FRAME_CPU_ZONE_BEGIN("render_cpu_profiler_panel");
         Uint32 cpuw = (Uint32)panel_tex_w[PANEL_CPU_PROFILER];
         Uint32 cpuh = (Uint32)panel_tex_h[PANEL_CPU_PROFILER];
 
@@ -4012,10 +4088,12 @@ EXPORT void update_externals(struct memory *m) {
             ui_draw(cpu_pass, cmd_buf, &cpu_uniforms, &ui_cpu_profiler);
         }
         SDL_EndGPURenderPass(cpu_pass);
+        FRAME_CPU_ZONE_END();
     }
 
     // --- EDITOR PANEL RENDER PASS (offscreen) ---
     if (m->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
+        FRAME_CPU_ZONE_BEGIN("render_editor_panel");
         Uint32 ew = (Uint32)panel_tex_w[PANEL_EDITOR];
         Uint32 eh = (Uint32)panel_tex_h[PANEL_EDITOR];
 
@@ -4091,11 +4169,13 @@ EXPORT void update_externals(struct memory *m) {
         }
 
         SDL_EndGPURenderPass(ed_pass);
+        FRAME_CPU_ZONE_END();
     }
 
     // ================================================================
     // COMPOSITE PASS — per-window: draw headers + panel textures into each swapchain
     // ================================================================
+    FRAME_CPU_ZONE_BEGIN("composite_windows");
     {
         int cwi;
         for (cwi = 0; cwi < MAX_DOCK_WINDOWS; cwi++) {
@@ -4173,10 +4253,14 @@ EXPORT void update_externals(struct memory *m) {
             SDL_EndGPURenderPass(comp_pass);
         }
     }
+    FRAME_CPU_ZONE_END();
 
+    FRAME_CPU_ZONE_BEGIN("gpu_submit");
     SDL_SubmitGPUCommandBuffer(cmd_buf);
+    FRAME_CPU_ZONE_END();
 
     // Release per-frame GPU buffers
+    FRAME_CPU_ZONE_BEGIN("release_frame_resources");
     draw_upload_release(gpu_device, &draw_upload);
     if (editor_line_gpu_buf) SDL_ReleaseGPUBuffer(gpu_device, editor_line_gpu_buf);
     {
@@ -4196,6 +4280,7 @@ EXPORT void update_externals(struct memory *m) {
     ui_release_buffers(&ui_menu_bar);
     ui_release_buffers(&ui_editor_toolbar);
     if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
+    FRAME_CPU_ZONE_END();
 
     TracyCZoneEnd(ctx_update);
     TracyCFrameMark;

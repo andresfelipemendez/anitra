@@ -21,8 +21,8 @@
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
 
-#define CACHE_PROF_MAX_ZONES  32
-#define CACHE_PROF_MAX_STACK  16
+#define CACHE_PROF_MAX_ZONES  128
+#define CACHE_PROF_MAX_STACK  32
 #define CACHE_PROF_MAX_NAME_LEN 64
 
 /* kpc constants */

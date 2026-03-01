@@ -22,9 +22,9 @@
 
 /* ── Constants ──────────────────────────────────────────────────────────── */
 
-#define CPU_PROF_MAX_ZONES  64
+#define CPU_PROF_MAX_ZONES  256
 #define CPU_PROF_MAX_FRAMES 300
-#define CPU_PROF_MAX_STACK  16
+#define CPU_PROF_MAX_STACK  32
 #define CPU_PROF_MAX_NAME_LEN 64
 
 /* ── Platform timing (always available) ─────────────────────────────────── */
@@ -71,6 +71,8 @@ void            cpu_zone_begin(const char *name);
 void            cpu_zone_end(void);
 void            cpu_prof_frame_end(void);
 void            cpu_prof_clear_current_frame(void);
+void            cpu_prof_set_capture_enabled(int enabled);
+int             cpu_prof_get_capture_enabled(void);
 cpu_prof_frame *cpu_prof_get_frame(void);
 cpu_prof_frame *cpu_prof_get_frame_at_offset(uint16_t frames_back);
 uint64_t        cpu_prof_get_frame_id_at_offset(uint16_t frames_back);
@@ -102,6 +104,7 @@ static uint64_t       cpu_prof__current_frame_id = 1;
 /* Zone nesting stack */
 static int16_t     cpu_prof__stack_zone_idx[CPU_PROF_MAX_STACK];
 static int         cpu_prof__stack_depth = 0;
+static int         cpu_prof__capture_enabled = 1;
 
 /* SQLite persistence state */
 static sqlite3      *cpu_prof__db = NULL;
@@ -247,6 +250,7 @@ void cpu_prof_init(void) {
     cpu_prof__write_idx = 0;
     cpu_prof__frames_recorded = 0;
     cpu_prof__stack_depth = 0;
+    cpu_prof__capture_enabled = 1;
     memset(cpu_prof__stack_zone_idx, 0xFF, sizeof(cpu_prof__stack_zone_idx));
     cpu_prof__batch_counter = 0;
     cpu_prof__db_init();
@@ -262,6 +266,7 @@ void cpu_prof_shutdown(void) {
 }
 
 void cpu_zone_begin(const char *name) {
+    if (!cpu_prof__capture_enabled) return;
     if (cpu_prof__stack_depth >= CPU_PROF_MAX_STACK) return;
 
     cpu_prof_frame *frame = &cpu_prof__frames[cpu_prof__write_idx];
@@ -300,6 +305,7 @@ void cpu_zone_begin(const char *name) {
 }
 
 void cpu_zone_end(void) {
+    if (!cpu_prof__capture_enabled) return;
     if (cpu_prof__stack_depth <= 0) return;
 
     cpu_prof_frame *frame = &cpu_prof__frames[cpu_prof__write_idx];
@@ -318,6 +324,7 @@ void cpu_zone_end(void) {
 }
 
 void cpu_prof_frame_end(void) {
+    if (!cpu_prof__capture_enabled) return;
     /* Mark current slot as completed with its stable frame id. */
     cpu_prof__slot_frame_id[cpu_prof__write_idx] = cpu_prof__current_frame_id;
     cpu_prof__frame_id = cpu_prof__current_frame_id;
@@ -349,6 +356,18 @@ void cpu_prof_clear_current_frame(void) {
     cpu_prof__frames[cpu_prof__write_idx].count = 0;
     cpu_prof__stack_depth = 0;
     memset(cpu_prof__stack_zone_idx, 0xFF, sizeof(cpu_prof__stack_zone_idx));
+}
+
+void cpu_prof_set_capture_enabled(int enabled) {
+    cpu_prof__capture_enabled = enabled ? 1 : 0;
+    if (!cpu_prof__capture_enabled) {
+        cpu_prof__stack_depth = 0;
+        memset(cpu_prof__stack_zone_idx, 0xFF, sizeof(cpu_prof__stack_zone_idx));
+    }
+}
+
+int cpu_prof_get_capture_enabled(void) {
+    return cpu_prof__capture_enabled;
 }
 
 cpu_prof_frame *cpu_prof_get_frame(void) {
