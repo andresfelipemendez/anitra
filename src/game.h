@@ -258,6 +258,7 @@ typedef struct game_state {
   input_state input;
 
   int play;
+  int editor_play_mode; /* 0 = edit mode, 1 = play mode */
   int width;
   int height;
   float dt;

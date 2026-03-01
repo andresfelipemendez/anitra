@@ -966,6 +966,7 @@ static UIRenderState ui_game = {0};
 static UIRenderState ui_profiler = {0};
 static UIRenderState ui_scene_tree = {0};
 static UIRenderState ui_inspector = {0};
+static UIRenderState ui_menu_bar = {0};
 static UIRenderState ui_editor_toolbar = {0};
 
 // ---------------------------------------------------------------------------
@@ -1391,6 +1392,18 @@ static void editor_toolbar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
 
     ui_build_vertices(&ui_editor_toolbar, commands);
     ui_upload(cmd_buf, &ui_editor_toolbar);
+}
+
+static void menu_bar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
+    if (g->editor.menu_bar_cmd_count <= 0 || !g->editor.menu_bar_cmd_array)
+        return;
+
+    Clay_RenderCommandArray commands;
+    commands.length = g->editor.menu_bar_cmd_count;
+    commands.internalArray = (Clay_RenderCommand *)g->editor.menu_bar_cmd_array;
+
+    ui_build_vertices(&ui_menu_bar, commands);
+    ui_upload(cmd_buf, &ui_menu_bar);
 }
 
 /* Draw the grid texture quad during the profiler render pass.
@@ -2361,6 +2374,10 @@ static void update_input(memory *m) {
     m->game.input.vertical = 0.0f;
     m->game.input.input_mask = 0;
 
+    if (!m->game.editor_play_mode) {
+        return;
+    }
+
     /* Suppress keyboard game input when a non-game window has focus */
     SDL_Window *focused = SDL_GetKeyboardFocus();
     bool game_has_focus = (focused == window) || (focused == NULL);
@@ -2893,6 +2910,9 @@ EXPORT void update_externals(struct memory *m) {
     // --- Prepare Clay UI: game window (layout + upload) ---
     ui_prepare_game(cmd_buf, m);
 
+    // --- Prepare Clay UI: menu bar (main window overlay) ---
+    menu_bar_prepare(cmd_buf, m);
+
     // --- Prepare Clay UI: profiler window (layout + upload) ---
     if (panel_color[PANEL_PROFILER]) {
         profiler_prepare(cmd_buf, m);
@@ -3376,6 +3396,22 @@ EXPORT void update_externals(struct memory *m) {
                 }
             }
 
+            if (cwi == 0 && (ui_menu_bar.rect_vert_count > 0 || ui_menu_bar.font_vert_count > 0)) {
+                uniform_data menu_uniforms;
+                float menu_lw = (float)sc_w / display_density;
+                float menu_lh = (float)sc_h / display_density;
+                float menu_ortho[16] = {
+                    2.0f/menu_lw,  0,             0,     0,
+                    0,            -2.0f/menu_lh,  0,     0,
+                    0,             0,            -1.0f,  0,
+                   -1.0f,          1.0f,          0,     1.0f
+                };
+                float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+                memcpy(menu_uniforms.projection, menu_ortho, sizeof(menu_ortho));
+                memcpy(menu_uniforms.view, identity, sizeof(identity));
+                ui_draw(comp_pass, cmd_buf, &menu_uniforms, &ui_menu_bar);
+            }
+
             SDL_EndGPURenderPass(comp_pass);
         }
     }
@@ -3399,6 +3435,7 @@ EXPORT void update_externals(struct memory *m) {
     ui_release_buffers(&ui_profiler);
     ui_release_buffers(&ui_scene_tree);
     ui_release_buffers(&ui_inspector);
+    ui_release_buffers(&ui_menu_bar);
     ui_release_buffers(&ui_editor_toolbar);
     if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
 

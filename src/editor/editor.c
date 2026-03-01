@@ -33,13 +33,25 @@ enum {
     EDITOR_TOOLBAR_ACTION_ORTHOGRAPHIC,
     EDITOR_TOOLBAR_ACTION_FRONT,
     EDITOR_TOOLBAR_ACTION_SIDE,
-    EDITOR_TOOLBAR_ACTION_TOP
+    EDITOR_TOOLBAR_ACTION_TOP,
+    EDITOR_TOOLBAR_ACTION_PLAY_MODE
 };
 
 enum {
     EDITOR_VIEW_PRESET_FRONT = 0,
     EDITOR_VIEW_PRESET_SIDE,
     EDITOR_VIEW_PRESET_TOP
+};
+
+enum {
+    MENU_NONE = -1,
+    MENU_FILE = 0
+};
+
+enum {
+    FILE_MENU_ACTION_OPEN_PROJECT = 0,
+    FILE_MENU_ACTION_NEW_PROJECT,
+    FILE_MENU_ACTION_COUNT
 };
 
 #define EDITOR_VIEWBAR_HEIGHT          42.0f
@@ -50,6 +62,7 @@ enum {
 #define EDITOR_VIEWBAR_BUTTON_HEIGHT   22.0f
 #define EDITOR_VIEWBAR_TOGGLE_WIDTH   112.0f
 #define EDITOR_VIEWBAR_VIEW_WIDTH      68.0f
+#define EDITOR_VIEWBAR_PLAY_WIDTH      74.0f
 #define EDITOR_VIEWBAR_BUTTON_GAP       6.0f
 #define EDITOR_VIEWBAR_GROUP_GAP       14.0f
 
@@ -864,11 +877,10 @@ static int editor_save_scene_to_toml(game_state *gs, const char *path) {
         for (i = 0; i < scene_count; i++) {
             int playing = 0;
             int clip = 0;
-            float time = 0.0f;
             float speed = 1.0f;
             const char *asset_key;
             char asset_buf[96];
-            if (!has_animation_component(gs, i, &playing, &clip, &time, &speed)) continue;
+            if (!has_animation_component(gs, i, &playing, &clip, NULL, &speed)) continue;
             asset_key = animation_asset_key_for_save(gs, i, asset_buf, (int)sizeof(asset_buf));
             fprintf(fp, "\"%d\" = { ", i);
             if (asset_key && asset_key[0]) {
@@ -876,8 +888,8 @@ static int editor_save_scene_to_toml(game_state *gs, const char *path) {
                 toml_write_escaped_string(fp, asset_key);
                 fprintf(fp, ", ");
             }
-            fprintf(fp, "playing = %s, clip = %d, time = %.4f, speed = %.4f }\n",
-                    playing ? "true" : "false", clip, time, speed);
+            fprintf(fp, "playing = %s, clip = %d, speed = %.4f }\n",
+                    playing ? "true" : "false", clip, speed);
         }
         fputc('\n', fp);
     }
@@ -1109,6 +1121,40 @@ static int point_in_rect(float px, float py, float x, float y, float w, float h)
     return px >= x && py >= y && px < (x + w) && py < (y + h);
 }
 
+static int editor_is_play_mode(const game_state *gs) {
+    return gs && gs->editor_play_mode;
+}
+
+static int menu_bar_contains_point(dock_state *d, SDL_Window *evwin, float mx, float my) {
+    int win_w = 0;
+    if (!d || !d->windows[0].in_use || !d->windows[0].sdl_window) return 0;
+    if (evwin != (SDL_Window *)d->windows[0].sdl_window) return 0;
+    SDL_GetWindowSize((SDL_Window *)d->windows[0].sdl_window, &win_w, NULL);
+    return point_in_rect(mx, my, 0.0f, 0.0f, (float)win_w, (float)MENU_BAR_HEIGHT);
+}
+
+static int file_menu_dropdown_contains_point(float mx, float my) {
+    const float dropdown_x = 6.0f;
+    const float dropdown_y = 24.0f;
+    const float dropdown_w = 190.0f;
+    const float dropdown_h = 4.0f + (FILE_MENU_ACTION_COUNT * 24.0f) + ((FILE_MENU_ACTION_COUNT - 1) * 2.0f) + 4.0f;
+    return point_in_rect(mx, my, dropdown_x, dropdown_y, dropdown_w, dropdown_h);
+}
+
+static void editor_dispatch_file_menu_action(game_state *gs, int action) {
+    (void)gs;
+    switch (action) {
+    case FILE_MENU_ACTION_OPEN_PROJECT:
+        fprintf(stderr, "Menu action: Open Project (not implemented yet)\n");
+        break;
+    case FILE_MENU_ACTION_NEW_PROJECT:
+        fprintf(stderr, "Menu action: New Project (not implemented yet)\n");
+        break;
+    default:
+        break;
+    }
+}
+
 static int editor_toolbar_contains_point(const editor_state *e, float lx, float ly) {
     if (!e) return 0;
     if (lx < 0.0f || lx >= e->panel_w) return 0;
@@ -1138,6 +1184,10 @@ static int editor_toolbar_button_hit(const editor_state *e, float lx, float ly) 
 
     if (point_in_rect(lx, ly, btn_x, btn_y, EDITOR_VIEWBAR_VIEW_WIDTH, EDITOR_VIEWBAR_BUTTON_HEIGHT))
         return EDITOR_TOOLBAR_ACTION_TOP;
+    btn_x += EDITOR_VIEWBAR_VIEW_WIDTH + EDITOR_VIEWBAR_GROUP_GAP;
+
+    if (point_in_rect(lx, ly, btn_x, btn_y, EDITOR_VIEWBAR_PLAY_WIDTH, EDITOR_VIEWBAR_BUTTON_HEIGHT))
+        return EDITOR_TOOLBAR_ACTION_PLAY_MODE;
 
     return EDITOR_TOOLBAR_ACTION_NONE;
 }
@@ -1447,6 +1497,36 @@ static void editor_snap_camera_to_preset(const game_state *gs, editor_state *e, 
     e->cam_pos = vec3_sub(focus, vec3_scale(forward, dist));
 }
 
+static void editor_set_play_mode(game_state *gs, editor_state *e, int enabled) {
+    int i;
+    int play_mode = enabled ? 1 : 0;
+    if (!gs) return;
+    if (gs->editor_play_mode == play_mode) return;
+
+    gs->editor_play_mode = play_mode;
+    gs->input.horizontal = 0.0f;
+    gs->input.vertical = 0.0f;
+    gs->input.input_mask = 0;
+
+    if (!play_mode) {
+        if (e && e->cam_mouse_look) {
+            editor_end_mouse_look(e);
+        }
+        for (i = 0; i < gs->animation_component_count; i++) {
+            gs->animation_components[i].playing = 0;
+        }
+        return;
+    }
+
+    gs->mesh3d.anim_time = 0.0f;
+    for (i = 0; i < gs->animation_component_count; i++) {
+        animation_component *ac = &gs->animation_components[i];
+        ac->playing = 1;
+        ac->anim_time = 0.0f;
+        if (ac->speed <= 0.0f) ac->speed = 1.0f;
+    }
+}
+
 static void editor_apply_toolbar_action(game_state *gs, editor_state *e, int action) {
     if (!e) return;
 
@@ -1471,6 +1551,9 @@ static void editor_apply_toolbar_action(game_state *gs, editor_state *e, int act
         break;
     case EDITOR_TOOLBAR_ACTION_TOP:
         editor_snap_camera_to_preset(gs, e, EDITOR_VIEW_PRESET_TOP);
+        break;
+    case EDITOR_TOOLBAR_ACTION_PLAY_MODE:
+        editor_set_play_mode(gs, e, !editor_is_play_mode(gs));
         break;
     default:
         break;
@@ -2623,11 +2706,179 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     e->inspector_cmd_array = commands.internalArray;
 }
 
+static const char *file_menu_action_labels[FILE_MENU_ACTION_COUNT] = {
+    "Open Project",
+    "New Project"
+};
+
+static void menu_bar_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    Clay_Context *ctx = (Clay_Context *)e->menu_bar_clay_ctx;
+    Clay_RenderCommandArray commands;
+    int win_w = 1600;
+    int win_h = 900;
+    int play_mode = editor_is_play_mode(gs);
+    int menu_click_handled = 0;
+
+    if (!ctx || !d || !d->windows[0].in_use || !d->windows[0].sdl_window) {
+        e->menu_bar_cmd_count = 0;
+        e->menu_bar_cmd_array = NULL;
+        e->menu_click = 0;
+        return;
+    }
+
+    SDL_GetWindowSize((SDL_Window *)d->windows[0].sdl_window, &win_w, &win_h);
+    if (win_w < 1) win_w = 1;
+    if (win_h < 1) win_h = 1;
+
+    Clay_SetCurrentContext(ctx);
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)MENU_BAR_HEIGHT});
+    Clay_SetPointerState((Clay_Vector2){e->menu_mouse_x, e->menu_mouse_y}, (bool)e->menu_click);
+    Clay_BeginLayout();
+
+    CLAY(CLAY_ID("MenuBarRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(MENU_BAR_HEIGHT) },
+            .padding = { .left = 6, .right = 8, .top = 2, .bottom = 2 },
+            .childGap = 6,
+            .layoutDirection = CLAY_LEFT_TO_RIGHT,
+            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+        CLAY(CLAY_ID("MenuFile"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
+                .padding = { .left = 10, .right = 10, .top = 2, .bottom = 2 },
+                .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+            },
+            .backgroundColor = (e->menu_open == MENU_FILE || Clay_Hovered())
+                             ? ((Clay_Color){56, 66, 84, 240})
+                             : ((Clay_Color){0, 0, 0, 0}),
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            int hovered = Clay_Hovered();
+            if (hovered && e->menu_click) {
+                e->menu_open = (e->menu_open == MENU_FILE) ? MENU_NONE : MENU_FILE;
+                e->menu_hover = -1;
+                menu_click_handled = 1;
+            }
+
+            CLAY_TEXT(CLAY_STRING("File"), CLAY_TEXT_CONFIG({
+                .textColor = {224, 230, 240, 255},
+                .fontSize = 16
+            }));
+
+            if (e->menu_open == MENU_FILE) {
+                int i;
+                CLAY(CLAY_ID("FileDropdown"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(190), CLAY_SIZING_FIT({0}) },
+                        .padding = { .left = 4, .right = 4, .top = 4, .bottom = 4 },
+                        .childGap = 2,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .floating = {
+                        .attachTo = CLAY_ATTACH_TO_PARENT,
+                        .attachPoints = {
+                            .element = CLAY_ATTACH_POINT_LEFT_TOP,
+                            .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM
+                        }
+                    },
+                    .backgroundColor = {38, 44, 58, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    for (i = 0; i < FILE_MENU_ACTION_COUNT; i++) {
+                        CLAY(CLAY_IDI("FileMenuItem", i), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(24) },
+                                .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 },
+                                .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                            },
+                            .backgroundColor = Clay_Hovered()
+                                             ? ((Clay_Color){68, 86, 120, 255})
+                                             : ((Clay_Color){0, 0, 0, 0}),
+                            .cornerRadius = CLAY_CORNER_RADIUS(3)
+                        }) {
+                            int item_hovered = Clay_Hovered();
+                            if (item_hovered) e->menu_hover = i;
+                            if (item_hovered && e->menu_click) {
+                                editor_dispatch_file_menu_action(gs, i);
+                                e->menu_open = MENU_NONE;
+                                e->menu_hover = -1;
+                                menu_click_handled = 1;
+                            }
+
+                            {
+                                Clay_String item_label = {
+                                    false,
+                                    (int32_t)strlen(file_menu_action_labels[i]),
+                                    file_menu_action_labels[i]
+                                };
+                                CLAY_TEXT(item_label, CLAY_TEXT_CONFIG({
+                                    .textColor = {226, 232, 244, 255},
+                                    .fontSize = 16
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        CLAY(CLAY_ID("MenuFill"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(1) }
+            }
+        }) {}
+
+        CLAY(CLAY_ID("MenuPlayMode"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIXED(76), CLAY_SIZING_FIXED(22) },
+                .padding = { .left = 10, .right = 10, .top = 2, .bottom = 2 },
+                .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+            },
+            .backgroundColor = play_mode
+                             ? ((Clay_Color){146, 72, 72, 240})
+                             : ((Clay_Color){68, 122, 76, 240}),
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            if (Clay_Hovered() && e->menu_click) {
+                editor_set_play_mode(gs, e, !play_mode);
+                play_mode = editor_is_play_mode(gs);
+                menu_click_handled = 1;
+            }
+            {
+                const char *label = play_mode ? "Stop" : "Play";
+                Clay_String text = { false, (int32_t)strlen(label), label };
+                CLAY_TEXT(text, CLAY_TEXT_CONFIG({
+                    .textColor = {238, 242, 248, 255},
+                    .fontSize = 16
+                }));
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    if (e->menu_click && e->menu_open == MENU_FILE && !menu_click_handled) {
+        if (!point_in_rect(e->menu_mouse_x, e->menu_mouse_y, 0.0f, 0.0f, (float)win_w, (float)MENU_BAR_HEIGHT) &&
+            !file_menu_dropdown_contains_point(e->menu_mouse_x, e->menu_mouse_y)) {
+            e->menu_open = MENU_NONE;
+            e->menu_hover = -1;
+        }
+    }
+    e->menu_bar_cmd_count = commands.length;
+    e->menu_bar_cmd_array = commands.internalArray;
+    e->menu_click = 0;
+}
+
 static void editor_toolbar_layout(game_state *gs, editor_state *es) {
     editor_state *e = es;
     Clay_Context *ctx = (Clay_Context *)e->editor_toolbar_clay_ctx;
     Clay_RenderCommandArray commands;
     int perspective_active;
+    int play_active;
 
     (void)gs;
 
@@ -2638,6 +2889,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
     }
 
     perspective_active = (e->cam_projection_mode != EDITOR_CAMERA_ORTHOGRAPHIC);
+    play_active = editor_is_play_mode(gs);
 
     Clay_SetCurrentContext(ctx);
     Clay_SetLayoutDimensions((Clay_Dimensions){e->panel_w, e->panel_h});
@@ -2757,6 +3009,22 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                     CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
                 }
             }
+
+            CLAY(CLAY_ID("EDToolbarPlay"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_PLAY_WIDTH),
+                                CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                    .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                },
+                .backgroundColor = play_active
+                                   ? ((Clay_Color){142, 68, 68, 232})
+                                   : ((Clay_Color){72, 128, 82, 232}),
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                const char *label = play_active ? "Stop" : "Play";
+                Clay_String cs = { false, (int32_t)strlen(label), label };
+                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+            }
         }
     }
 
@@ -2830,11 +3098,19 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     profiler_layout(gs, es);
     scene_tree_layout(gs, es);
     inspector_layout(gs, es);
+    menu_bar_layout(gs, es);
     editor_toolbar_layout(gs, es);
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
-    update_camera(gs, es);
-    update_gizmo_hover(gs, es);
+    if (!editor_is_play_mode(gs)) {
+        update_camera(gs, es);
+        update_gizmo_hover(gs, es);
+    } else {
+        if (e->cam_mouse_look) editor_end_mouse_look(e);
+        e->gizmo_hovered = GIZMO_NONE;
+        e->gizmo_active = GIZMO_NONE;
+        e->gizmo_entity_index = -1;
+    }
     build_lines(gs, es);
 }
 
@@ -2849,6 +3125,43 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     DragState *drag = &d->drag;
     ResizeState *resize = &d->resize;
     SDL_Window *evwin;
+
+    /* ── Menu bar input (main window top strip) ── */
+    if (ev->type == SDL_EVENT_MOUSE_MOTION) {
+        evwin = SDL_GetWindowFromEvent(ev);
+        if (d->windows[0].in_use &&
+            evwin == (SDL_Window *)d->windows[0].sdl_window) {
+            e->menu_mouse_x = ev->motion.x;
+            e->menu_mouse_y = ev->motion.y;
+            if (menu_bar_contains_point(d, evwin, ev->motion.x, ev->motion.y)) {
+                return 1;
+            }
+        }
+    }
+
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        ev->button.button == SDL_BUTTON_LEFT) {
+        evwin = SDL_GetWindowFromEvent(ev);
+        if (d->windows[0].in_use &&
+            evwin == (SDL_Window *)d->windows[0].sdl_window) {
+            e->menu_mouse_x = ev->button.x;
+            e->menu_mouse_y = ev->button.y;
+            if (menu_bar_contains_point(d, evwin, ev->button.x, ev->button.y) ||
+                e->menu_open != MENU_NONE) {
+                e->menu_click = 1;
+                return 1;
+            }
+        }
+    }
+
+    if (ev->type == SDL_EVENT_KEY_DOWN &&
+        !ev->key.repeat &&
+        ev->key.key == SDLK_ESCAPE &&
+        e->menu_open != MENU_NONE) {
+        e->menu_open = MENU_NONE;
+        e->menu_hover = -1;
+        return 1;
+    }
 
     /* ── Dock: Divider resize — mouse down to start ── */
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
@@ -3119,7 +3432,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     }
 
     /* Mouse-look: right-button drag, or left-button drag inside editor panel (away from gizmo). */
-    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+    if (!editor_is_play_mode(gs) && ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         evwin = SDL_GetWindowFromEvent(ev);
         if (ev->button.button == SDL_BUTTON_RIGHT &&
             evwin == (SDL_Window *)e->window) {
@@ -3135,14 +3448,15 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             }
         }
     }
-    if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
+    if (!editor_is_play_mode(gs) &&
+        ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
         (ev->button.button == SDL_BUTTON_LEFT ||
          ev->button.button == SDL_BUTTON_RIGHT)) {
         if (e->cam_mouse_look && e->cam_mouse_button == ev->button.button) {
             editor_end_mouse_look(e);
         }
     }
-    if (ev->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+    if (!editor_is_play_mode(gs) && ev->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         evwin = SDL_GetWindowFromEvent(ev);
         if (evwin == (SDL_Window *)e->window && e->cam_mouse_look) {
             editor_end_mouse_look(e);
@@ -3150,7 +3464,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     }
 
     /* Gizmo: left-click to start drag */
-    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+    if (!editor_is_play_mode(gs) &&
+        ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
         ev->button.button == SDL_BUTTON_LEFT) {
         evwin = SDL_GetWindowFromEvent(ev);
         if (evwin == (SDL_Window *)e->window && e->gizmo_hovered != GIZMO_NONE) {
@@ -3233,7 +3548,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     }
 
     /* Gizmo: mouse motion during drag */
-    if (ev->type == SDL_EVENT_MOUSE_MOTION && e->gizmo_active != GIZMO_NONE) {
+    if (!editor_is_play_mode(gs) &&
+        ev->type == SDL_EVENT_MOUSE_MOTION && e->gizmo_active != GIZMO_NONE) {
         float dot = ev->motion.xrel * e->gizmo_screen_axis.x
                   + ev->motion.yrel * e->gizmo_screen_axis.y;
         float world_delta;
@@ -3267,7 +3583,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     }
 
     /* Gizmo: left-button up ends drag */
-    if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
+    if (!editor_is_play_mode(gs) &&
+        ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
         ev->button.button == SDL_BUTTON_LEFT) {
         e->gizmo_active = GIZMO_NONE;
         e->gizmo_entity_index = -1;
@@ -3293,13 +3610,38 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         evwin = SDL_GetWindowFromEvent(ev);
         {
             float mx, my;
+            int consumed = 0;
             SDL_GetMouseState(&mx, &my);
+            {
+                float lx, ly;
+                if (panel_event_hit(d, PANEL_EDITOR, evwin, mx, my, &lx, &ly) &&
+                    !editor_toolbar_contains_point(e, lx, ly) &&
+                    !editor_is_play_mode(gs)) {
+                    float wheel = ev->wheel.y;
+                    if (wheel != 0.0f) {
+                        if (e->cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
+                            float base = editor_ortho_size(e);
+                            float factor = 1.0f - (wheel * 0.12f);
+                            if (factor < 0.1f) factor = 0.1f;
+                            e->cam_ortho_size = fmaxf(2.0f, fminf(80.0f, base * factor));
+                        } else {
+                            Vec3 forward = cam_forward(e);
+                            float step = fmaxf(0.2f, e->cam_speed * 0.25f);
+                            e->cam_pos = vec3_add(e->cam_pos, vec3_scale(forward, wheel * step));
+                        }
+                        consumed = 1;
+                    }
+                }
+            }
             if (panel_event_hit(d, PANEL_PROFILER, evwin, mx, my, NULL, NULL)) {
                 e->prof_scroll_y += ev->wheel.y * 3.0f;
+                consumed = 1;
             }
             if (panel_event_hit(d, PANEL_SCENE_TREE, evwin, mx, my, NULL, NULL)) {
                 e->scene_tree_scroll_y += ev->wheel.y * 3.0f;
+                consumed = 1;
             }
+            if (consumed) return 1;
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev->button.button == SDL_BUTTON_LEFT) {

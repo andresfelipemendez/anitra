@@ -95,6 +95,46 @@ static mesh_component *find_mesh_component(game_state *gs, int entity_index) {
     return NULL;
 }
 
+static velocity_component *find_velocity_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->velocity_components) return NULL;
+    for (i = 0; i < gs->velocity_component_count; i++) {
+        velocity_component *vc = &gs->velocity_components[i];
+        if (vc->entity_index == entity_index) return vc;
+    }
+    return NULL;
+}
+
+static rigid_body_component *find_rigid_body_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->rigid_body_components) return NULL;
+    for (i = 0; i < gs->rigid_body_component_count; i++) {
+        rigid_body_component *rb = &gs->rigid_body_components[i];
+        if (rb->entity_index == entity_index) return rb;
+    }
+    return NULL;
+}
+
+static box_collider_component *find_box_collider_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->box_collider_components) return NULL;
+    for (i = 0; i < gs->box_collider_component_count; i++) {
+        box_collider_component *bc = &gs->box_collider_components[i];
+        if (bc->entity_index == entity_index) return bc;
+    }
+    return NULL;
+}
+
+static capsule_collider_component *find_capsule_collider_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->capsule_collider_components) return NULL;
+    for (i = 0; i < gs->capsule_collider_component_count; i++) {
+        capsule_collider_component *cc = &gs->capsule_collider_components[i];
+        if (cc->entity_index == entity_index) return cc;
+    }
+    return NULL;
+}
+
 static scene_model_asset *find_scene_model_asset(game_state *gs, int asset_index) {
     if (!gs || asset_index < 0 || asset_index >= gs->scene_model_asset_count) return NULL;
     return &gs->scene_model_assets[asset_index];
@@ -238,6 +278,59 @@ static animation_component *query_primary_animation_component_for_mesh(game_stat
     }
 
     return NULL;
+}
+
+static velocity_component *query_primary_actor_velocity_component(game_state *gs) {
+    int i;
+    if (!gs || !gs->scene_entities || !gs->velocity_components) return NULL;
+
+    for (i = 0; i < gs->velocity_component_count; i++) {
+        velocity_component *vc = &gs->velocity_components[i];
+        int entity_index = vc->entity_index;
+        if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+        if (!find_transform_component(gs, entity_index)) continue;
+        if (find_box_collider_component(gs, entity_index) ||
+            find_capsule_collider_component(gs, entity_index)) {
+            return vc;
+        }
+    }
+
+    for (i = 0; i < gs->velocity_component_count; i++) {
+        velocity_component *vc = &gs->velocity_components[i];
+        int entity_index = vc->entity_index;
+        if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+        if (find_transform_component(gs, entity_index)) return vc;
+    }
+
+    return NULL;
+}
+
+static void apply_play_mode_actor_input(game_state *gs) {
+    const float move_speed = 5.0f;
+    const float jump_speed = 8.5f;
+    const float deadzone = 0.1f;
+    velocity_component *vc;
+    rigid_body_component *rb;
+    rotation_component *rc;
+    if (!gs || !gs->editor_play_mode) return;
+
+    vc = query_primary_actor_velocity_component(gs);
+    if (!vc) return;
+    rb = find_rigid_body_component(gs, vc->entity_index);
+    rc = find_rotation_component(gs, vc->entity_index);
+
+    vc->velocity.x = gs->input.horizontal * move_speed;
+
+    if (!rb || !rb->use_gravity) {
+        vc->velocity.y = gs->input.vertical * move_speed;
+    } else if ((gs->input.input_mask & INPUT_A) && fabsf(vc->velocity.y) < 0.001f) {
+        vc->velocity.y = jump_speed;
+    }
+
+    if (rc) {
+        if (gs->input.horizontal > deadzone) rc->rotation_y_deg = -90.0f;
+        else if (gs->input.horizontal < -deadzone) rc->rotation_y_deg = 90.0f;
+    }
 }
 
 static void sync_mesh_camera_from_components(game_state *gs) {
@@ -1053,23 +1146,28 @@ EXPORT void update_engine(game_state *gs) {
     gs->dl.line_count = 0;
     gs->dbg.current_line_count = 0;
 
-    update_input(gs);
-    apply_movement(gs);
-    collision(gs);
+    if (gs->editor_play_mode) {
+        update_input(gs);
+        apply_play_mode_actor_input(gs);
+        apply_movement(gs);
+        collision(gs);
+    }
 
     sync_primary_mesh3d_asset(gs);
     sync_mesh_camera_from_components(gs);
 
-    if (gs->animation_components) {
-        animation_component *ac = query_primary_animation_component_for_mesh(gs);
-        if (ac) {
-            update_mesh3d_from_animation_component(gs, ac);
-            anim_updated = 1;
+    if (gs->editor_play_mode) {
+        if (gs->animation_components) {
+            animation_component *ac = query_primary_animation_component_for_mesh(gs);
+            if (ac) {
+                update_mesh3d_from_animation_component(gs, ac);
+                anim_updated = 1;
+            }
         }
-    }
-    if (!anim_updated) {
-        animation_component fallback = {0, 1, (int)gs->mesh3d.active_clip, gs->mesh3d.anim_time, 1.0f};
-        update_mesh3d_from_animation_component(gs, &fallback);
+        if (!anim_updated) {
+            animation_component fallback = {0, 1, (int)gs->mesh3d.active_clip, gs->mesh3d.anim_time, 1.0f};
+            update_mesh3d_from_animation_component(gs, &fallback);
+        }
     }
 
     for (i = 0; i < gs->dbg.current_line_count; i++) {

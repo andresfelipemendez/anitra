@@ -121,6 +121,7 @@ EXPORT int init_core(const char *project_path) {
 
     g.game.project_loaded = 0;
     g.game.project_path[0] = '\0';
+    g.game.editor_play_mode = 0;
     if (project_path && project_path[0]) {
         snprintf(g.game.project_path, sizeof(g.game.project_path), "%s", project_path);
     }
