@@ -15,6 +15,7 @@
 
 #include "cache_profiler.h"
 #include "cpu_profiler.h"
+#include "state_migration.gen.h"
 
 #define PROFILER_MAX_FLAT_RECORDS 65536
 
@@ -110,6 +111,7 @@ enum {
 #define UI_ICON_BOUNDING_BOX    "\xEF\x86\xB6" /* U+F1B6 */
 #define UI_ICON_ARROW_LEFT      "\xEF\x84\xAF" /* U+F12F */
 #define UI_ICON_ARROW_RIGHT     "\xEF\x84\xB8" /* U+F138 */
+#define UI_ICON_ARROW_DOWN      "\xEF\x84\xA8" /* U+F128 */
 #define UI_ICON_ARROW_UP        "\xEF\x85\x88" /* U+F148 */
 
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
@@ -342,8 +344,11 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
             }
             /* Label: collapse arrow for parents, bullet for leaves */
             if (is_parent) {
+                const char *disclosure = (rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid])
+                    ? UI_ICON_ARROW_RIGHT
+                    : UI_ICON_ARROW_DOWN;
                 snprintf(label_bufs[bidx], sizeof(label_bufs[bidx]), "%s %s",
-                    (rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid]) ? ">" : "v", r->tag);
+                    disclosure, r->tag);
             } else {
                 snprintf(label_bufs[bidx], sizeof(label_bufs[bidx]), "%s", r->tag);
             }
@@ -952,6 +957,21 @@ static int editor_find_tabs_leaf_with_room(const dock_state *d, int node_idx) {
     return editor_find_tabs_leaf_with_room(d, n->children[1]);
 }
 
+static void editor_log_error_value(const char *context, error_value err) {
+    if (!context) context = "editor";
+    if (ERRV_IS_OK(err)) {
+        fprintf(stderr, "%s failed with an unspecified error\n", context);
+        return;
+    }
+    fprintf(stderr,
+            "%s failed (%d): %s [%s:%d]\n",
+            context,
+            err.code,
+            err.message ? err.message : "(no message)",
+            err.file ? err.file : "(unknown)",
+            err.line);
+}
+
 static void editor_ensure_required_panels(dock_state *d) {
     static const PanelId required_panels[] = {
         PANEL_GAME,
@@ -972,7 +992,10 @@ static void editor_ensure_required_panels(dock_state *d) {
         if (dock_find_leaf_for_panel_global(d, required_panels[i], NULL) >= 0) continue;
         target_leaf = editor_find_tabs_leaf_with_room(d, d->windows[0].root_node);
         if (target_leaf >= 0) {
-            dock_add_panel(d, target_leaf, required_panels[i]);
+            error_value err = ERRV_OK;
+            if (dock_add_panel_with_error(d, target_leaf, required_panels[i], &err) < 0) {
+                editor_log_error_value("editor_ensure_required_panels:dock_add_panel", err);
+            }
         }
     }
 }
@@ -1719,6 +1742,34 @@ static int scene_tree_parent_assignment_is_valid(int child_entity, int parent_en
     return 1;
 }
 
+static int scene_tree_entity_has_children(int entity_index,
+                                          const int *parent_of, int entity_count) {
+    int child;
+    if (!parent_of) return 0;
+    if (entity_index < 0 || entity_index >= entity_count) return 0;
+    for (child = 0; child < entity_count; child++) {
+        if (child == entity_index) continue;
+        if (parent_of[child] == entity_index) return 1;
+    }
+    return 0;
+}
+
+static void scene_tree_mark_descendants_visited(int entity_index,
+                                                const int *parent_of, int entity_count,
+                                                int *visited) {
+    int child;
+    if (!parent_of || !visited) return;
+    if (entity_index < 0 || entity_index >= entity_count) return;
+
+    for (child = 0; child < entity_count; child++) {
+        if (child == entity_index) continue;
+        if (parent_of[child] != entity_index) continue;
+        if (visited[child]) continue;
+        visited[child] = 1;
+        scene_tree_mark_descendants_visited(child, parent_of, entity_count, visited);
+    }
+}
+
 static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
                                        int entity_index, int depth, int click,
                                        const int *parent_of, int entity_count) {
@@ -1731,6 +1782,14 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
                                                               parent_of, entity_count);
     int sibling_valid;
     const char *name = NULL;
+    int has_children = scene_tree_entity_has_children(entity_index, parent_of, entity_count);
+    int collapsed = 0;
+    const char *disclosure_label = " ";
+
+    if (entity_index >= 0 && entity_index < SCENE_TREE_MAX_ENTITIES) {
+        collapsed = e->scene_tree_collapsed[entity_index] ? 1 : 0;
+    }
+    if (has_children) disclosure_label = collapsed ? UI_ICON_ARROW_RIGHT : UI_ICON_ARROW_DOWN;
 
     if (entity_index >= 0 && entity_index < entity_count) {
         sibling_parent = parent_of[entity_index];
@@ -1789,7 +1848,10 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
                     .right = UI_ROW_PADDING_X,
                     .top = UI_ROW_PADDING_Y,
                     .bottom = UI_ROW_PADDING_Y
-                }
+                },
+                .childGap = UI_SPACE_XS,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
             },
             .backgroundColor = (dragging && entity_index != e->scene_tree_drag_entity && Clay_Hovered())
                                    ? (nested_valid ? ((Clay_Color){64, 94, 136, 255})
@@ -1802,7 +1864,26 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
             .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
         }) {
             int hovered = Clay_Hovered();
-            if (hovered && click) {
+            int disclosure_clicked = 0;
+            CLAY(CLAY_IDI("STEntityDisclosure", (int32_t)entity_index), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIT({0}) }
+                }
+            }) {
+                Clay_String ds = {false, (int32_t)strlen(disclosure_label), (char *)disclosure_label};
+                Clay_Color dcolor = has_children
+                    ? ((Clay_Color){188, 198, 216, 255})
+                    : ((Clay_Color){108, 116, 132, 255});
+                CLAY_TEXT(ds, CLAY_TEXT_CONFIG({.textColor = dcolor, .fontSize = UI_FONT_BODY}));
+                if (has_children && click && Clay_Hovered()) {
+                    if (entity_index >= 0 && entity_index < SCENE_TREE_MAX_ENTITIES) {
+                        e->scene_tree_collapsed[entity_index] = collapsed ? 0 : 1;
+                    }
+                    disclosure_clicked = 1;
+                }
+            }
+
+            if (hovered && click && !disclosure_clicked) {
                 e->scene_selected_entity = entity_index;
                 e->scene_tree_drag_active = 1;
                 e->scene_tree_drag_entity = entity_index;
@@ -1848,11 +1929,20 @@ static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state 
                                              const int *parent_of, int entity_count,
                                              int *visited) {
     int child;
+    int collapsed = 0;
     if (entity_index < 0 || entity_index >= entity_count) return;
     if (visited[entity_index]) return;
 
     visited[entity_index] = 1;
     scene_tree_emit_entity_row(gs, e, entity_index, depth, click, parent_of, entity_count);
+
+    if (entity_index >= 0 && entity_index < SCENE_TREE_MAX_ENTITIES) {
+        collapsed = e->scene_tree_collapsed[entity_index] ? 1 : 0;
+    }
+    if (collapsed) {
+        scene_tree_mark_descendants_visited(entity_index, parent_of, entity_count, visited);
+        return;
+    }
 
     for (child = 0; child < entity_count; child++) {
         if (parent_of[child] == entity_index && child != entity_index) {
@@ -2742,46 +2832,93 @@ static void update_gizmo_hover(game_state *gs, editor_state *es) {
 
 EXPORT void init_editor(game_state *gs, editor_state *es) {
     editor_state *e = es;
-    dock_state *d = (dock_state *)e->dock;
+    dock_state *d;
+
+    /* ── Migration check ──────────────────────────────────────────── */
+    if (e->mig_hdr && es->editor_arena) {
+        uint64_t old_hash = e->mig_hdr->layout_hash;
+        uint64_t new_hash = mig_compute_hash(mig_editor_state_fields,
+                                              MIG_editor_state_COUNT);
+        if (old_hash != new_hash) {
+            uint32_t old_size = e->mig_hdr->struct_size;
+            uint32_t copy_size = old_size < sizeof(editor_state)
+                               ? old_size : (uint32_t)sizeof(editor_state);
+            void *old_copy = arena_alloc(es->editor_arena, copy_size, 8,
+                                          "mig_editor_old");
+            if (old_copy) {
+                mig_header *old_hdr = e->mig_hdr;
+                struct arena *saved_root = e->root_arena;
+                struct arena *saved_editor = e->editor_arena;
+                memcpy(old_copy, e, copy_size);
+                memset(e, 0, sizeof(editor_state));
+                mig_migrate_struct(e, mig_editor_state_fields,
+                                   MIG_editor_state_COUNT,
+                                   (uint32_t)sizeof(editor_state),
+                                   old_copy, old_hdr);
+                /* Restore arena pointers (critical, may not migrate correctly) */
+                e->root_arena = saved_root;
+                e->editor_arena = saved_editor;
+                e->initialized = 0; /* force re-init for defaults */
+                e->mig_hdr = NULL;  /* will be re-stored below */
+                fprintf(stderr, "Migrated editor_state (%u -> %u bytes)\n",
+                        old_size, (uint32_t)sizeof(editor_state));
+            }
+        }
+    }
+
+    d = (dock_state *)e->dock;
+
+    /* ── Store current field table ────────────────────────────────── */
+    if (!e->mig_hdr && es->editor_arena) {
+        e->mig_hdr = (mig_header *)mig_store(
+            es->editor_arena, mig_editor_state_fields,
+            MIG_editor_state_COUNT, (uint32_t)sizeof(editor_state),
+            mig_compute_hash(mig_editor_state_fields, MIG_editor_state_COUNT),
+            "mig_editor_state");
+    }
+
     if (e->initialized) return;
 
-    e->cam_pos    = VEC3(0.0f, 3.0f, 8.0f);
-    e->cam_yaw    = 3.14159265f;
-    e->cam_pitch  = -0.3f;
-    e->cam_speed  = 5.0f;
-    e->cam_sens   = 0.003f;
-    e->cam_projection_mode = EDITOR_CAMERA_PERSPECTIVE;
-    e->cam_ortho_size = 12.0f;
+    /* ── Defaults (conditional to preserve migrated values) ─────── */
+    if (e->cam_pos.x == 0.0f && e->cam_pos.y == 0.0f && e->cam_pos.z == 0.0f)
+        e->cam_pos = VEC3(0.0f, 3.0f, 8.0f);
+    if (e->cam_yaw == 0.0f)    e->cam_yaw    = 3.14159265f;
+    if (e->cam_pitch == 0.0f)  e->cam_pitch  = -0.3f;
+    if (e->cam_speed == 0.0f)  e->cam_speed  = 5.0f;
+    if (e->cam_sens == 0.0f)   e->cam_sens   = 0.003f;
+    e->cam_projection_mode = e->cam_projection_mode; /* 0 = PERSPECTIVE is valid default */
+    if (e->cam_ortho_size == 0.0f) e->cam_ortho_size = 12.0f;
     e->cam_mouse_look = 0;
     e->cam_mouse_button = 0;
-    e->open = 1;
+    if (e->open == 0) e->open = 1;
     e->gizmo_hovered = GIZMO_NONE;
     e->gizmo_active  = GIZMO_NONE;
-    e->gizmo_entity_index = -1;
+    if (e->gizmo_entity_index == 0) e->gizmo_entity_index = -1;
     e->gizmo_drag_mode = 0;
     e->gizmo_drag_start_capsule_radius = 0.0f;
     e->gizmo_drag_start_capsule_half_height = 0.0f;
-    e->gizmo_drag_axis_local_scale = 1.0f;
+    if (e->gizmo_drag_axis_local_scale == 0.0f) e->gizmo_drag_axis_local_scale = 1.0f;
     e->line_count = 0;
-    e->menu_open = -1;
-    e->menu_hover = -1;
+    if (e->menu_open == 0) e->menu_open = -1;
+    if (e->menu_hover == 0) e->menu_hover = -1;
     e->scene_selected_entity = 0;
+    memset(e->scene_tree_collapsed, 0, sizeof(e->scene_tree_collapsed));
     e->scene_tree_drag_active = 0;
-    e->scene_tree_drag_entity = -1;
-    e->scene_tree_drop_target = -1;
+    if (e->scene_tree_drag_entity == 0) e->scene_tree_drag_entity = -1;
+    if (e->scene_tree_drop_target == 0) e->scene_tree_drop_target = -1;
     e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
-    e->project_browser_mouse_x = -10000.0f;
-    e->project_browser_mouse_y = -10000.0f;
+    if (e->project_browser_mouse_x == 0.0f) e->project_browser_mouse_x = -10000.0f;
+    if (e->project_browser_mouse_y == 0.0f) e->project_browser_mouse_y = -10000.0f;
     e->project_browser_scroll_y = 0.0f;
     e->project_browser_mouse_down = 0;
     e->project_browser_click = 0;
     e->pb_selected_path[0] = '\0';
     e->pb_selected_asset_key[0] = '\0';
     e->pb_selected_asset_path[0] = '\0';
-    e->pb_selected_asset_type = -1;
+    if (e->pb_selected_asset_type == 0) e->pb_selected_asset_type = -1;
     e->pb_thumbnail_count = 0;
-    e->cpu_prof_flame_zoom = 1.0f;
-    e->cpu_prof_flame_center = 0.5f;
+    if (e->cpu_prof_flame_zoom == 0.0f) e->cpu_prof_flame_zoom = 1.0f;
+    if (e->cpu_prof_flame_center == 0.0f) e->cpu_prof_flame_center = 0.5f;
     e->cpu_prof_flame_zoom_wheel = 0.0f;
     e->cpu_prof_flame_pan_wheel = 0.0f;
     e->cpu_prof_flame_x = 0.0f;
@@ -2789,7 +2926,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->cpu_prof_flame_w = 0.0f;
     e->cpu_prof_flame_h = 0.0f;
     e->cpu_prof_minimap_dragging = 0;
-    e->cpu_prof_minimap_drag_offset = 0.5f;
+    if (e->cpu_prof_minimap_drag_offset == 0.0f) e->cpu_prof_minimap_drag_offset = 0.5f;
     e->cpu_prof_text_arena = NULL;
     memset(e->cpu_prof_tree_collapsed, 0, sizeof(e->cpu_prof_tree_collapsed));
     e->cpu_prof_tree_frame_id = 0;
@@ -5112,7 +5249,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                     .backgroundColor = {48, 54, 68, 255},
                     .cornerRadius = CLAY_CORNER_RADIUS(3)
                 }) {
-                    Clay_String s = CLAY_STRING("<");
+                    Clay_String s = CLAY_STRING(UI_ICON_ARROW_LEFT);
                     CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = {220, 224, 236, 255}, .fontSize = 13}));
                     if (Clay_Hovered() && e->cpu_prof_click) {
                         e->cpu_prof_timeline_paused = 1;
@@ -5130,7 +5267,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                     .backgroundColor = {48, 54, 68, 255},
                     .cornerRadius = CLAY_CORNER_RADIUS(3)
                 }) {
-                    Clay_String s = CLAY_STRING(">");
+                    Clay_String s = CLAY_STRING(UI_ICON_ARROW_RIGHT);
                     CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = {220, 224, 236, 255}, .fontSize = 13}));
                     if (Clay_Hovered() && e->cpu_prof_click) {
                         if (e->cpu_prof_timeline_offset > 0) {
@@ -5688,7 +5825,9 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                             }) {
                                 const char *toggle_label = " ";
                                 if (has_visible_children) {
-                                    toggle_label = e->cpu_prof_tree_collapsed[idx] ? ">" : "v";
+                                    toggle_label = e->cpu_prof_tree_collapsed[idx]
+                                        ? UI_ICON_ARROW_RIGHT
+                                        : UI_ICON_ARROW_DOWN;
                                 }
                                 CLAY(CLAY_IDI("CUToggle", idx), {
                                     .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIT({0}) } }
@@ -6242,30 +6381,51 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             PanelId panel = drag->panel;
             int src_node = drag->source_node;
             int src_win = drag->source_window;
+            int should_remove_from_source = 0;
+            int remove_node = src_node;
+            error_value err = ERRV_OK;
 
             if (zone == DROP_CENTER) {
-                /* Drop as tab into target node */
-                DockNode *tn = &d->nodes[tgt];
-                if (tn->panel_count < MAX_TABS_PER_NODE) {
-                    tn->panels[tn->panel_count] = panel;
-                    tn->panel_count++;
-                    tn->active_tab = tn->panel_count - 1;
+                if (src_win != win || src_node != tgt) {
+                    int new_tab_idx = dock_add_panel_with_error(d, tgt, panel, &err);
+                    if (new_tab_idx >= 0) {
+                        dock_set_active_tab(d, tgt, new_tab_idx);
+                        should_remove_from_source = 1;
+                    } else {
+                        editor_log_error_value("dock_drop:center:add_panel", err);
+                    }
                 }
             } else {
-                /* Drop as split (LEFT/RIGHT/TOP/BOTTOM) */
-                dock_split_at(d, win, tgt, panel, zone);
+                int existing_leaf = -1;
+                if (dock_split_at_with_error(d, win, tgt, panel, zone, NULL, &existing_leaf, &err) == 0) {
+                    should_remove_from_source = 1;
+                    if (src_win == win && src_node == tgt && existing_leaf >= 0) {
+                        remove_node = existing_leaf;
+                    }
+                } else {
+                    editor_log_error_value("dock_drop:split:split_at", err);
+                }
             }
 
-            /* Remove panel from source and collapse empty nodes */
-            dock_remove_panel(d, src_node, panel);
-            {
-                int new_root = dock_collapse_empty(d, d->windows[src_win].root_node);
-                d->windows[src_win].root_node = new_root;
-            }
-
-            /* If source window became empty, signal externals to destroy it */
-            if (d->windows[src_win].root_node < 0 && src_win != 0) {
-                d->cmd_cleanup_windows = 1;
+            if (should_remove_from_source) {
+                err = ERRV_OK;
+                if (dock_remove_panel_with_error(d, remove_node, panel, &err) == 0) {
+                    int new_root = -1;
+                    err = ERRV_OK;
+                    if (dock_collapse_empty_with_error(d,
+                                                       d->windows[src_win].root_node,
+                                                       &new_root,
+                                                       &err) == 0) {
+                        d->windows[src_win].root_node = new_root;
+                        if (d->windows[src_win].root_node < 0 && src_win != 0) {
+                            d->cmd_cleanup_windows = 1;
+                        }
+                    } else {
+                        editor_log_error_value("dock_drop:source:collapse_empty", err);
+                    }
+                } else {
+                    editor_log_error_value("dock_drop:source:remove_panel", err);
+                }
             }
         }
         drag->hover_node = -1;

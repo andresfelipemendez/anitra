@@ -375,6 +375,10 @@ static int watch_and_rebuild(void)
             if (now_externals > externals_mtime) { externals_changed = 1; externals_mtime = now_externals; }
         }
 
+        if (engine_changed || editor_changed || core_changed) {
+            generate_migration_code();
+        }
+
         if (engine_changed) {
             printf("\n--- Engine change detected, recompiling... ---\n");
             fflush(stdout);

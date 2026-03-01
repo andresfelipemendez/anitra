@@ -270,6 +270,7 @@ typedef struct scene_model_asset {
 typedef struct game_state {
   struct arena *root_arena;     /* pointer to memory.arena */
   struct arena *gameplay;       /* sub-arena for engine allocations */
+  struct mig_header *mig_hdr;   /* game_state migration header — persists in gameplay arena */
 
   double _t_prev;
 

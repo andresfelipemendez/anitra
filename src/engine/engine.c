@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
+#include "state_migration.gen.h"
 
 /* Animation functions (from anim.c, same DLL) */
 void init_pose_from_bind(Skeleton *skel, Vec3 *trans, Quat *rot, Vec3 *scale);
@@ -261,6 +262,14 @@ static Vec3 resolve_world_position(game_state *gs, int entity_index) {
     return world;
 }
 
+static Vec3 transform_point(Mat4 m, Vec3 p) {
+    return VEC3(
+        m.m[0] * p.x + m.m[4] * p.y + m.m[8]  * p.z + m.m[12],
+        m.m[1] * p.x + m.m[5] * p.y + m.m[9]  * p.z + m.m[13],
+        m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14]
+    );
+}
+
 static int query_active_camera(game_state *gs, camera_query_result *out_camera) {
     int i;
     if (!gs || !out_camera || !gs->scene_entities || !gs->camera_components) return 0;
@@ -281,6 +290,40 @@ static int query_active_camera(game_state *gs, camera_query_result *out_camera) 
     }
 
     return 0;
+}
+
+static void resolve_camera_world_pose(game_state *gs,
+                                      const camera_query_result *camera_view,
+                                      Vec3 *out_eye,
+                                      Vec3 *out_target) {
+    Vec3 world_eye = VEC3(0.0f, 0.0f, 0.0f);
+    Vec3 world_target = VEC3(0.0f, 0.0f, 0.0f);
+    parent_transform_component *pt;
+    if (!gs || !camera_view || !camera_view->transform || !camera_view->camera) {
+        if (out_eye) *out_eye = world_eye;
+        if (out_target) *out_target = world_target;
+        return;
+    }
+
+    pt = find_parent_transform_component(gs, camera_view->entity_index);
+    if (pt && pt->parent_entity_index >= 0 &&
+        pt->parent_entity_index < gs->scene_entity_count) {
+        Mat4 parent_world = resolve_world_transform(gs, pt->parent_entity_index);
+        world_eye = transform_point(parent_world, camera_view->transform->position);
+        world_target = transform_point(parent_world, camera_view->camera->target);
+        if (gs->editor_play_mode) {
+            /* Third-person follow: use the opposite orbit side so camera stays behind actor. */
+            Vec3 target_to_eye = vec3_sub(world_eye, world_target);
+            world_eye = vec3_add(world_target,
+                                 VEC3(-target_to_eye.x, target_to_eye.y, -target_to_eye.z));
+        }
+    } else {
+        world_eye = camera_view->transform->position;
+        world_target = camera_view->camera->target;
+    }
+
+    if (out_eye) *out_eye = world_eye;
+    if (out_target) *out_target = world_target;
 }
 
 static mesh_component *query_primary_mesh_component(game_state *gs) {
@@ -331,8 +374,25 @@ static animation_component *query_primary_animation_component_for_mesh(game_stat
 
 static void run_character_controller_system(game_state *gs) {
     const float deadzone = 0.1f;
+    const float turn_speed_deg = 180.0f;
+    Vec3 camera_forward = VEC3(0.0f, 0.0f, 1.0f);
     int i;
     if (!gs || !gs->editor_play_mode) return;
+
+    {
+        camera_query_result active_camera;
+        if (query_active_camera(gs, &active_camera)) {
+            Vec3 world_eye;
+            Vec3 world_target;
+            Vec3 planar_forward;
+            resolve_camera_world_pose(gs, &active_camera, &world_eye, &world_target);
+            planar_forward = vec3_sub(world_target, world_eye);
+            planar_forward.y = 0.0f;
+            if (vec3_len(planar_forward) > 1e-4f) {
+                camera_forward = vec3_normalize(planar_forward);
+            }
+        }
+    }
 
     for (i = 0; i < gs->character_controller_component_count; i++) {
         character_controller_component *cc = &gs->character_controller_components[i];
@@ -354,10 +414,23 @@ static void run_character_controller_system(game_state *gs) {
         jump_speed = cc->jump_speed > 0.01f ? cc->jump_speed : 8.5f;
 
         if (rb && rb->use_gravity) {
-            float move_x = gs->input.horizontal * move_speed * gs->dt;
-            float move_z = gs->input.vertical * move_speed * gs->dt;
-            tc->position.x += move_x;
-            tc->position.z += move_z;
+            Vec3 move_forward = camera_forward;
+            Vec3 move_dir;
+            if (rc && fabsf(gs->input.horizontal) > deadzone) {
+                rc->rotation_y_deg -= gs->input.horizontal * turn_speed_deg * gs->dt;
+                if (rc->rotation_y_deg > 180.0f) rc->rotation_y_deg -= 360.0f;
+                if (rc->rotation_y_deg < -180.0f) rc->rotation_y_deg += 360.0f;
+            }
+            if (rc) {
+                Mat4 world = resolve_world_transform(gs, cc->entity_index);
+                Vec3 world_forward = VEC3(world.m[8], 0.0f, world.m[10]);
+                if (vec3_len(world_forward) > 1e-4f) {
+                    move_forward = vec3_normalize(world_forward);
+                }
+            }
+            move_dir = vec3_scale(move_forward, gs->input.vertical);
+            tc->position.x += move_dir.x * move_speed * gs->dt;
+            tc->position.z += move_dir.z * move_speed * gs->dt;
             vc->velocity.x = 0.0f;
             if ((gs->input.input_mask & INPUT_A) && fabsf(vc->velocity.y) < 0.001f) {
                 vc->velocity.y = jump_speed;
@@ -365,14 +438,14 @@ static void run_character_controller_system(game_state *gs) {
         } else {
             vc->velocity.x = gs->input.horizontal * move_speed;
             vc->velocity.y = gs->input.vertical * move_speed;
-        }
-
-        if (rc) {
-            float move_h = gs->input.horizontal;
-            float move_v = gs->input.vertical;
-            if (fabsf(move_h) > deadzone || fabsf(move_v) > deadzone) {
-                float yaw_rad = atan2f(move_h, move_v);
-                rc->rotation_y_deg = -yaw_rad * (180.0f / 3.14159265f);
+            if (rc) {
+                float move_h = gs->input.horizontal;
+                float move_v = gs->input.vertical;
+                if (fabsf(move_h) <= deadzone && fabsf(move_v) <= deadzone) continue;
+                {
+                    float yaw_rad = atan2f(move_h, move_v);
+                    rc->rotation_y_deg = -yaw_rad * (180.0f / 3.14159265f);
+                }
             }
         }
     }
@@ -380,14 +453,39 @@ static void run_character_controller_system(game_state *gs) {
 
 static void sync_mesh_camera_from_components(game_state *gs) {
     camera_query_result camera_view;
-    Vec3 world_eye;
-    Vec3 parent_offset;
+    Vec3 desired_eye;
+    Vec3 desired_target;
     if (!query_active_camera(gs, &camera_view)) return;
+    resolve_camera_world_pose(gs, &camera_view, &desired_eye, &desired_target);
 
-    world_eye = resolve_world_position(gs, camera_view.entity_index);
-    parent_offset = vec3_sub(world_eye, camera_view.transform->position);
-    gs->mesh3d.camera_eye = world_eye;
-    gs->mesh3d.camera_target = vec3_add(camera_view.camera->target, parent_offset);
+    if (!gs->editor_play_mode) {
+        gs->mesh3d.camera_eye = desired_eye;
+        gs->mesh3d.camera_target = desired_target;
+    } else {
+        const float follow_speed = 10.0f;
+        const float snap_distance = 12.0f;
+        float alpha;
+        float eye_delta;
+        float target_delta;
+
+        if (gs->dt <= 0.0f || gs->dt > 0.25f) {
+            alpha = 1.0f;
+        } else {
+            alpha = 1.0f - expf(-follow_speed * gs->dt);
+            if (alpha < 0.0f) alpha = 0.0f;
+            if (alpha > 1.0f) alpha = 1.0f;
+        }
+
+        eye_delta = vec3_len(vec3_sub(desired_eye, gs->mesh3d.camera_eye));
+        target_delta = vec3_len(vec3_sub(desired_target, gs->mesh3d.camera_target));
+        if (eye_delta > snap_distance || target_delta > snap_distance) {
+            alpha = 1.0f;
+        }
+
+        gs->mesh3d.camera_eye = vec3_lerp(gs->mesh3d.camera_eye, desired_eye, alpha);
+        gs->mesh3d.camera_target = vec3_lerp(gs->mesh3d.camera_target, desired_target, alpha);
+    }
+
     gs->mesh3d.camera_up = camera_view.camera->up;
     gs->mesh3d.camera_fov_deg = camera_view.camera->fov_deg;
     gs->mesh3d.camera_near = camera_view.camera->near_plane;
@@ -1266,6 +1364,45 @@ void update_input(game_state* gs) {
 EXPORT void init_engine(game_state *gs) {
     int target_entities;
     if (!gs) return;
+
+    /* ── game_state migration check ──────────────────────────────── */
+    if (gs->mig_hdr && gs->gameplay) {
+        uint64_t old_hash = gs->mig_hdr->layout_hash;
+        uint64_t new_hash = mig_compute_hash(mig_game_state_fields,
+                                              MIG_game_state_COUNT);
+        if (old_hash != new_hash) {
+            uint32_t old_size = gs->mig_hdr->struct_size;
+            uint32_t copy_size = old_size < sizeof(game_state)
+                               ? old_size : (uint32_t)sizeof(game_state);
+            void *old_copy = arena_alloc(gs->gameplay, copy_size, 8,
+                                          "mig_game_old");
+            if (old_copy) {
+                mig_header *old_hdr = gs->mig_hdr;
+                struct arena *saved_root = gs->root_arena;
+                struct arena *saved_gameplay = gs->gameplay;
+                memcpy(old_copy, gs, copy_size);
+                memset(gs, 0, sizeof(game_state));
+                mig_migrate_struct(gs, mig_game_state_fields,
+                                   MIG_game_state_COUNT,
+                                   (uint32_t)sizeof(game_state),
+                                   old_copy, old_hdr);
+                gs->root_arena = saved_root;
+                gs->gameplay = saved_gameplay;
+                gs->mig_hdr = NULL;
+                fprintf(stderr, "Migrated game_state (%u -> %u bytes)\n",
+                        old_size, (uint32_t)sizeof(game_state));
+            }
+        }
+    }
+
+    /* Store current field table */
+    if (!gs->mig_hdr && gs->gameplay) {
+        gs->mig_hdr = (mig_header *)mig_store(
+            gs->gameplay, mig_game_state_fields,
+            MIG_game_state_COUNT, (uint32_t)sizeof(game_state),
+            mig_compute_hash(mig_game_state_fields, MIG_game_state_COUNT),
+            "mig_game_state");
+    }
 
     target_entities = 8;
     if (gs->project_loaded) {

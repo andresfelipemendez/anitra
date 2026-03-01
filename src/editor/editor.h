@@ -3,6 +3,7 @@
 
 #include "math3d.h"
 #include "editor_types.h"
+#include "error_value.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -73,6 +74,18 @@ typedef enum {
 #define DOCK_MIN_PANEL_SIZE  80
 #define DOCK_DRAG_THRESHOLD  6
 #define DOCK_DIVIDER_HIT     6.0f
+
+enum {
+    DOCK_ERR_INVALID_ARGS = 1000,
+    DOCK_ERR_INVALID_NODE_INDEX,
+    DOCK_ERR_NODE_NOT_IN_USE,
+    DOCK_ERR_NODE_NOT_TABS,
+    DOCK_ERR_NODE_FULL,
+    DOCK_ERR_PANEL_NOT_FOUND,
+    DOCK_ERR_ALLOC_NODE_FAILED,
+    DOCK_ERR_INVALID_DROP_ZONE,
+    DOCK_ERR_INVALID_OUTPUT
+};
 
 /* Panel display names (indexed by PanelId) */
 static const char *panel_names[PANEL_COUNT] = {
@@ -169,12 +182,22 @@ static int  dock_alloc_node(dock_state *d);
 static void dock_layout(dock_state *d, int window_idx, int win_w, int win_h);
 
 /* Panel management */
+static int  dock_add_panel_with_error(dock_state *d, int node_idx, PanelId panel,
+                                      error_value *out_error);
 static int  dock_add_panel(dock_state *d, int node_idx, PanelId panel);
+static int  dock_remove_panel_with_error(dock_state *d, int node_idx, PanelId panel,
+                                         error_value *out_error);
 static int  dock_remove_panel(dock_state *d, int node_idx, PanelId panel);
 static void dock_set_active_tab(dock_state *d, int node_idx, int tab);
 
 /* Splitting */
+static int  dock_split_with_error(dock_state *d, int node_idx, int horizontal,
+                                  error_value *out_error);
 static int  dock_split(dock_state *d, int node_idx, int horizontal);
+static int  dock_split_at_with_error(dock_state *d, int window_idx, int node_idx,
+                                     PanelId panel, DropZone zone,
+                                     int *out_new_leaf, int *out_existing_leaf,
+                                     error_value *out_error);
 static void dock_split_at(dock_state *d, int window_idx, int node_idx,
                           PanelId panel, DropZone zone);
 
@@ -194,6 +217,9 @@ static int  header_hit_test_node(dock_state *d, int root_node, float x, float y,
                                  int *out_node, PanelId *out_panel, int *out_tab_idx);
 
 /* Tree manipulation */
+static int  dock_collapse_empty_with_error(dock_state *d, int root_node,
+                                           int *out_root_node,
+                                           error_value *out_error);
 static int  dock_collapse_empty(dock_state *d, int root_node);
 static void dock_collect_leaves(dock_state *d, int root_node,
                                 PanelId *out_panels, int *out_count, int max_count);
@@ -333,22 +359,59 @@ static void dock_layout(dock_state *d, int window_idx, int win_w, int win_h) {
 
 /* ── Panel management ──────────────────────────────────────── */
 
-static int dock_add_panel(dock_state *d, int node_idx, PanelId panel) {
+static int dock_add_panel_with_error(dock_state *d, int node_idx, PanelId panel,
+                                     error_value *out_error) {
     DockNode *n;
-    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) return -1;
+    if (!d) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_ARGS,
+                             "dock_add_panel: null dock state");
+    }
+    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_NODE_INDEX,
+                             "dock_add_panel: invalid node index");
+    }
     n = &d->nodes[node_idx];
-    if (!n->in_use || n->type != DOCK_TABS) return -1;
-    if (n->panel_count >= MAX_TABS_PER_NODE) return -1;
+    if (!n->in_use) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_NODE_NOT_IN_USE,
+                             "dock_add_panel: node not in use");
+    }
+    if (n->type != DOCK_TABS) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_NODE_NOT_TABS,
+                             "dock_add_panel: node is not a tab node");
+    }
+    if (n->panel_count >= MAX_TABS_PER_NODE) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_NODE_FULL,
+                             "dock_add_panel: target node has no free tab slots");
+    }
     n->panels[n->panel_count++] = panel;
-    return n->panel_count - 1;
+    ERRV_RETURN_CODE_OK(n->panel_count - 1, out_error);
 }
 
-static int dock_remove_panel(dock_state *d, int node_idx, PanelId panel) {
+static int dock_add_panel(dock_state *d, int node_idx, PanelId panel) {
+    return dock_add_panel_with_error(d, node_idx, panel, NULL);
+}
+
+static int dock_remove_panel_with_error(dock_state *d, int node_idx, PanelId panel,
+                                        error_value *out_error) {
     DockNode *n;
     int i, j;
-    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) return -1;
+    if (!d) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_ARGS,
+                             "dock_remove_panel: null dock state");
+    }
+    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_NODE_INDEX,
+                             "dock_remove_panel: invalid node index");
+    }
     n = &d->nodes[node_idx];
-    if (!n->in_use || n->type != DOCK_TABS) return -1;
+    if (!n->in_use) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_NODE_NOT_IN_USE,
+                             "dock_remove_panel: node not in use");
+    }
+    if (n->type != DOCK_TABS) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_NODE_NOT_TABS,
+                             "dock_remove_panel: node is not a tab node");
+    }
 
     for (i = 0; i < n->panel_count; i++) {
         if (n->panels[i] == panel) {
@@ -357,10 +420,15 @@ static int dock_remove_panel(dock_state *d, int node_idx, PanelId panel) {
             n->panel_count--;
             if (n->active_tab >= n->panel_count && n->panel_count > 0)
                 n->active_tab = n->panel_count - 1;
-            return 0;
+            ERRV_RETURN_CODE_OK(0, out_error);
         }
     }
-    return -1;
+    ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_PANEL_NOT_FOUND,
+                         "dock_remove_panel: panel not found in source node");
+}
+
+static int dock_remove_panel(dock_state *d, int node_idx, PanelId panel) {
+    return dock_remove_panel_with_error(d, node_idx, panel, NULL);
 }
 
 static void dock_set_active_tab(dock_state *d, int node_idx, int tab) {
@@ -385,15 +453,31 @@ static void dock_get_panel_rect(dock_state *d, int node_idx, int panel_idx,
 
 /* ── Splitting ─────────────────────────────────────────────── */
 
-static int dock_split(dock_state *d, int node_idx, int horizontal) {
+static int dock_split_with_error(dock_state *d, int node_idx, int horizontal,
+                                 error_value *out_error) {
     DockNode *orig;
     int split_idx, new_leaf;
-    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) return -1;
-    if (!d->nodes[node_idx].in_use) return -1;
+    if (!d) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_ARGS,
+                             "dock_split: null dock state");
+    }
+    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_NODE_INDEX,
+                             "dock_split: invalid node index");
+    }
+    if (!d->nodes[node_idx].in_use) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_NODE_NOT_IN_USE,
+                             "dock_split: node not in use");
+    }
 
     split_idx = dock_alloc_node(d);
     new_leaf = dock_alloc_node(d);
-    if (split_idx < 0 || new_leaf < 0) return -1;
+    if (split_idx < 0 || new_leaf < 0) {
+        if (split_idx >= 0) dock_free_node(d, split_idx);
+        if (new_leaf >= 0) dock_free_node(d, new_leaf);
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_ALLOC_NODE_FAILED,
+                             "dock_split: failed to allocate split nodes");
+    }
 
     orig = &d->nodes[node_idx];
 
@@ -407,22 +491,49 @@ static int dock_split(dock_state *d, int node_idx, int horizontal) {
     orig->children[1] = new_leaf;
     orig->panel_count = 0;
 
-    return new_leaf;
+    ERRV_RETURN_CODE_OK(new_leaf, out_error);
 }
 
-static void dock_split_at(dock_state *d, int window_idx, int node_idx,
-                          PanelId panel, DropZone zone) {
+static int dock_split(dock_state *d, int node_idx, int horizontal) {
+    return dock_split_with_error(d, node_idx, horizontal, NULL);
+}
+
+static int dock_split_at_with_error(dock_state *d, int window_idx, int node_idx,
+                                    PanelId panel, DropZone zone,
+                                    int *out_new_leaf, int *out_existing_leaf,
+                                    error_value *out_error) {
     DockNode *orig;
     int split_idx, new_leaf;
     int horizontal;
     (void)window_idx;
-    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) return;
+    if (!d) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_ARGS,
+                             "dock_split_at: null dock state");
+    }
+    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_NODE_INDEX,
+                             "dock_split_at: invalid node index");
+    }
+    if (!d->nodes[node_idx].in_use) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_NODE_NOT_IN_USE,
+                             "dock_split_at: target node not in use");
+    }
+    if (!(zone == DROP_LEFT || zone == DROP_RIGHT ||
+          zone == DROP_TOP || zone == DROP_BOTTOM)) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_DROP_ZONE,
+                             "dock_split_at: invalid drop zone");
+    }
 
     horizontal = (zone == DROP_LEFT || zone == DROP_RIGHT);
 
     split_idx = dock_alloc_node(d);
     new_leaf = dock_alloc_node(d);
-    if (split_idx < 0 || new_leaf < 0) return;
+    if (split_idx < 0 || new_leaf < 0) {
+        if (split_idx >= 0) dock_free_node(d, split_idx);
+        if (new_leaf >= 0) dock_free_node(d, new_leaf);
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_ALLOC_NODE_FAILED,
+                             "dock_split_at: failed to allocate split nodes");
+    }
 
     orig = &d->nodes[node_idx];
 
@@ -446,6 +557,15 @@ static void dock_split_at(dock_state *d, int window_idx, int node_idx,
         orig->children[0] = split_idx;
         orig->children[1] = new_leaf;
     }
+    if (out_new_leaf) *out_new_leaf = new_leaf;
+    if (out_existing_leaf) *out_existing_leaf = split_idx;
+    ERRV_RETURN_CODE_OK(0, out_error);
+}
+
+static void dock_split_at(dock_state *d, int window_idx, int node_idx,
+                          PanelId panel, DropZone zone) {
+    (void)dock_split_at_with_error(d, window_idx, node_idx, panel, zone,
+                                   NULL, NULL, NULL);
 }
 
 /* ── Node queries ──────────────────────────────────────────── */
@@ -592,41 +712,77 @@ static int header_hit_test_node(dock_state *d, int idx, float x, float y,
 
 /* ── Tree manipulation ─────────────────────────────────────── */
 
-static int dock_collapse_empty(dock_state *d, int idx) {
+static int dock_collapse_empty_impl(dock_state *d, int idx, error_value *out_error) {
     DockNode *n;
-    if (idx < 0 || idx >= MAX_DOCK_NODES) return -1;
+    if (!d) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_ARGS,
+                             "dock_collapse_empty: null dock state");
+    }
+    if (idx < 0) {
+        ERRV_RETURN_CODE_OK(-1, out_error);
+    }
+    if (idx >= MAX_DOCK_NODES) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_NODE_INDEX,
+                             "dock_collapse_empty: invalid node index");
+    }
     n = &d->nodes[idx];
-    if (!n->in_use) return -1;
+    if (!n->in_use) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_NODE_NOT_IN_USE,
+                             "dock_collapse_empty: node not in use");
+    }
 
     if (n->type == DOCK_TABS) {
         if (n->panel_count == 0) {
             n->in_use = 0;
-            return -1;
+            ERRV_RETURN_CODE_OK(-1, out_error);
         }
-        return idx;
+        ERRV_RETURN_CODE_OK(idx, out_error);
     }
 
     /* Recursively collapse children */
-    n->children[0] = dock_collapse_empty(d, n->children[0]);
-    n->children[1] = dock_collapse_empty(d, n->children[1]);
+    n->children[0] = dock_collapse_empty_impl(d, n->children[0], out_error);
+    if (out_error && !ERRV_IS_OK(*out_error)) return -1;
+    n->children[1] = dock_collapse_empty_impl(d, n->children[1], out_error);
+    if (out_error && !ERRV_IS_OK(*out_error)) return -1;
 
     /* If both children gone, this node is empty */
     if (n->children[0] < 0 && n->children[1] < 0) {
         n->in_use = 0;
-        return -1;
+        ERRV_RETURN_CODE_OK(-1, out_error);
     }
     /* If one child gone, promote the other */
     if (n->children[0] < 0) {
         int survivor = n->children[1];
         n->in_use = 0;
-        return survivor;
+        ERRV_RETURN_CODE_OK(survivor, out_error);
     }
     if (n->children[1] < 0) {
         int survivor = n->children[0];
         n->in_use = 0;
-        return survivor;
+        ERRV_RETURN_CODE_OK(survivor, out_error);
     }
-    return idx;
+    ERRV_RETURN_CODE_OK(idx, out_error);
+}
+
+static int dock_collapse_empty_with_error(dock_state *d, int root_node,
+                                          int *out_root_node,
+                                          error_value *out_error) {
+    int collapsed_root;
+    if (!out_root_node) {
+        ERRV_RETURN_CODE_ERR(-1, out_error, DOCK_ERR_INVALID_OUTPUT,
+                             "dock_collapse_empty_with_error: out_root_node is null");
+    }
+    if (out_error) *out_error = ERRV_OK;
+    collapsed_root = dock_collapse_empty_impl(d, root_node, out_error);
+    if (out_error && !ERRV_IS_OK(*out_error)) return -1;
+    *out_root_node = collapsed_root;
+    ERRV_RETURN_CODE_OK(0, out_error);
+}
+
+static int dock_collapse_empty(dock_state *d, int idx) {
+    int collapsed_root = -1;
+    (void)dock_collapse_empty_with_error(d, idx, &collapsed_root, NULL);
+    return collapsed_root;
 }
 
 static void dock_collect_leaves(dock_state *d, int idx,
@@ -690,6 +846,7 @@ typedef struct editor_state {
     /* Arena pointers — set by externals init, used by editor for allocation */
     struct arena *root_arena;      /* pointer to memory.arena (for profiler arena display) */
     struct arena *editor_arena;    /* sub-arena for editor allocations */
+    struct mig_header *mig_hdr;    /* migration header — persists in editor_arena */
 
     /* Clay editor context — opaque Clay_Context*, allocated from editor_arena */
     void *clay_editor;

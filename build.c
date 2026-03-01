@@ -813,6 +813,9 @@ static int build_externals(void)
  *   - watch_and_rebuild() function
  */
 
+/* Forward declaration for platform files */
+static int generate_migration_code(void);
+
 #if defined(_WIN32)
 #include "build_win32.c"
 #elif defined(__APPLE__)
@@ -820,6 +823,384 @@ static int build_externals(void)
 #else
 #include "build_linux.c"
 #endif
+
+/* ── State migration code generator ──────────────────────────────────── */
+
+#define MIG_GEN_MAX_STRUCTS  32
+#define MIG_GEN_MAX_FIELDS   512
+#define MIG_GEN_NAME_MAX     64
+
+typedef struct {
+    char name[MIG_GEN_NAME_MAX];
+    char struct_name[MIG_GEN_NAME_MAX];
+} mig_gen_field;
+
+typedef struct {
+    char struct_name[MIG_GEN_NAME_MAX];
+    int  first_field;   /* index into global field array */
+    int  field_count;
+} mig_gen_struct;
+
+static mig_gen_field  g_mig_fields[MIG_GEN_MAX_FIELDS];
+static int            g_mig_field_count = 0;
+static mig_gen_struct g_mig_structs[MIG_GEN_MAX_STRUCTS];
+static int            g_mig_struct_count = 0;
+
+/* Target struct names to extract */
+static const char *g_mig_targets[] = {
+    "editor_state",
+    "game_state",
+    "parent_component",
+    "parent_transform_component",
+    "parent_rotation_component",
+    "mesh_component",
+    "transform_component",
+    "rotation_component",
+    "scale_component",
+    "velocity_component",
+    "rigid_body_component",
+    "character_controller_component",
+    "health_component",
+    "collider_component",
+    "box_collider_component",
+    "capsule_collider_component",
+    "animation_component",
+    "animation_transition_entry",
+    "camera_component",
+    NULL
+};
+
+static int mig_is_target(const char *name) {
+    int i;
+    for (i = 0; g_mig_targets[i]; i++) {
+        if (strcmp(g_mig_targets[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+/*
+ * Trim leading whitespace, return pointer into same buffer.
+ */
+static const char *mig_trim(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    return s;
+}
+
+/*
+ * Parse a single field declaration line like:
+ *   "float cam_yaw;"
+ *   "float x, y;"
+ *   "char  name[64];"
+ *   "struct arena *root_arena;"
+ *   "void *clay_ctx;"
+ *   "Vec3 cam_pos;"
+ *
+ * Extracts field name(s) and appends to g_mig_fields.
+ * Returns number of fields added.
+ */
+static int mig_parse_field_line(const char *line) {
+    const char *p, *semi;
+    int added = 0, len;
+
+    p = mig_trim(line);
+
+    /* Skip blank, comments, preprocessor, braces */
+    if (*p == '\0' || *p == '/' || *p == '#' || *p == '{' || *p == '}') return 0;
+
+    /* Find semicolon — required for a field */
+    semi = strchr(p, ';');
+    if (!semi) return 0;
+
+    /* Parse field names by scanning backwards from semicolon.
+     * Strategy: find each name token before semicolon/comma. */
+    {
+        const char *cursor = semi;
+        cursor--;
+        while (cursor > p && (*cursor == ' ' || *cursor == '\t')) cursor--;
+
+        while (cursor >= p) {
+            const char *name_start, *ne;
+            char name_buf[MIG_GEN_NAME_MAX];
+
+            /* Skip array brackets */
+            if (*cursor == ']') {
+                while (cursor > p && *cursor != '[') cursor--;
+                cursor--;
+                while (cursor > p && (*cursor == ' ' || *cursor == '\t')) cursor--;
+            }
+
+            /* Skip pointer star */
+            if (*cursor == '*') {
+                cursor--;
+                while (cursor > p && (*cursor == ' ' || *cursor == '\t')) cursor--;
+            }
+
+            /* Find start of name (alphanumeric + underscore) */
+            name_start = cursor;
+            while (name_start > p && (*(name_start - 1) == '_' ||
+                   (*(name_start - 1) >= 'a' && *(name_start - 1) <= 'z') ||
+                   (*(name_start - 1) >= 'A' && *(name_start - 1) <= 'Z') ||
+                   (*(name_start - 1) >= '0' && *(name_start - 1) <= '9'))) {
+                name_start--;
+            }
+
+            /* Extract name */
+            if (name_start <= cursor) {
+                ne = name_start;
+                while (ne < semi && *ne != ' ' && *ne != '\t' && *ne != ',' &&
+                       *ne != ';' && *ne != '[' && *ne != '*') {
+                    ne++;
+                }
+                len = (int)(ne - name_start);
+                if (len > 0 && len < MIG_GEN_NAME_MAX &&
+                    g_mig_field_count < MIG_GEN_MAX_FIELDS) {
+                    memcpy(name_buf, name_start, len);
+                    name_buf[len] = '\0';
+                    /* Reject type keywords */
+                    if (strcmp(name_buf, "struct") != 0 &&
+                        strcmp(name_buf, "const") != 0 &&
+                        strcmp(name_buf, "void") != 0 &&
+                        strcmp(name_buf, "int") != 0 &&
+                        strcmp(name_buf, "float") != 0 &&
+                        strcmp(name_buf, "double") != 0 &&
+                        strcmp(name_buf, "char") != 0 &&
+                        strcmp(name_buf, "uint8_t") != 0 &&
+                        strcmp(name_buf, "uint16_t") != 0 &&
+                        strcmp(name_buf, "uint32_t") != 0 &&
+                        strcmp(name_buf, "uint64_t") != 0 &&
+                        strcmp(name_buf, "int8_t") != 0 &&
+                        strcmp(name_buf, "int16_t") != 0 &&
+                        strcmp(name_buf, "int32_t") != 0 &&
+                        strcmp(name_buf, "int64_t") != 0 &&
+                        strcmp(name_buf, "unsigned") != 0 &&
+                        strcmp(name_buf, "signed") != 0 &&
+                        strcmp(name_buf, "long") != 0 &&
+                        strcmp(name_buf, "short") != 0) {
+                        strcpy(g_mig_fields[g_mig_field_count].name, name_buf);
+                        g_mig_field_count++;
+                        added++;
+                    }
+                }
+            }
+
+            /* Look for comma to find more names */
+            cursor = name_start - 1;
+            while (cursor > p && (*cursor == ' ' || *cursor == '\t')) cursor--;
+            if (cursor >= p && *cursor == ',') {
+                cursor--;
+                while (cursor > p && (*cursor == ' ' || *cursor == '\t')) cursor--;
+                continue;
+            }
+            break; /* No comma, done with names */
+        }
+    }
+
+    return added;
+}
+
+/*
+ * Parse a header file for targeted struct definitions.
+ * Fills g_mig_structs and g_mig_fields.
+ */
+static int mig_parse_header(const char *path) {
+    FILE *f;
+    char line[1024];
+    int in_struct = 0;
+    int brace_depth = 0;
+    int in_comment = 0;
+    int current_struct_idx = -1;
+    int field_start = 0;
+
+    f = fopen(path, "r");
+    if (!f) {
+        printf("!! Cannot open %s for migration parsing\n", path);
+        return 1;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        const char *trimmed = mig_trim(line);
+
+        /* Track multi-line comments — skip lines that start inside a comment */
+        {
+            int was_in_comment = in_comment;
+            const char *c = trimmed;
+            while (*c) {
+                if (in_comment) {
+                    if (c[0] == '*' && c[1] == '/') { in_comment = 0; c += 2; continue; }
+                } else {
+                    if (c[0] == '/' && c[1] == '*') { in_comment = 1; c += 2; continue; }
+                }
+                c++;
+            }
+            if (was_in_comment) continue;
+        }
+
+        if (!in_struct) {
+            /* Look for "typedef struct {" or "typedef struct name {" */
+            if (strncmp(trimmed, "typedef struct", 14) == 0) {
+                const char *rest = trimmed + 14;
+                /* Check if opening brace is on this line */
+                if (strchr(rest, '{')) {
+                    const char *bc;
+                    in_struct = 1;
+                    brace_depth = 0;
+                    field_start = g_mig_field_count;
+                    current_struct_idx = -1; /* name comes at closing brace */
+                    /* Count ALL braces on this line (handles single-line structs) */
+                    for (bc = trimmed; *bc; bc++) {
+                        if (*bc == '{') brace_depth++;
+                        if (*bc == '}') brace_depth--;
+                    }
+                    if (brace_depth == 0) {
+                        /* Single-line struct — extract name and close immediately */
+                        const char *cp = strchr(trimmed, '}');
+                        if (cp) {
+                            char sname[MIG_GEN_NAME_MAX];
+                            int slen;
+                            cp++;
+                            while (*cp == ' ' || *cp == '\t') cp++;
+                            slen = 0;
+                            while (cp[slen] && cp[slen] != ';' && cp[slen] != ' ' &&
+                                   slen < MIG_GEN_NAME_MAX - 1) {
+                                sname[slen] = cp[slen];
+                                slen++;
+                            }
+                            sname[slen] = '\0';
+                            if (mig_is_target(sname) && g_mig_struct_count < MIG_GEN_MAX_STRUCTS) {
+                                int fi;
+                                mig_gen_struct *s = &g_mig_structs[g_mig_struct_count];
+                                strcpy(s->struct_name, sname);
+                                s->first_field = field_start;
+                                s->field_count = g_mig_field_count - field_start;
+                                for (fi = field_start; fi < g_mig_field_count; fi++)
+                                    strcpy(g_mig_fields[fi].struct_name, sname);
+                                g_mig_struct_count++;
+                                printf("   Parsed %s: %d fields\n", sname, s->field_count);
+                            } else {
+                                g_mig_field_count = field_start;
+                            }
+                        }
+                        in_struct = 0;
+                    }
+                }
+            }
+        } else {
+            /* Count braces */
+            const char *c;
+            for (c = trimmed; *c; c++) {
+                if (*c == '{') brace_depth++;
+                if (*c == '}') brace_depth--;
+            }
+
+            if (brace_depth == 0) {
+                /* Closing line: "} type_name;" — extract name */
+                const char *cp = strchr(trimmed, '}');
+                if (cp) {
+                    char sname[MIG_GEN_NAME_MAX];
+                    int slen;
+                    cp++;
+                    while (*cp == ' ' || *cp == '\t') cp++;
+                    slen = 0;
+                    while (cp[slen] && cp[slen] != ';' && cp[slen] != ' ' &&
+                           slen < MIG_GEN_NAME_MAX - 1) {
+                        sname[slen] = cp[slen];
+                        slen++;
+                    }
+                    sname[slen] = '\0';
+
+                    if (mig_is_target(sname) && g_mig_struct_count < MIG_GEN_MAX_STRUCTS) {
+                        int fi;
+                        mig_gen_struct *s = &g_mig_structs[g_mig_struct_count];
+                        strcpy(s->struct_name, sname);
+                        s->first_field = field_start;
+                        s->field_count = g_mig_field_count - field_start;
+                        /* Tag fields with struct name */
+                        for (fi = field_start; fi < g_mig_field_count; fi++) {
+                            strcpy(g_mig_fields[fi].struct_name, sname);
+                        }
+                        g_mig_struct_count++;
+                        printf("   Parsed %s: %d fields\n", sname, s->field_count);
+                    } else {
+                        /* Not a target, discard collected fields */
+                        g_mig_field_count = field_start;
+                    }
+                }
+                in_struct = 0;
+            } else if (brace_depth == 1) {
+                /* Only parse fields at depth 1 (skip nested structs) */
+                mig_parse_field_line(trimmed);
+            }
+        }
+    }
+
+    fclose(f);
+    (void)current_struct_idx;
+    return 0;
+}
+
+static int mig_generate(const char *output_path) {
+    FILE *f;
+    int si, fi;
+
+    if (g_mig_struct_count == 0) {
+        printf("   No migration targets found, skipping codegen.\n");
+        return 0;
+    }
+
+    f = fopen(output_path, "w");
+    if (!f) {
+        printf("!! Cannot create %s\n", output_path);
+        return 1;
+    }
+
+    fprintf(f, "/* AUTO-GENERATED by builder — do not edit */\n");
+    fprintf(f, "#ifndef STATE_MIGRATION_GEN_H\n");
+    fprintf(f, "#define STATE_MIGRATION_GEN_H\n\n");
+    fprintf(f, "#include \"state_migration.h\"\n\n");
+
+    for (si = 0; si < g_mig_struct_count; si++) {
+        mig_gen_struct *s = &g_mig_structs[si];
+        int base = s->first_field;
+
+        /* Field descriptor array */
+        fprintf(f, "static const mig_field mig_%s_fields[] = {\n", s->struct_name);
+        for (fi = 0; fi < s->field_count; fi++) {
+            mig_gen_field *fld = &g_mig_fields[base + fi];
+            fprintf(f, "    {\"%s\", (uint32_t)offsetof(%s, %s), "
+                       "(uint32_t)sizeof(((%s*)0)->%s)},\n",
+                    fld->name, s->struct_name, fld->name,
+                    s->struct_name, fld->name);
+        }
+        fprintf(f, "};\n\n");
+
+        /* Count macro */
+        fprintf(f, "#define MIG_%s_COUNT "
+                   "(sizeof(mig_%s_fields)/sizeof(mig_%s_fields[0]))\n",
+                s->struct_name, s->struct_name, s->struct_name);
+        fprintf(f, "\n");
+    }
+
+    fprintf(f, "#endif /* STATE_MIGRATION_GEN_H */\n");
+    fclose(f);
+
+    printf("   Generated %s (%d structs)\n", output_path, g_mig_struct_count);
+    return 0;
+}
+
+static int generate_migration_code(void) {
+    printf("\n=== Generating state migration code ===\n");
+
+    /* Reset state */
+    g_mig_field_count = 0;
+    g_mig_struct_count = 0;
+
+    if (mig_parse_header("src/game.h") != 0) return 1;
+    if (mig_parse_header("src/editor/editor.h") != 0) return 1;
+
+    if (mig_generate("src/state_migration.gen.h") != 0) return 1;
+
+    return 0;
+}
 
 /* ------- core (DLL) ----------------------------------------------------- */
 static int build_core(void)
@@ -1603,6 +1984,7 @@ static int build_all(void)
     if (build_harfbuzz() != 0) return 1;
     force_rebuild = 1;
     if (build_externals() != 0) return 1;
+    if (generate_migration_code() != 0) return 1;
     if (build_core() != 0) return 1;
     if (build_engine() != 0) return 1;
     if (build_editor() != 0) return 1;

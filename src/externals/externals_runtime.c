@@ -403,6 +403,7 @@ static void draw_scene_meshes(memory *m,
 #define BI_ICON_CAMERA           0xF220u
 #define BI_ICON_BOUNDING_BOX     0xF1B6u
 #define BI_ICON_ARROW_LEFT       0xF12Fu
+#define BI_ICON_ARROW_DOWN       0xF128u
 #define BI_ICON_ARROW_RIGHT      0xF138u
 #define BI_ICON_ARROW_UP         0xF148u
 #define ICON_GLYPH_MAX           16
@@ -928,6 +929,7 @@ static int icon_font_load_msdf(const char *path) {
         BI_ICON_CAMERA,
         BI_ICON_BOUNDING_BOX,
         BI_ICON_ARROW_LEFT,
+        BI_ICON_ARROW_DOWN,
         BI_ICON_ARROW_RIGHT,
         BI_ICON_ARROW_UP
     };
@@ -3171,37 +3173,73 @@ EXPORT void update_externals(struct memory *m) {
             SDL_Window *new_win = SDL_CreateWindow(panel_names[tp],
                                                     600, 500, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
             if (new_win) {
-                int new_root;
+                int new_root = -1;
                 int src_win_idx;
+                int move_ok = 0;
+                error_value err = ERRV_OK;
                 SDL_SetWindowPosition(new_win,
                     (int)(dock->cmd_screen_x - 300),
                     (int)(dock->cmd_screen_y - 12));
                 SDL_ClaimWindowForGPUDevice(gpu_device, new_win);
 
                 new_root = dock_alloc_node(dock);
-                dock->nodes[new_root].panels[0] = tp;
-                dock->nodes[new_root].panel_count = 1;
-                dock->nodes[new_root].active_tab = 0;
+                if (new_root < 0) {
+                    fprintf(stderr, "dock_tear_off failed: unable to allocate node for torn-off panel\n");
+                } else {
+                    dock->nodes[new_root].panels[0] = tp;
+                    dock->nodes[new_root].panel_count = 1;
+                    dock->nodes[new_root].active_tab = 0;
 
-                dock->windows[new_win_idx].in_use = 1;
-                dock->windows[new_win_idx].sdl_window = new_win;
-                dock->windows[new_win_idx].root_node = new_root;
+                    src_win_idx = dock->drag.source_window;
+                    if (dock_remove_panel_with_error(dock, dock->drag.source_node, tp, &err) == 0) {
+                        int new_src_root = -1;
+                        err = ERRV_OK;
+                        if (dock_collapse_empty_with_error(dock,
+                                                           dock->windows[src_win_idx].root_node,
+                                                           &new_src_root,
+                                                           &err) == 0) {
+                            dock->windows[src_win_idx].root_node = new_src_root;
+                            move_ok = 1;
+                        } else {
+                            fprintf(stderr,
+                                    "dock_tear_off collapse failed (%d): %s [%s:%d]\n",
+                                    err.code,
+                                    err.message ? err.message : "(no message)",
+                                    err.file ? err.file : "(unknown)",
+                                    err.line);
+                        }
+                    } else {
+                        fprintf(stderr,
+                                "dock_tear_off remove failed (%d): %s [%s:%d]\n",
+                                err.code,
+                                err.message ? err.message : "(no message)",
+                                err.file ? err.file : "(unknown)",
+                                err.line);
+                    }
 
-                src_win_idx = dock->drag.source_window;
-                dock_remove_panel(dock, dock->drag.source_node, tp);
-                {
-                    int new_src_root = dock_collapse_empty(dock, dock->windows[src_win_idx].root_node);
-                    dock->windows[src_win_idx].root_node = new_src_root;
+                    if (move_ok) {
+                        dock->windows[new_win_idx].in_use = 1;
+                        dock->windows[new_win_idx].sdl_window = new_win;
+                        dock->windows[new_win_idx].root_node = new_root;
+                    }
                 }
 
-                if (dock->windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
-                    SDL_Window *dead_win = (SDL_Window *)dock->windows[src_win_idx].sdl_window;
-                    if (dead_win) {
-                        SDL_ReleaseWindowFromGPUDevice(gpu_device, dead_win);
-                        SDL_DestroyWindow(dead_win);
+                if (move_ok) {
+                    if (dock->windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
+                        SDL_Window *dead_win = (SDL_Window *)dock->windows[src_win_idx].sdl_window;
+                        if (dead_win) {
+                            SDL_ReleaseWindowFromGPUDevice(gpu_device, dead_win);
+                            SDL_DestroyWindow(dead_win);
+                        }
+                        dock->windows[src_win_idx].in_use = 0;
+                        dock->windows[src_win_idx].sdl_window = NULL;
                     }
-                    dock->windows[src_win_idx].in_use = 0;
-                    dock->windows[src_win_idx].sdl_window = NULL;
+                } else {
+                    if (new_root >= 0) {
+                        dock_free_node(dock, new_root);
+                    }
+                    SDL_ReleaseWindowFromGPUDevice(gpu_device, new_win);
+                    SDL_DestroyWindow(new_win);
                 }
             }
         }
@@ -3229,19 +3267,57 @@ EXPORT void update_externals(struct memory *m) {
                     tgt_leaf = ni;
             }
 
-            if (tgt_leaf >= 0 && dock->nodes[tgt_leaf].panel_count < MAX_TABS_PER_NODE) {
-                DockNode *tl = &dock->nodes[tgt_leaf];
-                tl->panels[tl->panel_count] = rp;
-                tl->panel_count++;
-                tl->active_tab = tl->panel_count - 1;
-
-                dock_remove_panel(dock, src_node, rp);
-                {
-                    int new_src_root = dock_collapse_empty(dock, dock->windows[src_win_idx].root_node);
-                    dock->windows[src_win_idx].root_node = new_src_root;
+            if (tgt_leaf >= 0) {
+                int moved = 0;
+                error_value err = ERRV_OK;
+                int new_tab = dock_add_panel_with_error(dock, tgt_leaf, rp, &err);
+                if (new_tab >= 0) {
+                    dock_set_active_tab(dock, tgt_leaf, new_tab);
+                    err = ERRV_OK;
+                    if (dock_remove_panel_with_error(dock, src_node, rp, &err) == 0) {
+                        int new_src_root = -1;
+                        moved = 1;
+                        err = ERRV_OK;
+                        if (dock_collapse_empty_with_error(dock,
+                                                           dock->windows[src_win_idx].root_node,
+                                                           &new_src_root,
+                                                           &err) == 0) {
+                            dock->windows[src_win_idx].root_node = new_src_root;
+                        } else {
+                            fprintf(stderr,
+                                    "dock_redock collapse failed (%d): %s [%s:%d]\n",
+                                    err.code,
+                                    err.message ? err.message : "(no message)",
+                                    err.file ? err.file : "(unknown)",
+                                    err.line);
+                        }
+                    } else {
+                        error_value rb_err = ERRV_OK;
+                        fprintf(stderr,
+                                "dock_redock remove failed (%d): %s [%s:%d]\n",
+                                err.code,
+                                err.message ? err.message : "(no message)",
+                                err.file ? err.file : "(unknown)",
+                                err.line);
+                        if (dock_remove_panel_with_error(dock, tgt_leaf, rp, &rb_err) < 0) {
+                            fprintf(stderr,
+                                    "dock_redock rollback failed (%d): %s [%s:%d]\n",
+                                    rb_err.code,
+                                    rb_err.message ? rb_err.message : "(no message)",
+                                    rb_err.file ? rb_err.file : "(unknown)",
+                                    rb_err.line);
+                        }
+                    }
+                } else {
+                    fprintf(stderr,
+                            "dock_redock add failed (%d): %s [%s:%d]\n",
+                            err.code,
+                            err.message ? err.message : "(no message)",
+                            err.file ? err.file : "(unknown)",
+                            err.line);
                 }
 
-                if (dock->windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
+                if (moved && dock->windows[src_win_idx].root_node < 0 && src_win_idx != 0) {
                     SDL_Window *dead_win = (SDL_Window *)dock->windows[src_win_idx].sdl_window;
                     if (dead_win) {
                         SDL_ReleaseWindowFromGPUDevice(gpu_device, dead_win);
