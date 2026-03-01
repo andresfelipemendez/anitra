@@ -830,6 +830,9 @@ typedef struct editor_state {
     float cpu_prof_scroll_y;
     int   cpu_prof_mouse_down;
     int   cpu_prof_click;
+    int   cpu_prof_timeline_paused;
+    int   cpu_prof_timeline_offset;
+    uint64_t cpu_prof_timeline_frame_id;
 
     /* Dock state — allocated from editor_arena. */
     dock_state *dock;

@@ -3927,8 +3927,10 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
 
         CLAY(CLAY_ID("MenuPlayMode"), {
             .layout = {
-                .sizing = { CLAY_SIZING_FIXED(76), CLAY_SIZING_FIXED(22) },
+                .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
                 .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+                .childGap = UI_SPACE_SM,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
                 .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
             },
             .backgroundColor = play_mode
@@ -3942,10 +3944,16 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                 menu_click_handled = 1;
             }
             {
-                const char *label = play_mode ? UI_ICON_STOP_FILL " Stop"
-                                              : UI_ICON_PLAY_FILL " Play";
-                Clay_String text = { false, (int32_t)strlen(label), label };
-                CLAY_TEXT(text, CLAY_TEXT_CONFIG({
+                const char *icon_label = play_mode ? UI_ICON_STOP_FILL : UI_ICON_PLAY_FILL;
+                const char *text_label = play_mode ? "Stop" : "Play";
+                Clay_String icon_text = { false, (int32_t)strlen(icon_label), icon_label };
+                Clay_String word_text = { false, (int32_t)strlen(text_label), text_label };
+
+                CLAY_TEXT(icon_text, CLAY_TEXT_CONFIG({
+                    .textColor = {238, 242, 248, 255},
+                    .fontSize = UI_FONT_BODY
+                }));
+                CLAY_TEXT(word_text, CLAY_TEXT_CONFIG({
                     .textColor = {238, 242, 248, 255},
                     .fontSize = UI_FONT_BODY
                 }));
@@ -4167,7 +4175,9 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
         }
 
         if (!cache_prof_available()) {
-            Clay_String msg = CLAY_STRING("Hardware counters not available on this platform");
+            const char *status = cache_prof_status_message();
+            if (!status || !status[0]) status = "Hardware counters not available on this platform";
+            Clay_String msg = { false, (int32_t)strlen(status), (char *)status };
             CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = {170, 120, 120, 255}, .fontSize = 14}));
         } else {
             /* Column headers */
@@ -4286,6 +4296,23 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
 
 /* ── CPU Profiler Clay layout ── */
 
+static Clay_Color cpu_prof_flame_color(const char *name, uint16_t depth) {
+    uint32_t h = 2166136261u;
+    const unsigned char *p = (const unsigned char *)(name ? name : "");
+    while (*p) {
+        h ^= (uint32_t)(*p++);
+        h *= 16777619u;
+    }
+    h ^= (uint32_t)depth * 0x9e3779b9u;
+
+    return (Clay_Color){
+        (uint8_t)(96 + (h & 0x3F)),
+        (uint8_t)(88 + ((h >> 6) & 0x5F)),
+        (uint8_t)(96 + ((h >> 13) & 0x5F)),
+        255
+    };
+}
+
 static void cpu_profiler_layout(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
@@ -4293,9 +4320,15 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
     int win_idx, node;
     int win_w, win_h;
     Clay_RenderCommandArray commands;
-    cpu_prof_frame *frame;
-    int i;
-    static char bufs[CPU_PROF_MAX_ZONES][3][32];
+    cpu_prof_frame *frame = NULL;
+    uint64_t frame_id = 0;
+    int history_count = 0;
+    int i, j;
+    uint16_t sorted[CPU_PROF_MAX_ZONES];
+    int hovered_zone = -1;
+    static char bufs[CPU_PROF_MAX_ZONES][4][80];
+    char frame_info[128];
+    char hover_line[192];
 
     if (!ctx) return;
 
@@ -4323,6 +4356,47 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
 
     Clay_BeginLayout();
 
+    history_count = cpu_prof_get_history_count();
+    if (history_count > 0) {
+        uint64_t latest_frame_id = cpu_prof_get_frame_id_at_offset(0);
+        int k;
+
+        if (!e->cpu_prof_timeline_paused) {
+            e->cpu_prof_timeline_offset = 0;
+            e->cpu_prof_timeline_frame_id = latest_frame_id;
+        } else {
+            int found = -1;
+            if (e->cpu_prof_timeline_frame_id == 0) {
+                e->cpu_prof_timeline_frame_id = latest_frame_id;
+            }
+            for (k = 0; k < history_count; k++) {
+                if (cpu_prof_get_frame_id_at_offset((uint16_t)k) == e->cpu_prof_timeline_frame_id) {
+                    found = k;
+                    break;
+                }
+            }
+            if (found >= 0) {
+                e->cpu_prof_timeline_offset = found;
+            } else {
+                e->cpu_prof_timeline_offset = history_count - 1;
+                e->cpu_prof_timeline_frame_id =
+                    cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+            }
+        }
+
+        if (e->cpu_prof_timeline_offset < 0) e->cpu_prof_timeline_offset = 0;
+        if (e->cpu_prof_timeline_offset >= history_count) e->cpu_prof_timeline_offset = history_count - 1;
+
+        frame = cpu_prof_get_frame_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+        frame_id = cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+        if (!frame) {
+            e->cpu_prof_timeline_offset = 0;
+            frame = cpu_prof_get_frame_at_offset(0);
+            frame_id = cpu_prof_get_frame_id_at_offset(0);
+            e->cpu_prof_timeline_frame_id = frame_id;
+        }
+    }
+
     CLAY(CLAY_ID("CURoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
@@ -4338,86 +4412,404 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
             CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
         }
 
-        /* Column headers */
-        CLAY(CLAY_ID("CUHeader"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 },
-                .childGap = 8,
-                .layoutDirection = CLAY_LEFT_TO_RIGHT
-            }
-        }) {
-            CLAY(CLAY_IDI("CUHCol", 0), { .layout = { .sizing = { CLAY_SIZING_FIXED(160), CLAY_SIZING_FIT({0}) } } }) {
-                Clay_String h = CLAY_STRING("Name");
-                CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
-            }
-            CLAY(CLAY_IDI("CUHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
-                Clay_String h = CLAY_STRING("Duration");
-                CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
-            }
-            CLAY(CLAY_IDI("CUHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) } } }) {
-                Clay_String h = CLAY_STRING("Depth");
-                CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
-            }
-        }
-
-        /* Zone rows — sorted by duration descending */
-        frame = cpu_prof_get_frame();
-        cpu_prof_sort_zones();
-
-        /* Scrollable zone list */
-        CLAY(CLAY_ID("CUScroll"), {
-            .layout = {
-                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-                .childGap = 2,
-                .layoutDirection = CLAY_TOP_TO_BOTTOM
-            },
-            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
-        }) {
-            for (i = 0; i < frame->count && i < CPU_PROF_MAX_ZONES; i++) {
-                /* Each row */
-                CLAY(CLAY_IDI("CURow", i), {
+        if (history_count <= 0 || !frame) {
+            Clay_String msg = CLAY_STRING("No CPU frame history yet");
+            CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = {168, 168, 178, 255}, .fontSize = 14}));
+        } else {
+            CLAY(CLAY_ID("CUTimelineControls"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childGap = 8,
+                    .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                }
+            }) {
+                CLAY(CLAY_ID("CUPauseBtn"), {
                     .layout = {
-                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                        .padding = { .left = 8, .right = 8, .top = 3, .bottom = 3 },
-                        .childGap = 8,
-                        .layoutDirection = CLAY_LEFT_TO_RIGHT
+                        .sizing = { CLAY_SIZING_FIXED(72), CLAY_SIZING_FIXED(22) },
+                        .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
                     },
-                    .backgroundColor = (i % 2 == 0) ? (Clay_Color){35, 35, 40, 255} : (Clay_Color){30, 30, 35, 255}
+                    .backgroundColor = e->cpu_prof_timeline_paused
+                        ? (Clay_Color){96, 72, 72, 255}
+                        : (Clay_Color){62, 92, 72, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
                 }) {
-                    /* Zone name */
-                    CLAY(CLAY_IDI("CUName", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(160), CLAY_SIZING_FIT({0}) } } }) {
-                        Clay_String ns = {false, (int32_t)strlen(frame->names[i]), (char*)frame->names[i]};
-                        CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14}));
-                    }
-                    /* Duration */
-                    CLAY(CLAY_IDI("CUDur", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
-                        {
-                            uint64_t duration_ns = frame->duration_ns[i];
-                            if (duration_ns > 1000000)
-                                snprintf(bufs[i][0], sizeof(bufs[i][0]), "%.2f ms", (double)duration_ns / 1000000.0);
-                            else
-                                snprintf(bufs[i][0], sizeof(bufs[i][0]), "%.1f us", (double)duration_ns / 1000.0);
-                        }
-                        {
-                            Clay_String vs = {false, (int32_t)strlen(bufs[i][0]), bufs[i][0]};
-                            CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 200, 120, 255}, .fontSize = 14}));
-                        }
-                    }
-                    /* Depth */
-                    CLAY(CLAY_IDI("CUDep", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) } } }) {
-                        snprintf(bufs[i][1], sizeof(bufs[i][1]), "%u", (unsigned)frame->depth[i]);
-                        {
-                            Clay_String vs = {false, (int32_t)strlen(bufs[i][1]), bufs[i][1]};
-                            CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
+                    Clay_String ps = e->cpu_prof_timeline_paused
+                        ? CLAY_STRING("Paused")
+                        : CLAY_STRING("Live");
+                    CLAY_TEXT(ps, CLAY_TEXT_CONFIG({.textColor = {236, 238, 244, 255}, .fontSize = 13}));
+                    if (Clay_Hovered() && e->cpu_prof_click) {
+                        if (e->cpu_prof_timeline_paused) {
+                            e->cpu_prof_timeline_paused = 0;
+                            e->cpu_prof_timeline_offset = 0;
+                            e->cpu_prof_timeline_frame_id = cpu_prof_get_frame_id_at_offset(0);
+                        } else {
+                            e->cpu_prof_timeline_paused = 1;
+                            e->cpu_prof_timeline_frame_id =
+                                frame_id ? frame_id : cpu_prof_get_frame_id_at_offset(0);
                         }
                     }
                 }
+
+                CLAY(CLAY_ID("CUPrevBtn"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(26), CLAY_SIZING_FIXED(22) },
+                        .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = {48, 54, 68, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    Clay_String s = CLAY_STRING("<");
+                    CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = {220, 224, 236, 255}, .fontSize = 13}));
+                    if (Clay_Hovered() && e->cpu_prof_click) {
+                        e->cpu_prof_timeline_paused = 1;
+                        if (e->cpu_prof_timeline_offset + 1 < history_count) e->cpu_prof_timeline_offset++;
+                        e->cpu_prof_timeline_frame_id =
+                            cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+                    }
+                }
+
+                CLAY(CLAY_ID("CUNextBtn"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(26), CLAY_SIZING_FIXED(22) },
+                        .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = {48, 54, 68, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    Clay_String s = CLAY_STRING(">");
+                    CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = {220, 224, 236, 255}, .fontSize = 13}));
+                    if (Clay_Hovered() && e->cpu_prof_click) {
+                        if (e->cpu_prof_timeline_offset > 0) {
+                            e->cpu_prof_timeline_paused = 1;
+                            e->cpu_prof_timeline_offset--;
+                            e->cpu_prof_timeline_frame_id =
+                                cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+                        } else {
+                            e->cpu_prof_timeline_paused = 0;
+                            e->cpu_prof_timeline_offset = 0;
+                            e->cpu_prof_timeline_frame_id = cpu_prof_get_frame_id_at_offset(0);
+                        }
+                    }
+                }
+
+                snprintf(frame_info, sizeof(frame_info),
+                         "Frame #%llu (%s, %d back, %d stored)",
+                         (unsigned long long)frame_id,
+                         e->cpu_prof_timeline_paused ? "paused" : "live",
+                         e->cpu_prof_timeline_offset,
+                         history_count);
+                {
+                    Clay_String info = {false, (int32_t)strlen(frame_info), frame_info};
+                    CLAY_TEXT(info, CLAY_TEXT_CONFIG({.textColor = {182, 190, 206, 255}, .fontSize = 13}));
+                }
+            }
+
+            CLAY(CLAY_ID("CUTimelineOuter"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(26) },
+                    .padding = CLAY_PADDING_ALL(3),
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {19, 20, 25, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                float timeline_w = (float)win_w - 40.0f;
+                float bar_w;
+                if (timeline_w < 80.0f) timeline_w = 80.0f;
+                bar_w = timeline_w / (float)history_count;
+                if (bar_w < 0.1f) bar_w = 0.1f;
+
+                CLAY(CLAY_ID("CUTimelineStrip"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                        .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                        .childGap = 0
+                    },
+                    .backgroundColor = {15, 16, 20, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(2)
+                }) {
+                    for (i = 0; i < history_count; i++) {
+                        int offset = history_count - 1 - i;
+                        cpu_prof_frame *f = cpu_prof_get_frame_at_offset((uint16_t)offset);
+                        uint64_t max_dur = 0;
+                        Clay_Color c = {58, 64, 76, 255};
+                        int selected = e->cpu_prof_timeline_paused && (offset == e->cpu_prof_timeline_offset);
+                        if (f) {
+                            for (j = 0; j < f->count; j++) {
+                                if (f->duration_ns[j] > max_dur) max_dur = f->duration_ns[j];
+                            }
+                            if (max_dur > 12000000ULL) c = (Clay_Color){212, 96, 88, 255};
+                            else if (max_dur > 6000000ULL) c = (Clay_Color){188, 120, 92, 255};
+                            else if (max_dur > 2000000ULL) c = (Clay_Color){142, 124, 86, 255};
+                            else if (max_dur > 1000000ULL) c = (Clay_Color){102, 122, 92, 255};
+                        }
+                        if (selected) c = (Clay_Color){92, 150, 232, 255};
+
+                        CLAY(CLAY_IDI("CUTimelineBar", i), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_FIXED(bar_w), CLAY_SIZING_GROW({0}) }
+                            },
+                            .backgroundColor = Clay_Hovered()
+                                ? (Clay_Color){(uint8_t)(c.r + 20), (uint8_t)(c.g + 20), (uint8_t)(c.b + 20), 255}
+                                : c
+                        }) {
+                            if (Clay_Hovered() && e->cpu_prof_click) {
+                                e->cpu_prof_timeline_paused = 1;
+                                e->cpu_prof_timeline_offset = offset;
+                                e->cpu_prof_timeline_frame_id =
+                                    cpu_prof_get_frame_id_at_offset((uint16_t)offset);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (frame->count <= 0) {
+                Clay_String msg = CLAY_STRING("Selected frame has no zones");
+                CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = {168, 168, 178, 255}, .fontSize = 14}));
+            } else {
+            uint64_t min_start = UINT64_MAX;
+            uint64_t max_end = 0;
+            uint16_t max_depth = 0;
+            float flame_w;
+            float flame_h;
+            const float bar_h = 18.0f;
+            const float bar_gap = 2.0f;
+            const uint64_t span_ns_min = 1ULL;
+
+            for (i = 0; i < frame->count && i < CPU_PROF_MAX_ZONES; i++) {
+                uint64_t zstart = frame->start_ns[i];
+                uint64_t zend = zstart + frame->duration_ns[i];
+                if (zstart < min_start) min_start = zstart;
+                if (zend > max_end) max_end = zend;
+                if (frame->depth[i] > max_depth) max_depth = frame->depth[i];
+                sorted[i] = (uint16_t)i;
+            }
+
+            if (max_end <= min_start) max_end = min_start + span_ns_min;
+            flame_w = (float)win_w - 24.0f - 8.0f;
+            if (flame_w < 160.0f) flame_w = 160.0f;
+            flame_h = (float)(max_depth + 1) * (bar_h + bar_gap) + 4.0f;
+            if (flame_h < 28.0f) flame_h = 28.0f;
+
+            /* Flame graph title */
+            CLAY(CLAY_ID("CUFlameTitleRow"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                Clay_String h = CLAY_STRING("Flame Graph (current frame)");
+                CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {172, 178, 190, 255}, .fontSize = 13}));
+            }
+
+            CLAY(CLAY_ID("CUFlameOuter"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(flame_h + 8.0f) },
+                    .padding = CLAY_PADDING_ALL(4),
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {20, 20, 24, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY(CLAY_ID("CUFlameCanvas"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(flame_h) }
+                    },
+                    .backgroundColor = {16, 16, 20, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(2)
+                }) {
+                    for (i = 0; i < frame->count && i < CPU_PROF_MAX_ZONES; i++) {
+                        uint64_t zstart = frame->start_ns[i];
+                        uint64_t zdur = frame->duration_ns[i];
+                        uint64_t span = max_end - min_start;
+                        float fx;
+                        float fw;
+                        float fy;
+                        Clay_Color c;
+
+                        if (zdur == 0) continue;
+                        fx = (float)(((double)(zstart - min_start) / (double)span) * (double)flame_w);
+                        fw = (float)(((double)zdur / (double)span) * (double)flame_w);
+                        if (fw < 1.0f) fw = 1.0f;
+                        if (fx < 0.0f) fx = 0.0f;
+                        if (fx + fw > flame_w) fw = flame_w - fx;
+                        if (fw <= 0.0f) continue;
+                        fy = 2.0f + (float)frame->depth[i] * (bar_h + bar_gap);
+
+                        c = cpu_prof_flame_color(frame->names[i], frame->depth[i]);
+
+                        CLAY(CLAY_IDI("CUFlameBar", i), {
+                            .layout = { .sizing = { CLAY_SIZING_FIXED(fw), CLAY_SIZING_FIXED(bar_h) } },
+                            .floating = {
+                                .attachTo = CLAY_ATTACH_TO_PARENT,
+                                .attachPoints = {
+                                    .element = CLAY_ATTACH_POINT_LEFT_TOP,
+                                    .parent = CLAY_ATTACH_POINT_LEFT_TOP
+                                },
+                                .offset = { fx, fy },
+                                .clipTo = CLAY_CLIP_TO_ATTACHED_PARENT
+                            },
+                            .backgroundColor = Clay_Hovered()
+                                ? (Clay_Color){(uint8_t)(c.r + 18), (uint8_t)(c.g + 18), (uint8_t)(c.b + 18), 255}
+                                : c,
+                            .cornerRadius = CLAY_CORNER_RADIUS(2)
+                        }) {
+                            if (fw > 56.0f && frame->names[i]) {
+                                Clay_String ns = {false, (int32_t)strlen(frame->names[i]), (char*)frame->names[i]};
+                                CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {236, 236, 242, 255}, .fontSize = 12}));
+                            }
+                            if (Clay_Hovered()) {
+                                hovered_zone = i;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (hovered_zone >= 0 && hovered_zone < frame->count) {
+                uint64_t duration_ns = frame->duration_ns[hovered_zone];
+                if (duration_ns > 1000000ULL) {
+                    snprintf(hover_line, sizeof(hover_line), "Hovered: %s | %.3f ms | depth %u",
+                             frame->names[hovered_zone] ? frame->names[hovered_zone] : "(null)",
+                             (double)duration_ns / 1000000.0,
+                             (unsigned)frame->depth[hovered_zone]);
+                } else {
+                    snprintf(hover_line, sizeof(hover_line), "Hovered: %s | %.2f us | depth %u",
+                             frame->names[hovered_zone] ? frame->names[hovered_zone] : "(null)",
+                             (double)duration_ns / 1000.0,
+                             (unsigned)frame->depth[hovered_zone]);
+                }
+                {
+                    Clay_String hs = {false, (int32_t)strlen(hover_line), hover_line};
+                    CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = {196, 206, 228, 255}, .fontSize = 13}));
+                }
+            }
+
+            /* Sort by duration for tabular listing while preserving frame order for flame graph. */
+            for (i = 1; i < frame->count && i < CPU_PROF_MAX_ZONES; i++) {
+                uint16_t key = sorted[i];
+                j = i;
+                while (j > 0 && frame->duration_ns[sorted[j - 1]] < frame->duration_ns[key]) {
+                    sorted[j] = sorted[j - 1];
+                    j--;
+                }
+                sorted[j] = key;
+            }
+
+            /* Column headers */
+            CLAY(CLAY_ID("CUHeader"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 },
+                    .childGap = 8,
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                CLAY(CLAY_IDI("CUHCol", 0), { .layout = { .sizing = { CLAY_SIZING_FIXED(180), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Name");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CUHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Duration");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CUHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Depth");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CUHCol", 3), { .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Parent");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+            }
+
+            /* Scrollable zone list */
+            CLAY(CLAY_ID("CUScroll"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+            }) {
+                for (i = 0; i < frame->count && i < CPU_PROF_MAX_ZONES; i++) {
+                    uint16_t idx = sorted[i];
+                    uint16_t parent = frame->parent[idx];
+                    const char *name = frame->names[idx] ? frame->names[idx] : "(null)";
+
+                    CLAY(CLAY_IDI("CURow", i), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = 8, .right = 8, .top = 3, .bottom = 3 },
+                            .childGap = 8,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT
+                        },
+                        .backgroundColor = (idx == hovered_zone)
+                            ? (Clay_Color){48, 58, 78, 255}
+                            : ((i % 2 == 0) ? (Clay_Color){35, 35, 40, 255} : (Clay_Color){30, 30, 35, 255})
+                    }) {
+                        CLAY(CLAY_IDI("CUName", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(180), CLAY_SIZING_FIT({0}) } } }) {
+                            Clay_String ns = {false, (int32_t)strlen(name), (char*)name};
+                            CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14}));
+                        }
+                        CLAY(CLAY_IDI("CUDur", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                            uint64_t duration_ns = frame->duration_ns[idx];
+                            if (duration_ns > 1000000ULL)
+                                snprintf(bufs[i][0], sizeof(bufs[i][0]), "%.2f ms", (double)duration_ns / 1000000.0);
+                            else
+                                snprintf(bufs[i][0], sizeof(bufs[i][0]), "%.1f us", (double)duration_ns / 1000.0);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][0]), bufs[i][0]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 200, 120, 255}, .fontSize = 14}));
+                            }
+                        }
+                        CLAY(CLAY_IDI("CUDep", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) } } }) {
+                            snprintf(bufs[i][1], sizeof(bufs[i][1]), "%u", (unsigned)frame->depth[idx]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][1]), bufs[i][1]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
+                            }
+                        }
+                        CLAY(CLAY_IDI("CUPar", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(80), CLAY_SIZING_FIT({0}) } } }) {
+                            if (parent == CPU_PROF_INVALID_PARENT || parent >= frame->count) {
+                                snprintf(bufs[i][2], sizeof(bufs[i][2]), "ROOT");
+                            } else {
+                                const char *pname = frame->names[parent] ? frame->names[parent] : "(null)";
+                                snprintf(bufs[i][2], sizeof(bufs[i][2]), "%s", pname);
+                            }
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][2]), bufs[i][2]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
+                            }
+                        }
+                    }
+                }
+            }
             }
         }
     }
 
     commands = Clay_EndLayout();
+    if (history_count > 0 && e->cpu_prof_click) {
+        Clay_ElementData tl = Clay_GetElementData(CLAY_ID("CUTimelineStrip"));
+        if (tl.found) {
+            float mx = e->cpu_prof_mouse_x;
+            float my = e->cpu_prof_mouse_y;
+            if (mx >= tl.boundingBox.x && mx <= tl.boundingBox.x + tl.boundingBox.width &&
+                my >= tl.boundingBox.y && my <= tl.boundingBox.y + tl.boundingBox.height) {
+                float rel = (mx - tl.boundingBox.x) / (tl.boundingBox.width > 1.0f ? tl.boundingBox.width : 1.0f);
+                int idx = (int)(rel * (float)history_count);
+                if (idx < 0) idx = 0;
+                if (idx >= history_count) idx = history_count - 1;
+                e->cpu_prof_timeline_paused = 1;
+                e->cpu_prof_timeline_offset = history_count - 1 - idx;
+                e->cpu_prof_timeline_frame_id =
+                    cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+            }
+        }
+    }
     e->cpu_prof_cmd_count = commands.length;
     e->cpu_prof_cmd_array = commands.internalArray;
     e->cpu_prof_click = 0;

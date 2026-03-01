@@ -121,6 +121,8 @@ static editor_init_fn g_editor_init = NULL;
 static editor_destroy_fn g_editor_destroy = NULL;
 static editor_update_fn g_editor_update = NULL;
 static editor_handle_event_fn g_editor_handle_event = NULL;
+static int cpu_prof_capture_paused = 0;
+static int cpu_prof_capture_was_paused = 0;
 
 // ---------------------------------------------------------------------------
 // Vertex structures
@@ -1119,6 +1121,16 @@ static int text_contains_icon_cp(const char *text, uint32_t len) {
     return 0;
 }
 
+static float icon_inline_y_nudge(uint32_t cp, float font_size) {
+    /* Visual baseline tuning: Bootstrap media icons sit slightly high next to text. */
+    (void)font_size;
+    switch (cp) {
+        case BI_ICON_PLAY_FILL: return 0.0f;
+        case BI_ICON_STOP_FILL: return 0.0f;
+        default: return 0.0f;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pre-render tab header text to GPU texture (CPU-side rasterization)
 // ---------------------------------------------------------------------------
@@ -1420,12 +1432,14 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                    UTF-8 glyph pass and route quads to either the regular or icon atlas. */
                 float cursor_x = floorf(box.x);
                 float baseline_y = floorf(box.y + font_size * font_ascent);
+                float text_line_center = box.y + box.height * 0.5f;
                 uint32_t idx = 0;
                 while (idx < text->stringContents.length) {
                     uint32_t cp = 0;
                     uint32_t next_idx = idx + 1;
                     const msdf_glyph *mg = NULL;
                     int use_icon_font = 0;
+                    float glyph_size = font_size;
                     float glyph_w;
                     float glyph_h;
                     float gx;
@@ -1439,15 +1453,23 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                     mg = icon_glyph_lookup(cp);
                     if (mg) {
                         use_icon_font = 1;
+                        /* Keep icons slightly smaller than text and center them per-line. */
+                        glyph_size = font_size * 0.90f;
                     } else if (cp >= 32 && cp < 127) {
                         mg = &font_glyphs[cp];
                     }
 
                     if (mg && mg->width > 0 && mg->height > 0) {
-                        glyph_w = (float)mg->width * (font_size / (float)MSDF_SOURCE_SIZE);
-                        glyph_h = (float)mg->height * (font_size / (float)MSDF_SOURCE_SIZE);
-                        gx = floorf(cursor_x + mg->xoff * font_size);
-                        gy = baseline_y + mg->yoff * font_size;
+                        glyph_w = (float)mg->width * (glyph_size / (float)MSDF_SOURCE_SIZE);
+                        glyph_h = (float)mg->height * (glyph_size / (float)MSDF_SOURCE_SIZE);
+                        gx = floorf(cursor_x + mg->xoff * glyph_size);
+                        gy = baseline_y + mg->yoff * glyph_size;
+
+                        if (use_icon_font) {
+                            float icon_center = gy + glyph_h * 0.5f;
+                            gy = floorf(gy + (text_line_center - icon_center));
+                            gy += icon_inline_y_nudge(cp, font_size);
+                        }
 
                         if (!(clipping && (gx + glyph_w < clip_x0 || gx > clip_x1 ||
                                            gy + glyph_h < clip_y0 || gy > clip_y1))) {
@@ -1455,7 +1477,7 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                         }
                     }
 
-                    if (mg) cursor_x += mg->advance * font_size;
+                    if (mg) cursor_x += mg->advance * glyph_size;
                     else cursor_x += font_size * 0.5f;
 
                     if (next_idx <= idx) break;
@@ -1982,6 +2004,8 @@ EXPORT int init_externals(struct memory *m) {
     /* Initialize profilers */
     cache_prof_init();
     cpu_prof_init();
+    cpu_prof_capture_paused = 0;
+    cpu_prof_capture_was_paused = 0;
 
     // 5. Claim window
     if (!SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
@@ -3234,7 +3258,16 @@ EXPORT void update_externals(struct memory *m) {
     if (clay_arena_game && clay_context)
         clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
     if (m->editor.open && g_editor_update) g_editor_update(&m->game, &m->editor);
-    cpu_prof_frame_end();
+    cpu_prof_capture_paused = (m->editor.cpu_prof_timeline_paused != 0);
+    if (!cpu_prof_capture_paused) {
+        if (cpu_prof_capture_was_paused) {
+            /* Discard stale pre-pause data so resumed capture starts cleanly. */
+            cpu_prof_clear_current_frame();
+        } else {
+            cpu_prof_frame_end();
+        }
+    }
+    cpu_prof_capture_was_paused = cpu_prof_capture_paused;
 
     // --- Panel textures (after dock_layout in editor, which set node rects) ---
     ensure_panel_textures(dock);
@@ -4384,7 +4417,13 @@ EXPORT void assign_editor_handle_event(editor_handle_event_fn func) {
 /* Profiler zone wrappers — called by core.dll, forwarded to engine.dll via function pointers */
 EXPORT void ext_cache_zone_begin(const char *name) { cache_zone_begin(name); }
 EXPORT void ext_cache_zone_end(void) { cache_zone_end(); }
-EXPORT void ext_cpu_zone_begin(const char *name) { cpu_zone_begin(name); }
-EXPORT void ext_cpu_zone_end(void) { cpu_zone_end(); }
+EXPORT void ext_cpu_zone_begin(const char *name) {
+    if (!cpu_prof_capture_paused) cpu_zone_begin(name);
+}
+EXPORT void ext_cpu_zone_end(void) {
+    if (!cpu_prof_capture_paused) cpu_zone_end();
+}
 EXPORT void ext_cache_prof_frame_reset(void) { cache_prof_frame_reset(); }
-EXPORT void ext_cpu_prof_frame_end(void) { cpu_prof_frame_end(); }
+EXPORT void ext_cpu_prof_frame_end(void) {
+    if (!cpu_prof_capture_paused) cpu_prof_frame_end();
+}

@@ -23,6 +23,7 @@
 
 #define CACHE_PROF_MAX_ZONES  32
 #define CACHE_PROF_MAX_STACK  16
+#define CACHE_PROF_MAX_NAME_LEN 64
 
 /* kpc constants */
 #define KPC_CLASS_FIXED          (1u << 0)
@@ -53,6 +54,8 @@ void              cache_zone_begin(const char *name);
 void              cache_zone_end(void);
 void              cache_prof_frame_reset(void);
 int               cache_prof_available(void);
+int               cache_prof_is_hardware_backend(void);
+const char       *cache_prof_status_message(void);
 cache_prof_frame *cache_prof_get_frame(void);
 void              cache_prof_sort_zones(void);
 
@@ -76,9 +79,11 @@ void              cache_prof_sort_zones(void);
 #if CACHE_PROF_MACOS
 
 typedef int (*kpc_set_counting_fn)(uint32_t classes);
+typedef int (*kpc_set_thread_counting_fn)(uint32_t classes);
 typedef int (*kpc_set_config_fn)(uint32_t classes, uint64_t *config);
 typedef int (*kpc_get_thread_counters_fn)(int tid, uint32_t count, uint64_t *counters);
 typedef uint32_t (*kpc_get_counter_count_fn)(uint32_t classes);
+typedef int (*kpc_force_all_ctrs_set_fn)(int val);
 
 /* Apple M1 configurable PMC event IDs */
 #define CACHE_PROF_EVT_L1D_MISS    0x04
@@ -91,6 +96,8 @@ typedef uint32_t (*kpc_get_counter_count_fn)(uint32_t classes);
 
 static int                cache_prof__available = 0;
 static cache_prof_frame   cache_prof__frame;
+static char               cache_prof__zone_names[CACHE_PROF_MAX_ZONES][CACHE_PROF_MAX_NAME_LEN];
+static char               cache_prof__status_message[192];
 
 /* Zone nesting stack */
 static const char        *cache_prof__stack_names[CACHE_PROF_MAX_STACK];
@@ -102,9 +109,11 @@ static int                cache_prof__stack_depth = 0;
 static void *cache_prof__kperf_lib = NULL;
 
 static kpc_set_counting_fn         cache_prof__kpc_set_counting = NULL;
+static kpc_set_thread_counting_fn  cache_prof__kpc_set_thread_counting = NULL;
 static kpc_set_config_fn           cache_prof__kpc_set_config = NULL;
 static kpc_get_thread_counters_fn  cache_prof__kpc_get_thread_counters = NULL;
 static kpc_get_counter_count_fn    cache_prof__kpc_get_counter_count = NULL;
+static kpc_force_all_ctrs_set_fn   cache_prof__kpc_force_all_ctrs_set = NULL;
 
 static uint32_t cache_prof__num_counters = 0;
 
@@ -132,12 +141,23 @@ static void cache_prof__take_snapshot(cache_prof_snapshot *snap) {
 #endif
 }
 
+static void cache_prof__set_status(const char *msg) {
+    size_t i = 0;
+    if (!msg) msg = "";
+    while (msg[i] && i + 1 < sizeof(cache_prof__status_message)) {
+        cache_prof__status_message[i] = msg[i];
+        i++;
+    }
+    cache_prof__status_message[i] = '\0';
+}
+
 /* ── API function bodies ────────────────────────────────────────────────── */
 
 void cache_prof_init(void) {
     memset(&cache_prof__frame, 0, sizeof(cache_prof__frame));
     cache_prof__stack_depth = 0;
     cache_prof__available = 0;
+    cache_prof__set_status("Cache PMU profiler not initialized");
 
 #if CACHE_PROF_MACOS
     /* Try to load the kperf dynamic library */
@@ -149,12 +169,15 @@ void cache_prof_init(void) {
     }
     if (!cache_prof__kperf_lib) {
         fprintf(stderr, "[cache_profiler] dlopen kperf failed: %s\n", dlerror());
+        cache_prof__set_status("kperf framework not loadable on this macOS version");
         return;
     }
 
     /* Resolve function pointers */
     cache_prof__kpc_set_counting =
         (kpc_set_counting_fn)dlsym(cache_prof__kperf_lib, "kpc_set_counting");
+    cache_prof__kpc_set_thread_counting =
+        (kpc_set_thread_counting_fn)dlsym(cache_prof__kperf_lib, "kpc_set_thread_counting");
     cache_prof__kpc_set_config =
         (kpc_set_config_fn)dlsym(cache_prof__kperf_lib, "kpc_set_config");
     cache_prof__kpc_get_thread_counters =
@@ -163,6 +186,8 @@ void cache_prof_init(void) {
     cache_prof__kpc_get_counter_count =
         (kpc_get_counter_count_fn)dlsym(cache_prof__kperf_lib,
                                         "kpc_get_counter_count");
+    cache_prof__kpc_force_all_ctrs_set =
+        (kpc_force_all_ctrs_set_fn)dlsym(cache_prof__kperf_lib, "kpc_force_all_ctrs_set");
 
     if (!cache_prof__kpc_set_counting ||
         !cache_prof__kpc_set_config ||
@@ -172,6 +197,7 @@ void cache_prof_init(void) {
                         "functions\n");
         dlclose(cache_prof__kperf_lib);
         cache_prof__kperf_lib = NULL;
+        cache_prof__set_status("kpc symbols missing (API changed)");
         return;
     }
 
@@ -184,6 +210,7 @@ void cache_prof_init(void) {
                 cache_prof__num_counters);
         dlclose(cache_prof__kperf_lib);
         cache_prof__kperf_lib = NULL;
+        cache_prof__set_status("kpc counter topology unsupported");
         return;
     }
 
@@ -214,29 +241,45 @@ void cache_prof_init(void) {
         config[2] = CACHE_PROF_EVT_BRANCH_MISS;
     }
 
+    if (cache_prof__kpc_force_all_ctrs_set) {
+        int force_ret = cache_prof__kpc_force_all_ctrs_set(1);
+        if (force_ret != 0) {
+            fprintf(stderr, "[cache_profiler] kpc_force_all_ctrs_set failed: %d\n", force_ret);
+        }
+    }
+
     int ret = cache_prof__kpc_set_config(KPC_CLASS_CONFIGURABLE, config);
     if (ret != 0) {
         fprintf(stderr, "[cache_profiler] kpc_set_config failed: %d\n", ret);
         dlclose(cache_prof__kperf_lib);
         cache_prof__kperf_lib = NULL;
+        cache_prof__set_status("kpc_set_config denied (requires privileged PMU access)");
         return;
     }
 
     /* Enable counting */
     ret = cache_prof__kpc_set_counting(classes);
+    if (ret != 0 && cache_prof__kpc_set_thread_counting) {
+        ret = cache_prof__kpc_set_thread_counting(classes);
+    }
     if (ret != 0) {
         fprintf(stderr, "[cache_profiler] kpc_set_counting failed: %d\n", ret);
         dlclose(cache_prof__kperf_lib);
         cache_prof__kperf_lib = NULL;
+        cache_prof__set_status("kpc_set_counting denied (requires privileged PMU access)");
         return;
     }
 
     cache_prof__available = 1;
+    cache_prof__set_status("Hardware counters active (kpc)");
     fprintf(stderr, "[cache_profiler] initialized: %u counters (%u fixed, "
                     "%u configurable)\n",
             cache_prof__num_counters, num_fixed, num_configurable);
 
 #endif /* CACHE_PROF_MACOS */
+#if !CACHE_PROF_MACOS
+    cache_prof__set_status("No hardware cache-counter backend for this platform");
+#endif
 }
 
 void cache_prof_shutdown(void) {
@@ -246,12 +289,15 @@ void cache_prof_shutdown(void) {
         cache_prof__kperf_lib = NULL;
     }
     cache_prof__kpc_set_counting = NULL;
+    cache_prof__kpc_set_thread_counting = NULL;
     cache_prof__kpc_set_config = NULL;
     cache_prof__kpc_get_thread_counters = NULL;
     cache_prof__kpc_get_counter_count = NULL;
+    cache_prof__kpc_force_all_ctrs_set = NULL;
 #endif
     cache_prof__available = 0;
     cache_prof__stack_depth = 0;
+    cache_prof__set_status("Cache PMU profiler stopped");
 }
 
 void cache_zone_begin(const char *name) {
@@ -300,7 +346,17 @@ void cache_zone_end(void) {
     /* Append to frame SoA arrays */
     if (cache_prof__frame.count < CACHE_PROF_MAX_ZONES) {
         uint16_t idx = cache_prof__frame.count;
-        cache_prof__frame.names[idx]       = cache_prof__stack_names[d];
+        const char *src_name = cache_prof__stack_names[d];
+        size_t n = 0;
+        if (!src_name) src_name = "(null)";
+        while (src_name[n] && n + 1 < CACHE_PROF_MAX_NAME_LEN) {
+            cache_prof__zone_names[idx][n] = src_name[n];
+            n++;
+        }
+        cache_prof__zone_names[idx][n] = '\0';
+
+        /* Keep a stable name pointer across engine hot reloads. */
+        cache_prof__frame.names[idx]       = cache_prof__zone_names[idx];
         cache_prof__frame.l1d_miss[idx]    = l1d_miss;
         cache_prof__frame.l1i_miss[idx]    = l1i_miss;
         cache_prof__frame.branch_miss[idx] = branch_miss;
@@ -317,6 +373,14 @@ void cache_prof_frame_reset(void) {
 
 int cache_prof_available(void) {
     return cache_prof__available;
+}
+
+int cache_prof_is_hardware_backend(void) {
+    return cache_prof__available;
+}
+
+const char *cache_prof_status_message(void) {
+    return cache_prof__status_message;
 }
 
 cache_prof_frame *cache_prof_get_frame(void) {
