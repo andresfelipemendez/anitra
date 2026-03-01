@@ -105,6 +105,10 @@ typedef struct editor_state {
     float scene_tree_scroll_y;                    /* scroll wheel delta this frame */
     int   scene_tree_mouse_down;                  /* left button held */
     int   scene_tree_click;                       /* 1 on the frame left button was pressed */
+    int   scene_tree_drag_active;                 /* dragging an entity row */
+    int   scene_tree_drag_entity;                 /* dragged entity index, -1 = none */
+    int   scene_tree_drop_target;                 /* hovered drop target entity, -1 = none */
+    int   scene_tree_drop_mode;                   /* scene-tree drop mode enum */
 
     /* Scrollbar data — set by profiler_layout after EndLayout, read by externals renderer */
     float prof_scroll_pos;            /* current scroll Y offset (<=0) */

@@ -54,6 +54,13 @@ enum {
     FILE_MENU_ACTION_COUNT
 };
 
+enum {
+    SCENE_TREE_DROP_NONE = 0,
+    SCENE_TREE_DROP_NESTED,
+    SCENE_TREE_DROP_SIBLING_BEFORE,
+    SCENE_TREE_DROP_SIBLING_AFTER
+};
+
 #define EDITOR_VIEWBAR_HEIGHT          42.0f
 #define EDITOR_VIEWBAR_MARGIN_X        10.0f
 #define EDITOR_VIEWBAR_MARGIN_Y         8.0f
@@ -1009,12 +1016,78 @@ static void build_scene_parent_lookup(const game_state *gs, int entity_count, in
     }
 }
 
+static void remove_parent_transform_component(game_state *gs, int entity_index) {
+    int read_i;
+    int write_i = 0;
+    if (!gs || !gs->parent_transform_components) return;
+
+    for (read_i = 0; read_i < gs->parent_transform_component_count; read_i++) {
+        parent_transform_component pt = gs->parent_transform_components[read_i];
+        if (pt.entity_index == entity_index) continue;
+        gs->parent_transform_components[write_i++] = pt;
+    }
+    gs->parent_transform_component_count = write_i;
+}
+
+static void set_parent_transform_component(game_state *gs, int entity_index, int parent_entity_index) {
+    int i;
+    if (!gs) return;
+    if (entity_index < 0 || entity_index >= gs->scene_entity_count) return;
+    if (parent_entity_index < 0 || parent_entity_index >= gs->scene_entity_count) {
+        remove_parent_transform_component(gs, entity_index);
+        return;
+    }
+    if (entity_index == parent_entity_index) return;
+
+    remove_parent_transform_component(gs, entity_index);
+    if (!gs->parent_transform_components) return;
+    if (gs->parent_transform_component_count >= gs->parent_transform_component_capacity) return;
+
+    i = gs->parent_transform_component_count++;
+    gs->parent_transform_components[i].entity_index = entity_index;
+    gs->parent_transform_components[i].parent_entity_index = parent_entity_index;
+}
+
+static int scene_tree_parent_assignment_is_valid(int child_entity, int parent_entity,
+                                                 const int *parent_of, int entity_count) {
+    int current;
+    int guard = 0;
+
+    if (!parent_of || entity_count <= 0) return 0;
+    if (child_entity < 0 || child_entity >= entity_count) return 0;
+    if (parent_entity < -1 || parent_entity >= entity_count) return 0;
+    if (parent_entity == -1) return 1;
+    if (child_entity == parent_entity) return 0;
+
+    current = parent_entity;
+    while (current >= 0 && current < entity_count && guard < entity_count) {
+        if (current == child_entity) return 0;
+        current = parent_of[current];
+        guard++;
+    }
+
+    return 1;
+}
+
 static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
-                                       int entity_index, int depth, int click) {
+                                       int entity_index, int depth, int click,
+                                       const int *parent_of, int entity_count) {
     static char row_bufs[SCENE_TREE_MAX_ENTITIES][64];
     int bi = entity_index % SCENE_TREE_MAX_ENTITIES;
     int selected = (e->scene_selected_entity == entity_index);
+    int dragging = e->scene_tree_drag_active && e->scene_tree_mouse_down;
+    int sibling_parent = -1;
+    int nested_valid = scene_tree_parent_assignment_is_valid(e->scene_tree_drag_entity, entity_index,
+                                                              parent_of, entity_count);
+    int sibling_valid;
     const char *name = NULL;
+
+    if (entity_index >= 0 && entity_index < entity_count) {
+        sibling_parent = parent_of[entity_index];
+        if (sibling_parent < 0 || sibling_parent >= entity_count) sibling_parent = -1;
+    }
+    sibling_valid = scene_tree_parent_assignment_is_valid(e->scene_tree_drag_entity, sibling_parent,
+                                                          parent_of, entity_count);
 
     if (gs && entity_index >= 0 && entity_index < gs->project.scene_entity_count) {
         if (gs->project.scene_entity_names[entity_index][0]) {
@@ -1031,19 +1104,86 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
     CLAY(CLAY_IDI("STEntityRow", (int32_t)entity_index), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-            .padding = { .left = (uint16_t)(8 + depth * 16), .right = 8, .top = 5, .bottom = 5 }
-        },
-        .backgroundColor = selected ? ((Clay_Color){52, 62, 84, 255})
-                                    : (Clay_Hovered() ? ((Clay_Color){48, 56, 72, 255})
-                                                      : ((Clay_Color){0, 0, 0, 0})),
-        .cornerRadius = CLAY_CORNER_RADIUS(4)
+            .childGap = 0,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        }
     }) {
-        int hovered = Clay_Hovered();
-        if (hovered && click) e->scene_selected_entity = entity_index;
+        CLAY(CLAY_IDI("STEntityRowTop", (int32_t)entity_index), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(2) }
+            },
+            .backgroundColor = (dragging && entity_index != e->scene_tree_drag_entity && Clay_Hovered())
+                                   ? (sibling_valid ? ((Clay_Color){102, 170, 238, 255})
+                                                    : ((Clay_Color){214, 98, 98, 255}))
+                                   : ((Clay_Color){0, 0, 0, 0})
+        }) {
+            int hovered = Clay_Hovered();
+            if (hovered && click) {
+                e->scene_selected_entity = entity_index;
+                e->scene_tree_drag_active = 1;
+                e->scene_tree_drag_entity = entity_index;
+                e->scene_tree_drop_target = -1;
+                e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+            }
+            if (hovered && dragging && entity_index != e->scene_tree_drag_entity) {
+                e->scene_tree_drop_target = entity_index;
+                e->scene_tree_drop_mode = SCENE_TREE_DROP_SIBLING_BEFORE;
+            }
+        }
 
-        {
+        CLAY(CLAY_IDI("STEntityRowBody", (int32_t)entity_index), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                .padding = { .left = (uint16_t)(8 + depth * 16), .right = 8, .top = 5, .bottom = 5 }
+            },
+            .backgroundColor = (dragging && entity_index != e->scene_tree_drag_entity && Clay_Hovered())
+                                   ? (nested_valid ? ((Clay_Color){64, 94, 136, 255})
+                                                   : ((Clay_Color){120, 60, 60, 255}))
+                                   : ((dragging && entity_index == e->scene_tree_drag_entity)
+                                          ? ((Clay_Color){74, 74, 74, 255})
+                                          : (selected ? ((Clay_Color){52, 62, 84, 255})
+                                                      : (Clay_Hovered() ? ((Clay_Color){48, 56, 72, 255})
+                                                                        : ((Clay_Color){0, 0, 0, 0})))),
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            int hovered = Clay_Hovered();
+            if (hovered && click) {
+                e->scene_selected_entity = entity_index;
+                e->scene_tree_drag_active = 1;
+                e->scene_tree_drag_entity = entity_index;
+                e->scene_tree_drop_target = -1;
+                e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+            }
+            if (hovered && dragging && entity_index != e->scene_tree_drag_entity) {
+                e->scene_tree_drop_target = entity_index;
+                e->scene_tree_drop_mode = SCENE_TREE_DROP_NESTED;
+            }
+
             Clay_String cs = {false, (int32_t)strlen(row_bufs[bi]), row_bufs[bi]};
             CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {224, 230, 240, 255}, .fontSize = 16}));
+        }
+
+        CLAY(CLAY_IDI("STEntityRowBottom", (int32_t)entity_index), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(2) }
+            },
+            .backgroundColor = (dragging && entity_index != e->scene_tree_drag_entity && Clay_Hovered())
+                                   ? (sibling_valid ? ((Clay_Color){102, 170, 238, 255})
+                                                    : ((Clay_Color){214, 98, 98, 255}))
+                                   : ((Clay_Color){0, 0, 0, 0})
+        }) {
+            int hovered = Clay_Hovered();
+            if (hovered && click) {
+                e->scene_selected_entity = entity_index;
+                e->scene_tree_drag_active = 1;
+                e->scene_tree_drag_entity = entity_index;
+                e->scene_tree_drop_target = -1;
+                e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+            }
+            if (hovered && dragging && entity_index != e->scene_tree_drag_entity) {
+                e->scene_tree_drop_target = entity_index;
+                e->scene_tree_drop_mode = SCENE_TREE_DROP_SIBLING_AFTER;
+            }
         }
     }
 }
@@ -1057,7 +1197,7 @@ static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state 
     if (visited[entity_index]) return;
 
     visited[entity_index] = 1;
-    scene_tree_emit_entity_row(gs, e, entity_index, depth, click);
+    scene_tree_emit_entity_row(gs, e, entity_index, depth, click, parent_of, entity_count);
 
     for (child = 0; child < entity_count; child++) {
         if (parent_of[child] == entity_index && child != entity_index) {
@@ -1946,6 +2086,10 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->menu_open = -1;
     e->menu_hover = -1;
     e->scene_selected_entity = 0;
+    e->scene_tree_drag_active = 0;
+    e->scene_tree_drag_entity = -1;
+    e->scene_tree_drop_target = -1;
+    e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
     e->initialized = 1;
 
     /* Create profiler Clay context (one-time, backed by editor_arena).
@@ -2369,6 +2513,10 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
 
     click = e->scene_tree_click;
+    if (e->scene_tree_drag_active && e->scene_tree_mouse_down) {
+        e->scene_tree_drop_target = -1;
+        e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+    }
     {
         Clay_Vector2 mpos = {e->scene_tree_mouse_x, e->scene_tree_mouse_y};
         Clay_Vector2 sdelta = {0, e->scene_tree_scroll_y};
@@ -2439,6 +2587,31 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     commands = Clay_EndLayout();
     e->scene_tree_cmd_count = commands.length;
     e->scene_tree_cmd_array = commands.internalArray;
+
+    if (e->scene_tree_drag_active && !e->scene_tree_mouse_down) {
+        int child = e->scene_tree_drag_entity;
+        int target = e->scene_tree_drop_target;
+        int mode = e->scene_tree_drop_mode;
+        int parent = -2;
+
+        if (mode == SCENE_TREE_DROP_NESTED && target >= 0 && target < entity_count) {
+            parent = target;
+        } else if ((mode == SCENE_TREE_DROP_SIBLING_BEFORE || mode == SCENE_TREE_DROP_SIBLING_AFTER) &&
+                   target >= 0 && target < entity_count) {
+            parent = parent_of[target];
+            if (parent < 0 || parent >= entity_count) parent = -1;
+        }
+
+        if (parent >= -1 && scene_tree_parent_assignment_is_valid(child, parent, parent_of, entity_count)) {
+            set_parent_transform_component(gs, child, parent);
+            e->scene_selected_entity = child;
+        }
+        e->scene_tree_drag_active = 0;
+        e->scene_tree_drag_entity = -1;
+        e->scene_tree_drop_target = -1;
+        e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+    }
+
     e->scene_tree_click = 0;
 }
 
@@ -3010,21 +3183,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                 }
             }
 
-            CLAY(CLAY_ID("EDToolbarPlay"), {
-                .layout = {
-                    .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_PLAY_WIDTH),
-                                CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
-                    .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
-                },
-                .backgroundColor = play_active
-                                   ? ((Clay_Color){142, 68, 68, 232})
-                                   : ((Clay_Color){72, 128, 82, 232}),
-                .cornerRadius = CLAY_CORNER_RADIUS(4)
-            }) {
-                const char *label = play_active ? "Stop" : "Play";
-                Clay_String cs = { false, (int32_t)strlen(label), label };
-                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
-            }
+           
         }
     }
 
@@ -3603,6 +3762,9 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             if (panel_event_hit(d, PANEL_SCENE_TREE, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
                 e->scene_tree_mouse_x = lx;
                 e->scene_tree_mouse_y = ly;
+            } else {
+                e->scene_tree_mouse_x = -10000.0f;
+                e->scene_tree_mouse_y = -10000.0f;
             }
         }
     }
