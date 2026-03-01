@@ -118,7 +118,7 @@ list = [
 "16" = { position = [-2.0000, 0.0000, 6.0000] }
 "17" = { position = [2.0000, 0.0000, 6.0000] }
 "18" = { position = [6.0000, 0.0000, 6.0000] }
-"19" = { position = [0.0000, 0.0079, 0.0000] }
+"19" = { position = [0.0000, -0.8563, 0.0000] }
 
 [rotations]
 "0" = { y = 0.0000 }
@@ -164,7 +164,7 @@ list = [
 "19" = { model = "knight", visible = true }
 
 [animations]
-"19" = { asset = "general", playing = true, clip = 6, time = 0.0867, speed = 1.0000 }
+"19" = { asset = "general", playing = true, clip = 6, time = 0.6530, speed = 1.0000 }
 
 [velocities]
 "0" = { value = [0.0000, 0.0000] }
