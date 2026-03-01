@@ -73,6 +73,32 @@ enum {
 #define EDITOR_VIEWBAR_BUTTON_GAP       6.0f
 #define EDITOR_VIEWBAR_GROUP_GAP       14.0f
 
+/* Shared UI scale for editor panels. Keep typography and spacing tokenized so
+   scene tree, browser, inspector, and top bars feel consistent. */
+#define UI_FONT_TITLE      15
+#define UI_FONT_BODY       14
+#define UI_FONT_SECONDARY  13
+
+#define UI_SPACE_XXS       2
+#define UI_SPACE_XS        4
+#define UI_SPACE_SM        6
+#define UI_SPACE_MD        8
+#define UI_SPACE_LG       10
+#define UI_SPACE_XL       12
+
+#define UI_PANEL_PADDING   UI_SPACE_LG
+#define UI_PANEL_GAP       UI_SPACE_SM
+#define UI_SECTION_PADDING UI_SPACE_MD
+#define UI_SECTION_GAP     UI_SPACE_SM
+#define UI_ROW_PADDING_X   UI_SPACE_MD
+#define UI_ROW_PADDING_Y   UI_SPACE_XS
+#define UI_ROW_GAP         UI_SPACE_XS
+#define UI_TREE_INDENT     14
+
+#define UI_RADIUS_SM       3
+#define UI_RADIUS_MD       4
+#define UI_RADIUS_LG       6
+
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 
@@ -252,14 +278,14 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
                     CLAY_TEXT(tag_s, CLAY_TEXT_CONFIG({
                         .textColor = hovered ? ((Clay_Color){255, 255, 255, 255})
                                              : ((Clay_Color){200, 200, 200, 255}),
-                        .fontSize = 16
+                        .fontSize = UI_FONT_BODY
                     }));
                 }
 
                 /* Size — right-aligned */
                 {
                     Clay_String sz_s = {false, (int32_t)strlen(size_bufs[bidx]), size_bufs[bidx]};
-                    CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {140, 140, 150, 255}, .fontSize = 16}));
+                    CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {140, 140, 150, 255}, .fontSize = UI_FONT_BODY}));
                 }
             }
         }
@@ -1162,7 +1188,12 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
         CLAY(CLAY_IDI("STEntityRowBody", (int32_t)entity_index), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                .padding = { .left = (uint16_t)(8 + depth * 16), .right = 8, .top = 5, .bottom = 5 }
+                .padding = {
+                    .left = (uint16_t)(UI_ROW_PADDING_X + depth * UI_TREE_INDENT),
+                    .right = UI_ROW_PADDING_X,
+                    .top = UI_ROW_PADDING_Y,
+                    .bottom = UI_ROW_PADDING_Y
+                }
             },
             .backgroundColor = (dragging && entity_index != e->scene_tree_drag_entity && Clay_Hovered())
                                    ? (nested_valid ? ((Clay_Color){64, 94, 136, 255})
@@ -1172,7 +1203,7 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
                                           : (selected ? ((Clay_Color){52, 62, 84, 255})
                                                       : (Clay_Hovered() ? ((Clay_Color){48, 56, 72, 255})
                                                                         : ((Clay_Color){0, 0, 0, 0})))),
-            .cornerRadius = CLAY_CORNER_RADIUS(4)
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
         }) {
             int hovered = Clay_Hovered();
             if (hovered && click) {
@@ -1188,7 +1219,7 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
             }
 
             Clay_String cs = {false, (int32_t)strlen(row_bufs[bi]), row_bufs[bi]};
-            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {224, 230, 240, 255}, .fontSize = 16}));
+            CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {224, 230, 240, 255}, .fontSize = UI_FONT_BODY}));
         }
 
         CLAY(CLAY_IDI("STEntityRowBottom", (int32_t)entity_index), {
@@ -2299,7 +2330,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
             }
         }) {
             Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
-            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = UI_FONT_BODY}));
         }
 
         /* Two-panel row */
@@ -2323,7 +2354,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
             }) {
                 {
                     Clay_String hdr = CLAY_STRING("Tree View");
-                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = UI_FONT_BODY}));
                 }
 
                 /* Scrollable tree content */
@@ -2354,7 +2385,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                                         .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
                                     }
                                 }) {
-                                    CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+                                    CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = UI_FONT_BODY}));
                                 }
                             }
                         }
@@ -2386,7 +2417,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
             }) {
                 {
                     Clay_String hdr = CLAY_STRING("Grid View");
-                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = 16}));
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = UI_FONT_BODY}));
                 }
 
                 /* Placeholder rect — sized by Clay, filled by GPU texture in externals */
@@ -2413,7 +2444,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                     }) {}
                     {
                         Clay_String ls = CLAY_STRING("= allocated");
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = UI_FONT_BODY}));
                     }
                     CLAY(CLAY_ID("GLFreeBox"), {
                         .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
@@ -2422,7 +2453,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                     }) {}
                     {
                         Clay_String ls = CLAY_STRING("= free");
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = 16}));
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = UI_FONT_BODY}));
                     }
                 }
             }
@@ -2666,14 +2697,14 @@ static void project_browser_emit_asset_row(int row_id,
     CLAY(CLAY_IDI("PBAssetRow", row_id), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-            .padding = CLAY_PADDING_ALL(8),
-            .childGap = 10,
+            .padding = CLAY_PADDING_ALL(UI_SECTION_PADDING),
+            .childGap = UI_SECTION_GAP,
             .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER },
             .layoutDirection = CLAY_LEFT_TO_RIGHT
         },
         .backgroundColor = Clay_Hovered() ? ((Clay_Color){52, 60, 78, 255})
                                           : ((Clay_Color){40, 48, 64, 255}),
-        .cornerRadius = CLAY_CORNER_RADIUS(4)
+        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
     }) {
         CLAY(CLAY_IDI("PBAssetSwatch", row_id), {
             .layout = {
@@ -2686,18 +2717,18 @@ static void project_browser_emit_asset_row(int row_id,
         CLAY(CLAY_IDI("PBAssetMeta", row_id), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                .childGap = 2,
+                .childGap = UI_SPACE_XXS,
                 .layoutDirection = CLAY_TOP_TO_BOTTOM
             }
         }) {
             text = (Clay_String){false, (int32_t)strlen(display_key), display_key};
-            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {228, 234, 242, 255}, .fontSize = 16}));
+            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {228, 234, 242, 255}, .fontSize = UI_FONT_BODY}));
 
             text = (Clay_String){false, (int32_t)strlen(file_name), file_name};
-            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {190, 200, 220, 255}, .fontSize = 15}));
+            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {190, 200, 220, 255}, .fontSize = UI_FONT_SECONDARY}));
 
             text = (Clay_String){false, (int32_t)strlen(display_path), display_path};
-            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {150, 162, 186, 255}, .fontSize = 14}));
+            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {150, 162, 186, 255}, .fontSize = UI_FONT_SECONDARY}));
         }
     }
 }
@@ -2718,15 +2749,15 @@ static void project_browser_emit_asset_group(const char *title,
     CLAY(CLAY_IDI("PBGroup", group_id), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-            .childGap = 6,
+            .childGap = UI_SECTION_GAP,
             .layoutDirection = CLAY_TOP_TO_BOTTOM
         }
     }) {
-        CLAY_TEXT(header, CLAY_TEXT_CONFIG({.textColor = {182, 208, 244, 255}, .fontSize = 16}));
+        CLAY_TEXT(header, CLAY_TEXT_CONFIG({.textColor = {182, 208, 244, 255}, .fontSize = UI_FONT_BODY}));
 
         if (count <= 0) {
             Clay_String empty = CLAY_STRING("(none)");
-            CLAY_TEXT(empty, CLAY_TEXT_CONFIG({.textColor = {130, 142, 166, 255}, .fontSize = 15}));
+            CLAY_TEXT(empty, CLAY_TEXT_CONFIG({.textColor = {130, 142, 166, 255}, .fontSize = UI_FONT_SECONDARY}));
         } else {
             for (i = 0; i < count; i++) {
                 project_browser_emit_asset_row(*row_id, keys[i], paths[i], swatch);
@@ -2794,19 +2825,19 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     CLAY(CLAY_ID("STRoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-            .padding = CLAY_PADDING_ALL(12),
-            .childGap = 8,
+            .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+            .childGap = UI_PANEL_GAP,
             .layoutDirection = CLAY_TOP_TO_BOTTOM
         },
         .backgroundColor = {24, 28, 36, 255}
     }) {
         Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
-        CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 225, 235, 255}, .fontSize = 16}));
+        CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 225, 235, 255}, .fontSize = UI_FONT_TITLE}));
 
         CLAY(CLAY_ID("STList"), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-                .childGap = 8,
+                .childGap = UI_ROW_GAP,
                 .layoutDirection = CLAY_TOP_TO_BOTTOM
             },
             .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
@@ -2814,14 +2845,14 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
             CLAY(CLAY_ID("STListContent"), {
                 .layout = {
                     .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                    .childGap = 8,
+                    .childGap = UI_ROW_GAP,
                     .layoutDirection = CLAY_TOP_TO_BOTTOM
                 }
             }) {
                 int i;
                 if (entity_count <= 0) {
                     Clay_String cs = CLAY_STRING("(empty)");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = UI_FONT_SECONDARY}));
                 } else {
                     for (i = 0; i < entity_count; i++) {
                         int p = parent_of[i];
@@ -2999,8 +3030,8 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
         CLAY(CLAY_ID("PBFolderTree"), {
             .layout = {
                 .sizing = { CLAY_SIZING_FIXED(PB_FOLDER_TREE_WIDTH), CLAY_SIZING_GROW({0}) },
-                .padding = { .left = 6, .right = 6, .top = 8, .bottom = 8 },
-                .childGap = 1,
+                .padding = CLAY_PADDING_ALL(UI_SECTION_PADDING),
+                .childGap = UI_SPACE_XXS,
                 .layoutDirection = CLAY_TOP_TO_BOTTOM
             },
             .backgroundColor = {28, 32, 42, 255},
@@ -3009,7 +3040,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
             CLAY(CLAY_ID("PBTreeContent"), {
                 .layout = {
                     .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                    .childGap = 1,
+                    .childGap = UI_SPACE_XXS,
                     .layoutDirection = CLAY_TOP_TO_BOTTOM
                 }
             }) {
@@ -3019,22 +3050,27 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                     CLAY(CLAY_ID("PBFolderAll"), {
                         .layout = {
                             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                            .padding = { .left = 4, .right = 4, .top = 4, .bottom = 4 },
-                            .childGap = 4,
+                            .padding = {
+                                .left = UI_ROW_PADDING_X,
+                                .right = UI_ROW_PADDING_X,
+                                .top = UI_ROW_PADDING_Y,
+                                .bottom = UI_ROW_PADDING_Y
+                            },
+                            .childGap = UI_ROW_GAP,
                             .layoutDirection = CLAY_LEFT_TO_RIGHT,
                             .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
                         },
                         .backgroundColor = is_root_sel ? ((Clay_Color){60, 90, 140, 255})
                                          : Clay_Hovered() ? ((Clay_Color){44, 52, 68, 255})
                                          : ((Clay_Color){0, 0, 0, 0}),
-                        .cornerRadius = CLAY_CORNER_RADIUS(3)
+                        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
                     }) {
                         {
                             Clay_String n = CLAY_STRING("All");
                             CLAY_TEXT(n, CLAY_TEXT_CONFIG({
                                 .textColor = is_root_sel ? ((Clay_Color){255, 255, 255, 255})
                                                          : ((Clay_Color){200, 210, 225, 255}),
-                                .fontSize = 13
+                                .fontSize = UI_FONT_SECONDARY
                             }));
                         }
                         if (Clay_Hovered() && click) {
@@ -3048,21 +3084,25 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                     int depth = pb_count_depth(folders[i]);
                     const char *display = pb_last_component(folders[i]);
                     int is_selected = (strcmp(folders[i], sel_path) == 0);
-                    int indent = depth * 12;
+                    int indent = depth * UI_TREE_INDENT;
 
                     CLAY(CLAY_IDI("PBFolder", i), {
                         .layout = {
                             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                            .padding = { .left = (uint16_t)(4 + indent), .right = 4,
-                                         .top = 3, .bottom = 3 },
-                            .childGap = 4,
+                            .padding = {
+                                .left = (uint16_t)(UI_SPACE_XS + indent),
+                                .right = UI_SPACE_XS,
+                                .top = UI_SPACE_XS,
+                                .bottom = UI_SPACE_XS
+                            },
+                            .childGap = UI_ROW_GAP,
                             .layoutDirection = CLAY_LEFT_TO_RIGHT,
                             .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
                         },
                         .backgroundColor = is_selected ? ((Clay_Color){60, 90, 140, 255})
                                          : Clay_Hovered() ? ((Clay_Color){44, 52, 68, 255})
                                          : ((Clay_Color){0, 0, 0, 0}),
-                        .cornerRadius = CLAY_CORNER_RADIUS(3)
+                        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
                     }) {
                         /* Folder icon */
                         CLAY(CLAY_IDI("PBFIcon", i), {
@@ -3079,7 +3119,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                             CLAY_TEXT(fname, CLAY_TEXT_CONFIG({
                                 .textColor = is_selected ? ((Clay_Color){255, 255, 255, 255})
                                                          : ((Clay_Color){190, 200, 218, 255}),
-                                .fontSize = 12
+                                .fontSize = UI_FONT_SECONDARY
                             }));
                         }
 
@@ -3103,8 +3143,8 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
         CLAY(CLAY_ID("PBGridArea"), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-                .padding = { .left = 10, .right = 10, .top = 8, .bottom = 8 },
-                .childGap = 6,
+                .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+                .childGap = UI_SECTION_GAP,
                 .layoutDirection = CLAY_TOP_TO_BOTTOM
             }
         }) {
@@ -3117,7 +3157,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                 else
                     snprintf(header_buf, sizeof(header_buf), "%s", title_buf);
                 ts = (Clay_String){ false, (int32_t)strlen(header_buf), header_buf };
-                CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {180, 190, 208, 255}, .fontSize = 13}));
+                CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {180, 190, 208, 255}, .fontSize = UI_FONT_SECONDARY}));
             }
 
             /* Scrollable grid */
@@ -3137,7 +3177,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                     if (vis_count == 0) {
                         Clay_String cs = CLAY_STRING("(no assets in this folder)");
                         CLAY_TEXT(cs, CLAY_TEXT_CONFIG({
-                            .textColor = {130, 142, 166, 255}, .fontSize = 13
+                            .textColor = {130, 142, 166, 255}, .fontSize = UI_FONT_SECONDARY
                         }));
                     } else {
                         for (row = 0; row < num_rows; row++) {
@@ -3166,8 +3206,8 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                                                     CLAY_SIZING_FIXED(PB_ICON_SIZE),
                                                     CLAY_SIZING_FIT({0})
                                                 },
-                                                .padding = CLAY_PADDING_ALL(4),
-                                                .childGap = 4,
+                                                .padding = CLAY_PADDING_ALL(UI_SPACE_XS),
+                                                .childGap = UI_ROW_GAP,
                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM,
                                                 .childAlignment = {
                                                     CLAY_ALIGN_X_CENTER,
@@ -3179,7 +3219,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                                                 : Clay_Hovered()
                                                     ? ((Clay_Color){52, 62, 82, 255})
                                                     : ((Clay_Color){34, 40, 54, 255}),
-                                            .cornerRadius = CLAY_CORNER_RADIUS(6)
+                                            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_LG)
                                         }) {
                                             /* Color swatch */
                                             CLAY(CLAY_IDI("PBSwFrame", idx), {
@@ -3191,7 +3231,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                                                     .padding = CLAY_PADDING_ALL(2)
                                                 },
                                                 .backgroundColor = sw,
-                                                .cornerRadius = CLAY_CORNER_RADIUS(4)
+                                                .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                                             }) {
                                                 CLAY(CLAY_IDI("PBSw", idx), {
                                                     .layout = {
@@ -3201,7 +3241,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                                                         }
                                                     },
                                                     .backgroundColor = {24, 30, 40, 255},
-                                                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                                                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
                                                 }) {}
                                             }
 
@@ -3210,7 +3250,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
                                                 (int32_t)strlen(key), key};
                                             CLAY_TEXT(ks, CLAY_TEXT_CONFIG({
                                                 .textColor = {210, 218, 230, 255},
-                                                .fontSize = 11
+                                                .fontSize = UI_FONT_SECONDARY
                                             }));
 
                                             if (Clay_Hovered() && click) {
@@ -3306,24 +3346,24 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     CLAY(CLAY_ID("INRoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-            .padding = CLAY_PADDING_ALL(12),
-            .childGap = 8,
+            .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+            .childGap = UI_PANEL_GAP,
             .layoutDirection = CLAY_TOP_TO_BOTTOM
         },
         .backgroundColor = {24, 28, 36, 255}
     }) {
         Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
-        CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 225, 235, 255}, .fontSize = 16}));
+        CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 225, 235, 255}, .fontSize = UI_FONT_TITLE}));
 
         CLAY(CLAY_ID("INBody"), {
             .layout = {
                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
-                .padding = CLAY_PADDING_ALL(10),
-                .childGap = 6,
+                .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+                .childGap = UI_SECTION_GAP,
                 .layoutDirection = CLAY_TOP_TO_BOTTOM
             },
             .backgroundColor = {36, 42, 56, 255},
-            .cornerRadius = CLAY_CORNER_RADIUS(4)
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
         }) {
             if (has_asset_selected) {
                 int line_i = 0;
@@ -3362,21 +3402,21 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 CLAY(CLAY_ID("INAssetDetails"), {
                     .layout = {
                         .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                        .padding = CLAY_PADDING_ALL(8),
-                        .childGap = 4,
+                        .padding = CLAY_PADDING_ALL(UI_SECTION_PADDING),
+                        .childGap = UI_ROW_GAP,
                         .layoutDirection = CLAY_TOP_TO_BOTTOM
                     },
                     .backgroundColor = {30, 36, 48, 255},
-                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
                     Clay_String hs = CLAY_STRING("Selected Asset");
-                    CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = {228, 236, 248, 255}, .fontSize = 15}));
+                    CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = {228, 236, 248, 255}, .fontSize = UI_FONT_BODY}));
 
                     snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
                              "Type: %s", type_name);
                     {
                         Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {188, 206, 236, 255}, .fontSize = 14}));
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {188, 206, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
 
@@ -3384,7 +3424,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "Key: %s", e->pb_selected_asset_key);
                     {
                         Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {214, 222, 236, 255}, .fontSize = 14}));
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {214, 222, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
 
@@ -3392,7 +3432,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "File: %s", asset_file);
                     {
                         Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {184, 194, 210, 255}, .fontSize = 14}));
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {184, 194, 210, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
 
@@ -3400,7 +3440,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "Path: %s", e->pb_selected_asset_path);
                     {
                         Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = 13}));
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
 
@@ -3409,7 +3449,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                                  "Extension: %s", asset_ext);
                         {
                             Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = 13}));
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = UI_FONT_SECONDARY}));
                         }
                         line_i++;
                     }
@@ -3419,7 +3459,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                                  "Rig Mesh: %s", bound_mesh_key ? bound_mesh_key : "(no matching scene rig)");
                         {
                             Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {198, 178, 146, 255}, .fontSize = 13}));
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {198, 178, 146, 255}, .fontSize = UI_FONT_SECONDARY}));
                         }
                         line_i++;
                     }
@@ -3434,7 +3474,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                                  (unsigned int)asset_model->model.clip_count);
                         {
                             Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = 13}));
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = UI_FONT_SECONDARY}));
                         }
                         line_i++;
 
@@ -3444,12 +3484,12 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                                  mesh->bounds_center[2], mesh->bounds_radius);
                         {
                             Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = 13}));
+                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = UI_FONT_SECONDARY}));
                         }
                         line_i++;
                     } else if (e->pb_selected_asset_type != 3) {
                         Clay_String ms = CLAY_STRING("Loaded mesh info unavailable.");
-                        CLAY_TEXT(ms, CLAY_TEXT_CONFIG({.textColor = {180, 152, 152, 255}, .fontSize = 13}));
+                        CLAY_TEXT(ms, CLAY_TEXT_CONFIG({.textColor = {180, 152, 152, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                 }
             }
@@ -3457,7 +3497,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
             if (!has_asset_selected) {
                 if (selected < 0) {
                     Clay_String cs = CLAY_STRING("No entity selected.");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = UI_FONT_SECONDARY}));
                 } else {
                 int line_i = 0;
                 int parent_idx = -1;
@@ -3511,17 +3551,17 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Entity %d", selected);
                 {
                     Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = UI_FONT_BODY}));
                 }
                 line_i++;
 
                 {
                     Clay_String cs = CLAY_STRING("Components");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 200, 218, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 200, 218, 255}, .fontSize = UI_FONT_BODY}));
                 }
                 if (!has_components) {
                     Clay_String cs = CLAY_STRING("- (none)");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = UI_FONT_SECONDARY}));
                 }
 
                 if (has_transform) {
@@ -3530,7 +3570,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              tpos.x, tpos.y, tpos.z);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3539,7 +3579,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "- Rotation (y=%.2f deg)", ry);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3549,7 +3589,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              tscale.x, tscale.y, tscale.z);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3558,7 +3598,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "- Velocity (%.2f, %.2f)", vvel.x, vvel.y);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3568,7 +3608,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              cc_move_speed, cc_jump_speed);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3577,7 +3617,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "- Health (%.1f / %.1f)", hcur, hmax);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3593,7 +3633,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                     }
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3602,7 +3642,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "- Mesh (visible=%d)", mesh_visible);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3619,7 +3659,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                     }
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3628,7 +3668,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "- Camera (fov=%.1f near=%.2f far=%.1f)", cam_fov, cam_near, cam_far);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
 
@@ -3638,7 +3678,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              cam_up.x, cam_up.y, cam_up.z);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3647,7 +3687,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "- Parent (entity %d)", parent_idx);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
@@ -3656,13 +3696,13 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                              "- Parent Transform (entity %d)", parent_transform_idx);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = 16}));
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                     line_i++;
                 }
                 if (has_parent_rotation) {
                     Clay_String cs = CLAY_STRING("- Parent Rotation");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = UI_FONT_SECONDARY}));
                 }
                 }
             }
@@ -3708,8 +3748,8 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
     CLAY(CLAY_ID("MenuBarRoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(MENU_BAR_HEIGHT) },
-            .padding = { .left = 6, .right = 8, .top = 2, .bottom = 2 },
-            .childGap = 6,
+            .padding = { .left = UI_SPACE_SM, .right = UI_SECTION_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+            .childGap = UI_SPACE_SM,
             .layoutDirection = CLAY_LEFT_TO_RIGHT,
             .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
         },
@@ -3718,7 +3758,7 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
         CLAY(CLAY_ID("MenuFile"), {
             .layout = {
                 .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
-                .padding = { .left = 10, .right = 10, .top = 2, .bottom = 2 },
+                .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
                 .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
             },
             .backgroundColor = (e->menu_open == MENU_FILE || Clay_Hovered())
@@ -3735,7 +3775,7 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
 
             CLAY_TEXT(CLAY_STRING("File"), CLAY_TEXT_CONFIG({
                 .textColor = {224, 230, 240, 255},
-                .fontSize = 16
+                .fontSize = UI_FONT_BODY
             }));
 
             if (e->menu_open == MENU_FILE) {
@@ -3743,8 +3783,8 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                 CLAY(CLAY_ID("FileDropdown"), {
                     .layout = {
                         .sizing = { CLAY_SIZING_FIXED(190), CLAY_SIZING_FIT({0}) },
-                        .padding = { .left = 4, .right = 4, .top = 4, .bottom = 4 },
-                        .childGap = 2,
+                        .padding = CLAY_PADDING_ALL(UI_SPACE_XS),
+                        .childGap = UI_SPACE_XXS,
                         .layoutDirection = CLAY_TOP_TO_BOTTOM
                     },
                     .floating = {
@@ -3761,7 +3801,12 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                         CLAY(CLAY_IDI("FileMenuItem", i), {
                             .layout = {
                                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(24) },
-                                .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 },
+                                .padding = {
+                                    .left = UI_ROW_PADDING_X,
+                                    .right = UI_ROW_PADDING_X,
+                                    .top = UI_SPACE_XS,
+                                    .bottom = UI_SPACE_XS
+                                },
                                 .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
                             },
                             .backgroundColor = Clay_Hovered()
@@ -3786,7 +3831,7 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                                 };
                                 CLAY_TEXT(item_label, CLAY_TEXT_CONFIG({
                                     .textColor = {226, 232, 244, 255},
-                                    .fontSize = 16
+                                    .fontSize = UI_FONT_BODY
                                 }));
                             }
                         }
@@ -3804,7 +3849,7 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
         CLAY(CLAY_ID("MenuPlayMode"), {
             .layout = {
                 .sizing = { CLAY_SIZING_FIXED(76), CLAY_SIZING_FIXED(22) },
-                .padding = { .left = 10, .right = 10, .top = 2, .bottom = 2 },
+                .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
                 .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
             },
             .backgroundColor = play_mode
@@ -3822,7 +3867,7 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                 Clay_String text = { false, (int32_t)strlen(label), label };
                 CLAY_TEXT(text, CLAY_TEXT_CONFIG({
                     .textColor = {238, 242, 248, 255},
-                    .fontSize = 16
+                    .fontSize = UI_FONT_BODY
                 }));
             }
         }
@@ -3889,7 +3934,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                 .layoutDirection = CLAY_LEFT_TO_RIGHT
             },
             .backgroundColor = {28, 34, 44, 224},
-            .cornerRadius = CLAY_CORNER_RADIUS(6)
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_LG)
         }) {
             CLAY(CLAY_ID("EDToolbarProjectionGroup"), {
                 .layout = {
@@ -3908,10 +3953,10 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                     .backgroundColor = perspective_active
                                        ? ((Clay_Color){80, 120, 176, 230})
                                        : ((Clay_Color){56, 66, 84, 220}),
-                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
                     Clay_String cs = CLAY_STRING("Perspective");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
 
                 CLAY(CLAY_ID("EDToolbarOrthographic"), {
@@ -3923,10 +3968,10 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                     .backgroundColor = perspective_active
                                        ? ((Clay_Color){56, 66, 84, 220})
                                        : ((Clay_Color){80, 120, 176, 230}),
-                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
                     Clay_String cs = CLAY_STRING("Orthographic");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
             }
 
@@ -3945,10 +3990,10 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                         .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
                     },
                     .backgroundColor = {56, 66, 84, 220},
-                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
                     Clay_String cs = CLAY_STRING("Front");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
 
                 CLAY(CLAY_ID("EDToolbarSide"), {
@@ -3958,10 +4003,10 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                         .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
                     },
                     .backgroundColor = {56, 66, 84, 220},
-                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
                     Clay_String cs = CLAY_STRING("Side");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
 
                 CLAY(CLAY_ID("EDToolbarTop"), {
@@ -3971,10 +4016,10 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
                         .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
                     },
                     .backgroundColor = {56, 66, 84, 220},
-                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
                 }) {
                     Clay_String cs = CLAY_STRING("Top");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
                 }
             }
 
