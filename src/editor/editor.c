@@ -738,6 +738,24 @@ static int has_camera_component(const game_state *gs, int entity_index,
     return 0;
 }
 
+static int has_trigger_component(const game_state *gs, int entity_index,
+                                 trigger_type *out_type, int *out_target_entity,
+                                 float *out_radius, int *out_activated) {
+    int i;
+    if (!gs->trigger_components) return 0;
+    for (i = 0; i < gs->trigger_component_count; i++) {
+        trigger_component *tc = &gs->trigger_components[i];
+        if (tc->entity_index == entity_index) {
+            if (out_type) *out_type = tc->type;
+            if (out_target_entity) *out_target_entity = tc->target_entity;
+            if (out_radius) *out_radius = tc->radius;
+            if (out_activated) *out_activated = tc->activated;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int has_rigid_body_component(const game_state *gs, int entity_index, int *out_use_gravity) {
     int i;
     if (!gs->rigid_body_components) return 0;
@@ -1398,7 +1416,7 @@ static int scene_entity_count_for_save(const game_state *gs) {
         count = gs->project.scene_entity_count;
     }
     if (count < 0) count = 0;
-    if (count > PROJECT_SCENE_MAX_ENTITIES) count = PROJECT_SCENE_MAX_ENTITIES;
+    if (count > PROJECT_COMP_MAX) count = PROJECT_COMP_MAX;
     return count;
 }
 
@@ -1668,6 +1686,24 @@ static int editor_save_scene_to_toml(game_state *gs, const char *path) {
             if (!has_camera_component(gs, i, &fov, &near_plane, &far_plane, &target, &up)) continue;
             fprintf(fp, "\"%d\" = { fov = %.4f, near = %.4f, far = %.4f, target = [%.4f, %.4f, %.4f], up = [%.4f, %.4f, %.4f] }\n",
                     i, fov, near_plane, far_plane, target.x, target.y, target.z, up.x, up.y, up.z);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_trigger_component(gs, i, NULL, NULL, NULL, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[triggers]\n");
+        for (i = 0; i < scene_count; i++) {
+            trigger_type type = TRIGGER_DOOR;
+            int target_entity = 0;
+            float radius = 1.0f;
+            const char *type_str;
+            if (!has_trigger_component(gs, i, &type, &target_entity, &radius, NULL)) continue;
+            type_str = (type == TRIGGER_PICKUP) ? "pickup" : "door";
+            fprintf(fp, "\"%d\" = { type = ", i);
+            toml_write_escaped_string(fp, type_str);
+            fprintf(fp, ", target = %d, radius = %.4f }\n", target_entity, radius);
         }
         fputc('\n', fp);
     }

@@ -2986,6 +2986,52 @@ static void update_input(memory *m) {
     m->game.input.vertical   = (fabsf(kb_vertical)   > fabsf(gp_vertical))   ? kb_vertical   : gp_vertical;
 }
 
+/* Refresh in-memory project data from disk so play-stop reset uses latest saved scene. */
+static int reload_project_state_from_disk(game_state *gs) {
+    project_data loaded_project;
+    int li;
+
+    if (!gs) return 0;
+    if (!gs->project_loaded) return 1;
+    if (!gs->project_path[0]) return 1;
+
+    if (project_load(gs->project_path, &loaded_project) != 0) {
+        fprintf(stderr, "Warning: failed to reload project from '%s'; keeping current runtime scene\n",
+                gs->project_path);
+        return 0;
+    }
+
+    gs->project = loaded_project;
+    gs->project_loaded = 1;
+
+    if (gs->project.has_camera) {
+        gs->mesh3d.camera_eye = VEC3(gs->project.camera.eye[0],
+                                     gs->project.camera.eye[1], gs->project.camera.eye[2]);
+        gs->mesh3d.camera_target = VEC3(gs->project.camera.target[0],
+                                        gs->project.camera.target[1], gs->project.camera.target[2]);
+        gs->mesh3d.camera_up = VEC3(gs->project.camera.up[0],
+                                    gs->project.camera.up[1], gs->project.camera.up[2]);
+        gs->mesh3d.camera_fov_deg = gs->project.camera.fov;
+        gs->mesh3d.camera_set_by_project = 1;
+    }
+
+    if (gs->project.has_lighting) {
+        gs->lighting.ambient = VEC3(gs->project.lighting.ambient[0],
+                                    gs->project.lighting.ambient[1],
+                                    gs->project.lighting.ambient[2]);
+        gs->lighting.light_count = gs->project.lighting.point_light_count;
+        for (li = 0; li < gs->project.lighting.point_light_count; li++) {
+            const project_point_light *src = &gs->project.lighting.point_lights[li];
+            gs->lighting.lights[li].position = VEC3(src->position[0], src->position[1], src->position[2]);
+            gs->lighting.lights[li].color = VEC3(src->color[0], src->color[1], src->color[2]);
+            gs->lighting.lights[li].intensity = src->intensity;
+            gs->lighting.lights[li].radius = src->radius;
+        }
+    }
+
+    return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Dock panel texture management
 // ---------------------------------------------------------------------------
@@ -3162,7 +3208,8 @@ EXPORT void update_externals(struct memory *m) {
         previous_editor_play_mode = m->game.editor_play_mode ? 1 : 0;
     }
     if (previous_editor_play_mode == 1 && !m->game.editor_play_mode) {
-        if (g_init) {
+        int can_rebuild_scene = reload_project_state_from_disk(&m->game);
+        if (g_init && can_rebuild_scene) {
             g_init(&m->game);
             m->game.editor_play_mode = 0;
             m->game.input.horizontal = 0.0f;

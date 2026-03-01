@@ -21,7 +21,6 @@
     " -o build/Debug/engine.dll" \
     " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf" \
     " src/engine/engine.c" \
-    " src/engine/renderer.c" \
     " src/engine/physics.c" \
     " src/engine/debug_render.c" \
     " src/engine/anim.c" \
