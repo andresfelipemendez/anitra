@@ -508,22 +508,14 @@ static void sync_mesh_camera_from_components(game_state *gs) {
 static int resolve_project_model_path(const project_data *project,
                                       const char *key,
                                       const char **out_path) {
-    int i;
+    const char *path;
     if (!project || !key || !key[0] || !out_path) return 0;
 
-    for (i = 0; i < project->model_count; i++) {
-        if (strcmp(project->model_keys[i], key) == 0) {
-            *out_path = project->model_paths[i];
-            return 1;
-        }
-    }
+    path = project_find_asset(project, key, ASSET_MODEL);
+    if (path) { *out_path = path; return 1; }
 
-    for (i = 0; i < project->dungeon_piece_count; i++) {
-        if (strcmp(project->dungeon_piece_keys[i], key) == 0) {
-            *out_path = project->dungeon_piece_paths[i];
-            return 1;
-        }
-    }
+    path = project_find_asset(project, key, ASSET_DUNGEON_PIECE);
+    if (path) { *out_path = path; return 1; }
 
     if (strstr(key, ".glb") || strstr(key, ".gltf") || strchr(key, '/')) {
         *out_path = key;
@@ -536,15 +528,11 @@ static int resolve_project_model_path(const project_data *project,
 static int resolve_project_animation_path(const project_data *project,
                                           const char *key,
                                           const char **out_path) {
-    int i;
+    const char *path;
     if (!project || !key || !key[0] || !out_path) return 0;
 
-    for (i = 0; i < project->animation_count; i++) {
-        if (strcmp(project->animation_keys[i], key) == 0) {
-            *out_path = project->animation_paths[i];
-            return 1;
-        }
-    }
+    path = project_find_asset(project, key, ASSET_ANIMATION);
+    if (path) { *out_path = path; return 1; }
 
     if (strstr(key, ".glb") || strstr(key, ".gltf") || strchr(key, '/')) {
         *out_path = key;
@@ -601,11 +589,11 @@ static void register_project_model_assets(game_state *gs) {
     if (!gs || !gs->project_loaded) return;
 
     project = &gs->project;
-    for (i = 0; i < project->model_count; i++) {
-        register_scene_model_asset(gs, project->model_keys[i], project->model_paths[i], NULL);
-    }
-    for (i = 0; i < project->dungeon_piece_count; i++) {
-        register_scene_model_asset(gs, project->dungeon_piece_keys[i], project->dungeon_piece_paths[i], NULL);
+    for (i = 0; i < project->asset_count; i++) {
+        if (project->assets[i].type == ASSET_MODEL ||
+            project->assets[i].type == ASSET_DUNGEON_PIECE) {
+            register_scene_model_asset(gs, project->assets[i].key, project->assets[i].path, NULL);
+        }
     }
 }
 
@@ -1088,108 +1076,129 @@ static void build_scene_from_project(game_state *gs) {
         gs->scene_entity_count = gs->scene_entity_capacity;
     }
 
-    for (i = 0; i < gs->scene_entity_count; i++) {
+    /* Per-component table iteration */
+    for (i = 0; i < project->transform_count; i++) {
+        const project_transform *t = &project->transforms[i];
+        if (t->entity >= gs->scene_entity_count) continue;
+        push_transform_component(gs, t->entity,
+                                 VEC3(t->position[0], t->position[1], t->position[2]));
+    }
+
+    for (i = 0; i < project->rotation_count; i++) {
+        const project_rotation *r = &project->rotations[i];
+        if (r->entity >= gs->scene_entity_count) continue;
+        push_rotation_component(gs, r->entity, r->y);
+    }
+
+    for (i = 0; i < project->scale_count; i++) {
+        const project_scale *s = &project->scales[i];
+        if (s->entity >= gs->scene_entity_count) continue;
+        push_scale_component(gs, s->entity,
+                             VEC3(s->value[0], s->value[1], s->value[2]));
+    }
+
+    for (i = 0; i < project->parent_transform_count; i++) {
+        const project_parent_transform *pt = &project->parent_transforms[i];
+        if (pt->entity >= gs->scene_entity_count) continue;
+        push_parent_transform_component(gs, pt->entity, pt->parent);
+    }
+
+    for (i = 0; i < project->parent_rotation_count; i++) {
+        const project_parent_rotation *pr = &project->parent_rotations[i];
+        if (pr->entity >= gs->scene_entity_count) continue;
+        push_parent_rotation_component(gs, pr->entity);
+    }
+
+    for (i = 0; i < project->velocity_count; i++) {
+        const project_velocity *v = &project->velocities[i];
+        if (v->entity >= gs->scene_entity_count) continue;
+        push_velocity_component(gs, v->entity, VEC3(v->value[0], v->value[1], 0.0f));
+    }
+
+    for (i = 0; i < project->rigid_body_count; i++) {
+        const project_rigid_body *rb = &project->rigid_bodies[i];
+        if (rb->entity >= gs->scene_entity_count) continue;
+        push_rigid_body_component(gs, rb->entity, rb->use_gravity);
+    }
+
+    for (i = 0; i < project->character_controller_count; i++) {
+        const project_character_controller *cc = &project->character_controllers[i];
+        if (cc->entity >= gs->scene_entity_count) continue;
+        push_character_controller_component(gs, cc->entity, cc->move_speed, cc->jump_speed);
+    }
+
+    for (i = 0; i < project->health_count; i++) {
+        const project_health *h = &project->healths[i];
+        if (h->entity >= gs->scene_entity_count) continue;
+        push_health_component(gs, h->entity, h->current, h->max);
+    }
+
+    for (i = 0; i < project->box_collider_count; i++) {
+        const project_box_collider *bc = &project->box_colliders[i];
+        rect collider_box;
+        float box_hh;
+        if (bc->entity >= gs->scene_entity_count) continue;
+        collider_box = collider_rect_from_half_extents(bc->half_extents, 0.5f);
+        box_hh = bc->half_extents[1] > 0.0f ? bc->half_extents[1] : 0.5f;
+        push_box_collider_component(gs, bc->entity, collider_box, box_hh);
+    }
+
+    for (i = 0; i < project->capsule_collider_count; i++) {
+        const project_capsule_collider *cap = &project->capsule_colliders[i];
+        if (cap->entity >= gs->scene_entity_count) continue;
+        push_capsule_collider_component(gs, cap->entity, cap->radius, cap->half_height);
+    }
+
+    for (i = 0; i < project->mesh_count; i++) {
+        const project_mesh *m = &project->meshes[i];
         const char *model_path = NULL;
         const char *anim_path = NULL;
-        const project_scene_component *comp = &project->scene_components[i];
-        int model_asset = -1;
+        const project_anim *pa;
+        int model_asset;
+        if (m->entity >= gs->scene_entity_count) continue;
+        if (!resolve_project_model_path(project, m->model, &model_path)) continue;
 
-        if (comp->has_transform) {
-            push_transform_component(gs, i,
-                                     VEC3(comp->transform_position[0],
-                                          comp->transform_position[1],
-                                          comp->transform_position[2]));
-        }
+        pa = project_find_anim(project, m->entity);
+        if (pa && pa->asset[0])
+            resolve_project_animation_path(project, pa->asset, &anim_path);
 
-        if (comp->has_rotation) {
-            push_rotation_component(gs, i, comp->rotation_y);
+        model_asset = register_scene_model_asset(gs, m->model, model_path, anim_path);
+        if (model_asset >= 0) {
+            push_mesh_component(gs, m->entity, model_asset);
+            if (gs->mesh_component_count > 0)
+                gs->mesh_components[gs->mesh_component_count - 1].visible = m->visible;
         }
+    }
 
-        if (comp->has_scale) {
-            push_scale_component(gs, i,
-                                 VEC3(comp->scale[0],
-                                      comp->scale[1],
-                                      comp->scale[2]));
+    for (i = 0; i < project->anim_count; i++) {
+        const project_anim *a = &project->anims[i];
+        animation_component *ac;
+        if (a->entity >= gs->scene_entity_count) continue;
+        push_animation_component(gs, a->entity, a->clip);
+        if (gs->animation_component_count > 0) {
+            ac = &gs->animation_components[gs->animation_component_count - 1];
+            ac->playing = a->playing;
+            ac->anim_time = a->time;
+            if (a->speed > 0.0f) ac->speed = a->speed;
         }
+    }
 
-        if (comp->has_parent_transform) {
-            push_parent_transform_component(gs, i, comp->parent_transform_entity);
-        }
+    for (i = 0; i < project->camera_count; i++) {
+        const project_cam *c = &project->cameras[i];
+        if (c->entity >= gs->scene_entity_count) continue;
+        push_camera_component(gs, c->entity,
+                              c->fov, c->near_plane, c->far_plane,
+                              VEC3(c->target[0], c->target[1], c->target[2]),
+                              VEC3(c->up[0], c->up[1], c->up[2]));
+        gs->scene_camera_entity = c->entity;
+    }
 
-        if (comp->has_parent_rotation) {
-            push_parent_rotation_component(gs, i);
-        }
-
-        if (comp->has_velocity) {
-            push_velocity_component(gs, i, VEC3(comp->velocity[0], comp->velocity[1], 0.0f));
-        }
-
-        if (comp->has_rigid_body) {
-            push_rigid_body_component(gs, i, comp->rigid_body_use_gravity);
-        }
-
-        if (comp->has_character_controller) {
-            push_character_controller_component(gs, i,
-                                                comp->character_controller_move_speed,
-                                                comp->character_controller_jump_speed);
-        }
-
-        if (comp->has_health) {
-            push_health_component(gs, i, comp->health_current, comp->health_max);
-        }
-
-        if (comp->has_box_collider) {
-            rect collider_box = collider_rect_from_half_extents(comp->box_collider_half_extents, 0.5f);
-            float box_hh = comp->box_collider_half_extents[1] > 0.0f ? comp->box_collider_half_extents[1] : 0.5f;
-            push_box_collider_component(gs, i, collider_box, box_hh);
-        }
-
-        if (comp->has_capsule_collider) {
-            push_capsule_collider_component(gs, i,
-                                            comp->capsule_collider_radius,
-                                            comp->capsule_collider_half_height);
-        }
-
-        if (comp->has_mesh) {
-            if (resolve_project_model_path(project, comp->mesh_model, &model_path)) {
-                if (comp->has_animation && comp->animation_asset[0]) {
-                    resolve_project_animation_path(project, comp->animation_asset, &anim_path);
-                }
-                model_asset = register_scene_model_asset(gs, comp->mesh_model, model_path, anim_path);
-                if (model_asset >= 0) {
-                    push_mesh_component(gs, i, model_asset);
-                    if (gs->mesh_component_count > 0) {
-                        gs->mesh_components[gs->mesh_component_count - 1].visible = comp->mesh_visible;
-                    }
-                }
-            }
-        }
-
-        if (comp->has_animation) {
-            push_animation_component(gs, i, comp->animation_clip);
-            if (gs->animation_component_count > 0) {
-                animation_component *ac = &gs->animation_components[gs->animation_component_count - 1];
-                ac->playing = comp->animation_playing;
-                ac->anim_time = comp->animation_time;
-                if (comp->animation_speed > 0.0f) ac->speed = comp->animation_speed;
-            }
-        }
-
-        if (comp->has_camera) {
-            push_camera_component(gs, i,
-                                  comp->camera_fov,
-                                  comp->camera_near,
-                                  comp->camera_far,
-                                  VEC3(comp->camera_target[0], comp->camera_target[1], comp->camera_target[2]),
-                                  VEC3(comp->camera_up[0], comp->camera_up[1], comp->camera_up[2]));
-            gs->scene_camera_entity = i;
-        }
-
-        if (comp->has_trigger) {
-            trigger_type ttype = TRIGGER_DOOR;
-            if (strcmp(comp->trigger_type_str, "pickup") == 0) ttype = TRIGGER_PICKUP;
-            push_trigger_component(gs, i, ttype, comp->trigger_target, comp->trigger_radius);
-        }
+    for (i = 0; i < project->trigger_count; i++) {
+        const project_trigger *tr = &project->triggers[i];
+        trigger_type ttype = TRIGGER_DOOR;
+        if (tr->entity >= gs->scene_entity_count) continue;
+        if (strcmp(tr->type_str, "pickup") == 0) ttype = TRIGGER_PICKUP;
+        push_trigger_component(gs, tr->entity, ttype, tr->target, tr->radius);
     }
 
     if (gs->camera_component_count <= 0 && gs->scene_entity_count < gs->scene_entity_capacity) {
@@ -1272,10 +1281,11 @@ static void load_scene_model_assets(game_state *gs) {
             /* Also load all other animation assets from the project */
             {
                 int ai;
-                for (ai = 0; ai < gs->project.animation_count; ai++) {
-                    if (strcmp(gs->project.animation_paths[ai], asset->animation_path) == 0)
+                for (ai = 0; ai < gs->project.asset_count; ai++) {
+                    if (gs->project.assets[ai].type != ASSET_ANIMATION) continue;
+                    if (strcmp(gs->project.assets[ai].path, asset->animation_path) == 0)
                         continue;
-                    load_animations_glb(gs->project.animation_paths[ai],
+                    load_animations_glb(gs->project.assets[ai].path,
                                         &asset->model, model_arena);
                 }
             }

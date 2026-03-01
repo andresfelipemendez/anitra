@@ -915,6 +915,8 @@ typedef struct editor_state {
     int profiler_tree_collapsed[PROFILER_TREE_MAX_NODES];
     int scene_tree_collapsed[SCENE_TREE_MAX_ENTITIES];
     int scene_selected_entity;
+    uint8_t scene_selection_mask[SCENE_TREE_MAX_ENTITIES];
+    int scene_selection_count;
 
     /* Profiler input — accumulated per frame by event handler, consumed by profiler_layout */
     float prof_mouse_x, prof_mouse_y; /* mouse position in profiler-local coords */
@@ -928,6 +930,7 @@ typedef struct editor_state {
     float scene_tree_scroll_y;                    /* scroll wheel delta this frame */
     int   scene_tree_mouse_down;                  /* left button held */
     int   scene_tree_click;                       /* 1 on the frame left button was pressed */
+    int   scene_tree_click_shift;                 /* shift modifier sampled on click frame */
     int   scene_tree_drag_active;                 /* dragging an entity row */
     int   scene_tree_drag_entity;                 /* dragged entity index, -1 = none */
     int   scene_tree_drop_target;                 /* hovered drop target entity, -1 = none */

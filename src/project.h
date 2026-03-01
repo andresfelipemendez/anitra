@@ -48,67 +48,33 @@ typedef struct project_lighting {
     int point_light_count;
 } project_lighting;
 
-#define PROJECT_SCENE_MAX_ENTITIES 512
+#define PROJECT_COMP_MAX 512
 
-typedef struct project_scene_component {
-    int has_transform;
-    float transform_position[3];
+typedef struct { int entity; float position[3]; } project_transform;
+typedef struct { int entity; float y; } project_rotation;
+typedef struct { int entity; float value[3]; } project_scale;
+typedef struct { int entity; int parent; } project_parent_transform;
+typedef struct { int entity; } project_parent_rotation;
+typedef struct { int entity; char model[64]; int visible; } project_mesh;
+typedef struct { int entity; char asset[64]; int playing; int clip; float time; float speed; } project_anim;
+typedef struct { int entity; float value[2]; } project_velocity;
+typedef struct { int entity; int use_gravity; } project_rigid_body;
+typedef struct { int entity; float move_speed; float jump_speed; } project_character_controller;
+typedef struct { int entity; float current; float max; } project_health;
+typedef struct { int entity; float half_extents[3]; } project_box_collider;
+typedef struct { int entity; float radius; float half_height; } project_capsule_collider;
+typedef struct { int entity; float fov; float near_plane; float far_plane; float target[3]; float up[3]; } project_cam;
+typedef struct { int entity; char type_str[16]; int target; float radius; } project_trigger;
 
-    int has_rotation;
-    float rotation_y;
+typedef enum { ASSET_MODEL, ASSET_ANIMATION, ASSET_DUNGEON_PIECE, ASSET_SPRITE } project_asset_type;
 
-    int has_scale;
-    float scale[3];
+typedef struct {
+    char key[64];
+    char path[256];
+    project_asset_type type;
+} project_asset;
 
-    int has_parent_transform;
-    int parent_transform_entity;
-
-    int has_parent_rotation;
-
-    int has_mesh;
-    char mesh_model[64];
-    int mesh_visible;
-
-    int has_animation;
-    char animation_asset[64];
-    int animation_playing;
-    int animation_clip;
-    float animation_time;
-    float animation_speed;
-
-    int has_velocity;
-    float velocity[2];
-
-    int has_rigid_body;
-    int rigid_body_use_gravity;
-
-    int has_character_controller;
-    float character_controller_move_speed;
-    float character_controller_jump_speed;
-
-    int has_health;
-    float health_current;
-    float health_max;
-
-    int has_box_collider;
-    float box_collider_half_extents[3];
-
-    int has_capsule_collider;
-    float capsule_collider_radius;
-    float capsule_collider_half_height;
-
-    int has_camera;
-    float camera_fov;
-    float camera_near;
-    float camera_far;
-    float camera_target[3];
-    float camera_up[3];
-
-    int has_trigger;
-    char trigger_type_str[16];
-    int trigger_target;
-    float trigger_radius;
-} project_scene_component;
+#define PROJECT_ASSET_MAX 88
 
 typedef struct project_data {
     char name[128];
@@ -121,24 +87,52 @@ typedef struct project_data {
     int entity_count;
     project_piece pieces[256];
     int piece_count;
-    /* Asset path registry (resolved full paths) */
-    char model_paths[32][256];
-    char model_keys[32][64];
-    int model_count;
-    char animation_paths[8][256];
-    char animation_keys[8][64];
-    int animation_count;
-    char dungeon_piece_paths[32][256];
-    char dungeon_piece_keys[32][64];
-    int dungeon_piece_count;
-    char sprite_paths[16][256];
-    char sprite_keys[16][64];
-    int sprite_count;
 
-    char scene_entity_names[PROJECT_SCENE_MAX_ENTITIES][64];
+    /* Unified asset registry */
+    project_asset assets[PROJECT_ASSET_MAX];
+    int asset_count;
+
+    /* Scene entity names */
+    char scene_entity_names[PROJECT_COMP_MAX][64];
     int scene_entity_count;
-    project_scene_component scene_components[PROJECT_SCENE_MAX_ENTITIES];
+
+    /* Per-component tables (DKNF: no has_ flags, no NULL fields) */
+    project_transform transforms[PROJECT_COMP_MAX];
+    int transform_count;
+    project_rotation rotations[PROJECT_COMP_MAX];
+    int rotation_count;
+    project_scale scales[PROJECT_COMP_MAX];
+    int scale_count;
+    project_parent_transform parent_transforms[PROJECT_COMP_MAX];
+    int parent_transform_count;
+    project_parent_rotation parent_rotations[PROJECT_COMP_MAX];
+    int parent_rotation_count;
+    project_mesh meshes[PROJECT_COMP_MAX];
+    int mesh_count;
+    project_anim anims[PROJECT_COMP_MAX];
+    int anim_count;
+    project_velocity velocities[PROJECT_COMP_MAX];
+    int velocity_count;
+    project_rigid_body rigid_bodies[PROJECT_COMP_MAX];
+    int rigid_body_count;
+    project_character_controller character_controllers[PROJECT_COMP_MAX];
+    int character_controller_count;
+    project_health healths[PROJECT_COMP_MAX];
+    int health_count;
+    project_box_collider box_colliders[PROJECT_COMP_MAX];
+    int box_collider_count;
+    project_capsule_collider capsule_colliders[PROJECT_COMP_MAX];
+    int capsule_collider_count;
+    project_cam cameras[PROJECT_COMP_MAX];
+    int camera_count;
+    project_trigger triggers[PROJECT_COMP_MAX];
+    int trigger_count;
 } project_data;
+
+const project_mesh *project_find_mesh(const project_data *p, int entity);
+const project_anim *project_find_anim(const project_data *p, int entity);
+const project_box_collider *project_find_box_collider(const project_data *p, int entity);
+const char *project_find_asset(const project_data *p, const char *key, project_asset_type type);
 
 int project_load(const char *path, project_data *out);
 

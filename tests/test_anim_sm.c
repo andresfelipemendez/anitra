@@ -35,6 +35,34 @@ void debug_draw_line(debug_renderer *dr, vec2 start, vec2 end, debug_color color
     (void)dr; (void)start; (void)end; (void)color;
 }
 
+/* Stubs for project find helpers (engine.c calls these but tests don't
+   exercise build_scene_from_project, so trivial implementations suffice) */
+const project_mesh *project_find_mesh(const project_data *p, int entity) {
+    int i; if (!p) return NULL;
+    for (i = 0; i < p->mesh_count; i++)
+        if (p->meshes[i].entity == entity) return &p->meshes[i];
+    return NULL;
+}
+const project_anim *project_find_anim(const project_data *p, int entity) {
+    int i; if (!p) return NULL;
+    for (i = 0; i < p->anim_count; i++)
+        if (p->anims[i].entity == entity) return &p->anims[i];
+    return NULL;
+}
+const project_box_collider *project_find_box_collider(const project_data *p, int entity) {
+    int i; if (!p) return NULL;
+    for (i = 0; i < p->box_collider_count; i++)
+        if (p->box_colliders[i].entity == entity) return &p->box_colliders[i];
+    return NULL;
+}
+const char *project_find_asset(const project_data *p, const char *key, project_asset_type type) {
+    int i; if (!p || !key || !key[0]) return NULL;
+    for (i = 0; i < p->asset_count; i++)
+        if (p->assets[i].type == type && strcmp(p->assets[i].key, key) == 0)
+            return p->assets[i].path;
+    return NULL;
+}
+
 /* Include the engine sources (contains all static SM functions + anim) */
 #include "anim.c"
 #include "engine.c"
@@ -1191,6 +1219,157 @@ TEST(key_pickup_opens_door) {
     ASSERT_FLOAT_EQ(gs->box_collider_components[0].rect.h, 0.0f);
 }
 
+/* ── Tests: build_scene_from_project ──────────────────────────────────── */
+
+TEST(build_scene_from_project_creates_runtime_components) {
+    game_state *gs = setup_game_state();
+
+    /* 5 entities */
+    gs->project.scene_entity_count = 5;
+    gs->project_loaded = 1;
+
+    /* transforms: entity 0 at (1,2,3), entity 2 at (4,5,6) */
+    gs->project.transforms[0] = (project_transform){0, {1.0f, 2.0f, 3.0f}};
+    gs->project.transforms[1] = (project_transform){2, {4.0f, 5.0f, 6.0f}};
+    gs->project.transform_count = 2;
+
+    /* rotation: entity 1 at y=1.57 */
+    gs->project.rotations[0] = (project_rotation){1, 1.57f};
+    gs->project.rotation_count = 1;
+
+    /* scale: entity 0 at (2,2,2) */
+    gs->project.scales[0] = (project_scale){0, {2.0f, 2.0f, 2.0f}};
+    gs->project.scale_count = 1;
+
+    /* parent_transform: entity 1 parented to entity 0 */
+    gs->project.parent_transforms[0] = (project_parent_transform){1, 0};
+    gs->project.parent_transform_count = 1;
+
+    /* parent_rotation: entity 1 */
+    gs->project.parent_rotations[0] = (project_parent_rotation){1};
+    gs->project.parent_rotation_count = 1;
+
+    /* velocity: entity 0 at (1.5, 0) */
+    gs->project.velocities[0] = (project_velocity){0, {1.5f, 0.0f}};
+    gs->project.velocity_count = 1;
+
+    /* rigid_body: entity 0, use_gravity=1 */
+    gs->project.rigid_bodies[0] = (project_rigid_body){0, 1};
+    gs->project.rigid_body_count = 1;
+
+    /* character_controller: entity 0, move_speed=5, jump_speed=8 */
+    gs->project.character_controllers[0] = (project_character_controller){0, 5.0f, 8.0f};
+    gs->project.character_controller_count = 1;
+
+    /* health: entity 0, current=80, max=100 */
+    gs->project.healths[0] = (project_health){0, 80.0f, 100.0f};
+    gs->project.health_count = 1;
+
+    /* box_collider: entity 2, half_extents=(0.5, 1.0, 0.5) */
+    gs->project.box_colliders[0] = (project_box_collider){2, {0.5f, 1.0f, 0.5f}};
+    gs->project.box_collider_count = 1;
+
+    /* capsule_collider: entity 0, radius=0.3, half_height=0.9 */
+    gs->project.capsule_colliders[0] = (project_capsule_collider){0, 0.3f, 0.9f};
+    gs->project.capsule_collider_count = 1;
+
+    /* camera: entity 3, fov=60, near=0.1, far=100 */
+    {
+        project_cam cam = {0};
+        cam.entity = 3;
+        cam.fov = 60.0f;
+        cam.near_plane = 0.1f;
+        cam.far_plane = 100.0f;
+        cam.target[1] = 0.5f;
+        cam.up[1] = 1.0f;
+        gs->project.cameras[0] = cam;
+        gs->project.camera_count = 1;
+    }
+
+    /* trigger: entity 4, pickup targeting entity 2 */
+    {
+        project_trigger tr = {0};
+        tr.entity = 4;
+        snprintf(tr.type_str, sizeof(tr.type_str), "pickup");
+        tr.target = 2;
+        tr.radius = 1.5f;
+        gs->project.triggers[0] = tr;
+        gs->project.trigger_count = 1;
+    }
+
+    ensure_scene_storage(gs, 5);
+    build_scene_from_project(gs);
+
+    /* Verify counts */
+    ASSERT_EQ(gs->transform_component_count, 2);
+    ASSERT_EQ(gs->rotation_component_count, 1);
+    ASSERT_EQ(gs->scale_component_count, 1);
+    ASSERT_EQ(gs->parent_transform_component_count, 1);
+    ASSERT_EQ(gs->parent_rotation_component_count, 1);
+    ASSERT_EQ(gs->velocity_component_count, 1);
+    ASSERT_EQ(gs->rigid_body_component_count, 1);
+    ASSERT_EQ(gs->character_controller_component_count, 1);
+    ASSERT_EQ(gs->health_component_count, 1);
+    ASSERT_EQ(gs->box_collider_component_count, 1);
+    ASSERT_EQ(gs->capsule_collider_component_count, 1);
+    ASSERT_EQ(gs->camera_component_count, 1);
+    ASSERT_EQ(gs->trigger_component_count, 1);
+
+    /* Verify transform values */
+    ASSERT_EQ(gs->transform_components[0].entity_index, 0);
+    ASSERT_FLOAT_EQ(gs->transform_components[0].position.x, 1.0f);
+    ASSERT_FLOAT_EQ(gs->transform_components[0].position.y, 2.0f);
+    ASSERT_FLOAT_EQ(gs->transform_components[0].position.z, 3.0f);
+    ASSERT_EQ(gs->transform_components[1].entity_index, 2);
+    ASSERT_FLOAT_EQ(gs->transform_components[1].position.x, 4.0f);
+
+    /* Verify rotation */
+    ASSERT_EQ(gs->rotation_components[0].entity_index, 1);
+    ASSERT_FLOAT_EQ(gs->rotation_components[0].rotation_y_deg, 1.57f);
+
+    /* Verify character controller */
+    ASSERT_FLOAT_EQ(gs->character_controller_components[0].move_speed, 5.0f);
+    ASSERT_FLOAT_EQ(gs->character_controller_components[0].jump_speed, 8.0f);
+
+    /* Verify health */
+    ASSERT_FLOAT_EQ(gs->health_components[0].health, 80.0f);
+    ASSERT_FLOAT_EQ(gs->health_components[0].max_health, 100.0f);
+
+    /* Verify capsule collider */
+    ASSERT_FLOAT_EQ(gs->capsule_collider_components[0].radius, 0.3f);
+    ASSERT_FLOAT_EQ(gs->capsule_collider_components[0].half_height, 0.9f);
+
+    /* Verify camera and scene_camera_entity */
+    ASSERT_EQ(gs->scene_camera_entity, 3);
+    ASSERT_FLOAT_EQ(gs->camera_components[0].fov_deg, 60.0f);
+
+    /* Verify trigger */
+    ASSERT_EQ(gs->trigger_components[0].entity_index, 4);
+    ASSERT_EQ(gs->trigger_components[0].type, TRIGGER_PICKUP);
+    ASSERT_EQ(gs->trigger_components[0].target_entity, 2);
+    ASSERT_FLOAT_EQ(gs->trigger_components[0].radius, 1.5f);
+}
+
+TEST(build_scene_fallback_camera_when_no_project_camera) {
+    game_state *gs = setup_game_state();
+
+    gs->project.scene_entity_count = 2;
+    gs->project_loaded = 1;
+
+    /* Only a transform, no camera */
+    gs->project.transforms[0] = (project_transform){0, {1.0f, 0.0f, 0.0f}};
+    gs->project.transform_count = 1;
+    gs->project.camera_count = 0;
+
+    ensure_scene_storage(gs, 3);
+    build_scene_from_project(gs);
+
+    /* Fallback camera should be created at entity index 2 (scene_entity_count was 2) */
+    ASSERT_EQ(gs->camera_component_count, 1);
+    ASSERT(gs->scene_camera_entity >= 0);
+    ASSERT_EQ(gs->scene_entity_count, 3); /* grew by 1 for fallback camera */
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1257,6 +1436,10 @@ int main(void) {
 
     /* Trigger system */
     run_key_pickup_opens_door();
+
+    /* Scene building from project */
+    run_build_scene_from_project_creates_runtime_components();
+    run_build_scene_fallback_camera_when_no_project_camera();
 
     printf("\n  ── Results: %d passed, %d failed, %d total ──\n\n",
            tests_passed, tests_failed, tests_run);

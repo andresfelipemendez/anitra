@@ -3972,16 +3972,20 @@ EXPORT void update_externals(struct memory *m) {
 
                 if (req->type == 1) {
                     const char *mesh_key = NULL;
-                    int si;
 
                     /* Find a scene mesh explicitly paired with this animation asset. */
-                    for (si = 0; si < m->game.project.scene_entity_count; si++) {
-                        const project_scene_component *comp = &m->game.project.scene_components[si];
-                        if (!comp->has_mesh || !comp->has_animation) continue;
-                        if (!comp->mesh_model[0] || !comp->animation_asset[0]) continue;
-                        if (strcmp(comp->animation_asset, req->key) == 0) {
-                            mesh_key = comp->mesh_model;
-                            break;
+                    {
+                        int ai2;
+                        for (ai2 = 0; ai2 < m->game.project.anim_count; ai2++) {
+                            const project_anim *pa = &m->game.project.anims[ai2];
+                            const project_mesh *pm;
+                            if (!pa->asset[0]) continue;
+                            if (strcmp(pa->asset, req->key) != 0) continue;
+                            pm = project_find_mesh(&m->game.project, pa->entity);
+                            if (pm && pm->model[0]) {
+                                mesh_key = pm->model;
+                                break;
+                            }
                         }
                     }
 

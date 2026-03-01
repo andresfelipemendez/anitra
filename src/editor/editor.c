@@ -77,6 +77,8 @@ enum {
 #define EDITOR_VIEWBAR_PLAY_WIDTH      74.0f
 #define EDITOR_VIEWBAR_BUTTON_GAP       6.0f
 #define EDITOR_VIEWBAR_GROUP_GAP       14.0f
+#define EDITOR_PICK_MIN_SCREEN_RADIUS_PX 5.5f
+#define EDITOR_PICK_TINY_MAX_DISTANCE    8.0f
 
 /* Shared UI scale for editor panels. Keep typography and spacing tokenized so
    scene tree, browser, inspector, and top bars feel consistent. */
@@ -574,6 +576,28 @@ static transform_component *find_transform_component_mut(game_state *gs, int ent
     for (i = 0; i < gs->transform_component_count; i++) {
         transform_component *tc = &gs->transform_components[i];
         if (tc->entity_index == entity_index) return tc;
+    }
+    return NULL;
+}
+
+static const box_collider_component *find_box_collider_component_read(const game_state *gs,
+                                                                      int entity_index) {
+    int i;
+    if (!gs || !gs->box_collider_components) return NULL;
+    for (i = 0; i < gs->box_collider_component_count; i++) {
+        const box_collider_component *bc = &gs->box_collider_components[i];
+        if (bc->entity_index == entity_index) return bc;
+    }
+    return NULL;
+}
+
+static const capsule_collider_component *find_capsule_collider_component_read(const game_state *gs,
+                                                                              int entity_index) {
+    int i;
+    if (!gs || !gs->capsule_collider_components) return NULL;
+    for (i = 0; i < gs->capsule_collider_component_count; i++) {
+        const capsule_collider_component *cc = &gs->capsule_collider_components[i];
+        if (cc->entity_index == entity_index) return cc;
     }
     return NULL;
 }
@@ -1249,18 +1273,20 @@ static void toml_write_escaped_string(FILE *fp, const char *text) {
     fputc('"', fp);
 }
 
-static void toml_write_assets_table(FILE *fp,
-                                    const char *section_name,
-                                    const char keys[][64],
-                                    const char paths[][256],
-                                    int count) {
-    int i;
+static void toml_write_assets_from_unified(FILE *fp, const char *section_name,
+                                            const project_asset *assets, int count,
+                                            project_asset_type type) {
+    int i, found = 0;
     if (!fp || !section_name || count <= 0) return;
+    for (i = 0; i < count; i++)
+        if (assets[i].type == type) { found = 1; break; }
+    if (!found) return;
     fprintf(fp, "[assets.%s]\n", section_name);
     for (i = 0; i < count; i++) {
-        if (!keys[i][0] || !paths[i][0]) continue;
-        fprintf(fp, "%-12s = ", keys[i]);
-        toml_write_escaped_string(fp, paths[i]);
+        if (assets[i].type != type) continue;
+        if (!assets[i].key[0] || !assets[i].path[0]) continue;
+        fprintf(fp, "%-12s = ", assets[i].key);
+        toml_write_escaped_string(fp, assets[i].path);
         fputc('\n', fp);
     }
     fputc('\n', fp);
@@ -1293,11 +1319,10 @@ static const char *mesh_model_key_for_save(const game_state *gs,
     if (!gs) return NULL;
 
     project = &gs->project;
-    if (entity_index >= 0 &&
-        entity_index < project->scene_entity_count &&
-        project->scene_components[entity_index].has_mesh &&
-        project->scene_components[entity_index].mesh_model[0]) {
-        return project->scene_components[entity_index].mesh_model;
+    {
+        const project_mesh *pm = project_find_mesh(project, entity_index);
+        if (pm && pm->model[0])
+            return pm->model;
     }
 
     mc = find_mesh_component_read(gs, entity_index);
@@ -1309,14 +1334,10 @@ static const char *mesh_model_key_for_save(const game_state *gs,
         return asset->key;
     }
 
-    for (i = 0; i < project->model_count; i++) {
-        if (strcmp(project->model_paths[i], asset->path) == 0) {
-            return project->model_keys[i];
-        }
-    }
-    for (i = 0; i < project->dungeon_piece_count; i++) {
-        if (strcmp(project->dungeon_piece_paths[i], asset->path) == 0) {
-            return project->dungeon_piece_keys[i];
+    for (i = 0; i < project->asset_count; i++) {
+        if ((project->assets[i].type == ASSET_MODEL || project->assets[i].type == ASSET_DUNGEON_PIECE) &&
+            strcmp(project->assets[i].path, asset->path) == 0) {
+            return project->assets[i].key;
         }
     }
 
@@ -1338,27 +1359,29 @@ static const char *animation_asset_key_for_save(const game_state *gs,
     if (!gs) return NULL;
 
     project = &gs->project;
-    if (entity_index >= 0 &&
-        entity_index < project->scene_entity_count &&
-        project->scene_components[entity_index].has_animation &&
-        project->scene_components[entity_index].animation_asset[0]) {
-        return project->scene_components[entity_index].animation_asset;
+    {
+        const project_anim *pa = project_find_anim(project, entity_index);
+        if (pa && pa->asset[0])
+            return pa->asset;
     }
 
     mc = find_mesh_component_read(gs, entity_index);
     if (mc) {
         asset = find_scene_model_asset_read(gs, mc->model_asset_index);
         if (asset && asset->animation_path[0]) {
-            for (i = 0; i < project->animation_count; i++) {
-                if (strcmp(project->animation_paths[i], asset->animation_path) == 0) {
-                    return project->animation_keys[i];
+            for (i = 0; i < project->asset_count; i++) {
+                if (project->assets[i].type == ASSET_ANIMATION &&
+                    strcmp(project->assets[i].path, asset->animation_path) == 0) {
+                    return project->assets[i].key;
                 }
             }
         }
     }
 
-    if (project->animation_count > 0 && project->animation_keys[0][0]) {
-        return project->animation_keys[0];
+    /* Fallback: first animation asset */
+    for (i = 0; i < project->asset_count; i++) {
+        if (project->assets[i].type == ASSET_ANIMATION && project->assets[i].key[0])
+            return project->assets[i].key;
     }
 
     if (!fallback || fallback_size <= 0) return NULL;
@@ -1404,10 +1427,10 @@ static int editor_save_scene_to_toml(game_state *gs, const char *path) {
     fputc('\n', fp);
     fprintf(fp, "version = %d\n\n", project->version > 0 ? project->version : 1);
 
-    toml_write_assets_table(fp, "models", project->model_keys, project->model_paths, project->model_count);
-    toml_write_assets_table(fp, "animations", project->animation_keys, project->animation_paths, project->animation_count);
-    toml_write_assets_table(fp, "dungeon_pieces", project->dungeon_piece_keys, project->dungeon_piece_paths, project->dungeon_piece_count);
-    toml_write_assets_table(fp, "sprites", project->sprite_keys, project->sprite_paths, project->sprite_count);
+    toml_write_assets_from_unified(fp, "models", project->assets, project->asset_count, ASSET_MODEL);
+    toml_write_assets_from_unified(fp, "animations", project->assets, project->asset_count, ASSET_ANIMATION);
+    toml_write_assets_from_unified(fp, "dungeon_pieces", project->assets, project->asset_count, ASSET_DUNGEON_PIECE);
+    toml_write_assets_from_unified(fp, "sprites", project->assets, project->asset_count, ASSET_SPRITE);
 
     if (project->has_camera) {
         fprintf(fp, "[camera]\n");
@@ -1611,11 +1634,10 @@ static int editor_save_scene_to_toml(game_state *gs, const char *path) {
             hx = fabsf(box.w) * 0.5f;
             hz = fabsf(box.h) * 0.5f;
             hy = 0.5f;
-            if (i >= 0 &&
-                i < project->scene_entity_count &&
-                project->scene_components[i].has_box_collider &&
-                project->scene_components[i].box_collider_half_extents[1] > 0.0f) {
-                hy = project->scene_components[i].box_collider_half_extents[1];
+            {
+                const project_box_collider *pbc = project_find_box_collider(project, i);
+                if (pbc && pbc->half_extents[1] > 0.0f)
+                    hy = pbc->half_extents[1];
             }
             fprintf(fp, "\"%d\" = { type = \"box\", half_extents = [%.4f, %.4f, %.4f] }\n", i, hx, hy, hz);
         }
@@ -1760,12 +1782,116 @@ static void scene_tree_mark_descendants_visited(int entity_index,
     }
 }
 
+static int editor_scene_entity_selected(const editor_state *e, int entity_index) {
+    if (!e) return 0;
+    if (entity_index < 0 || entity_index >= SCENE_TREE_MAX_ENTITIES) return 0;
+    return e->scene_selection_mask[entity_index] ? 1 : 0;
+}
+
+static void editor_scene_selection_clear(editor_state *e) {
+    if (!e) return;
+    memset(e->scene_selection_mask, 0, sizeof(e->scene_selection_mask));
+    e->scene_selection_count = 0;
+    e->scene_selected_entity = -1;
+}
+
+static void editor_scene_selection_set_single(editor_state *e, int entity_index) {
+    if (!e) return;
+    editor_scene_selection_clear(e);
+    if (entity_index < 0 || entity_index >= SCENE_TREE_MAX_ENTITIES) return;
+    e->scene_selection_mask[entity_index] = 1;
+    e->scene_selection_count = 1;
+    e->scene_selected_entity = entity_index;
+}
+
+static void editor_scene_selection_toggle(editor_state *e, int entity_index) {
+    int i;
+    if (!e) return;
+    if (entity_index < 0 || entity_index >= SCENE_TREE_MAX_ENTITIES) return;
+
+    if (e->scene_selection_mask[entity_index]) {
+        e->scene_selection_mask[entity_index] = 0;
+        if (e->scene_selection_count > 0) e->scene_selection_count--;
+        if (e->scene_selected_entity == entity_index) {
+            e->scene_selected_entity = -1;
+            for (i = 0; i < SCENE_TREE_MAX_ENTITIES; i++) {
+                if (e->scene_selection_mask[i]) {
+                    e->scene_selected_entity = i;
+                    break;
+                }
+            }
+        }
+    } else {
+        e->scene_selection_mask[entity_index] = 1;
+        e->scene_selection_count++;
+        e->scene_selected_entity = entity_index;
+    }
+}
+
+static void editor_scene_selection_apply_click(editor_state *e, int entity_index, int shift_down) {
+    if (!e) return;
+    if (shift_down) {
+        editor_scene_selection_toggle(e, entity_index);
+    } else {
+        editor_scene_selection_set_single(e, entity_index);
+    }
+}
+
+static void editor_scene_selection_sync(editor_state *e, int scene_count) {
+    int i;
+    int first_selected = -1;
+    int count = 0;
+    if (!e) return;
+
+    if (scene_count < 0) scene_count = 0;
+    if (scene_count > SCENE_TREE_MAX_ENTITIES) scene_count = SCENE_TREE_MAX_ENTITIES;
+
+    for (i = 0; i < SCENE_TREE_MAX_ENTITIES; i++) {
+        int keep = (i < scene_count) && e->scene_selection_mask[i];
+        e->scene_selection_mask[i] = keep ? 1 : 0;
+        if (keep) {
+            if (first_selected < 0) first_selected = i;
+            count++;
+        }
+    }
+
+    if (e->scene_selected_entity >= 0 && e->scene_selected_entity < scene_count) {
+        if (!e->scene_selection_mask[e->scene_selected_entity]) {
+            e->scene_selection_mask[e->scene_selected_entity] = 1;
+            count++;
+            if (first_selected < 0) first_selected = e->scene_selected_entity;
+        }
+    } else {
+        e->scene_selected_entity = -1;
+    }
+
+    if (e->scene_selected_entity < 0) e->scene_selected_entity = first_selected;
+    e->scene_selection_count = count;
+}
+
+static void scene_tree_cancel_drag(editor_state *e) {
+    if (!e) return;
+    e->scene_tree_drag_active = 0;
+    e->scene_tree_drag_entity = -1;
+    e->scene_tree_drop_target = -1;
+    e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+}
+
+static void scene_tree_begin_drag(editor_state *e, int entity_index) {
+    if (!e) return;
+    e->scene_tree_drag_active = 1;
+    e->scene_tree_drag_entity = entity_index;
+    e->scene_tree_drop_target = -1;
+    e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+}
+
 static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
                                        int entity_index, int depth, int click,
+                                       int shift_toggle,
                                        const int *parent_of, int entity_count) {
     static char row_bufs[SCENE_TREE_MAX_ENTITIES][64];
     int bi = entity_index % SCENE_TREE_MAX_ENTITIES;
-    int selected = (e->scene_selected_entity == entity_index);
+    int selected = editor_scene_entity_selected(e, entity_index);
     int dragging = e->scene_tree_drag_active && e->scene_tree_mouse_down;
     int sibling_parent = -1;
     int nested_valid = scene_tree_parent_assignment_is_valid(e->scene_tree_drag_entity, entity_index,
@@ -1818,11 +1944,12 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
         }) {
             int hovered = Clay_Hovered();
             if (hovered && click) {
-                e->scene_selected_entity = entity_index;
-                e->scene_tree_drag_active = 1;
-                e->scene_tree_drag_entity = entity_index;
-                e->scene_tree_drop_target = -1;
-                e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+                editor_scene_selection_apply_click(e, entity_index, shift_toggle);
+                if (shift_toggle) {
+                    scene_tree_cancel_drag(e);
+                } else {
+                    scene_tree_begin_drag(e, entity_index);
+                }
             }
             if (hovered && dragging && entity_index != e->scene_tree_drag_entity) {
                 e->scene_tree_drop_target = entity_index;
@@ -1874,11 +2001,12 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
             }
 
             if (hovered && click && !disclosure_clicked) {
-                e->scene_selected_entity = entity_index;
-                e->scene_tree_drag_active = 1;
-                e->scene_tree_drag_entity = entity_index;
-                e->scene_tree_drop_target = -1;
-                e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+                editor_scene_selection_apply_click(e, entity_index, shift_toggle);
+                if (shift_toggle) {
+                    scene_tree_cancel_drag(e);
+                } else {
+                    scene_tree_begin_drag(e, entity_index);
+                }
             }
             if (hovered && dragging && entity_index != e->scene_tree_drag_entity) {
                 e->scene_tree_drop_target = entity_index;
@@ -1900,11 +2028,12 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
         }) {
             int hovered = Clay_Hovered();
             if (hovered && click) {
-                e->scene_selected_entity = entity_index;
-                e->scene_tree_drag_active = 1;
-                e->scene_tree_drag_entity = entity_index;
-                e->scene_tree_drop_target = -1;
-                e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+                editor_scene_selection_apply_click(e, entity_index, shift_toggle);
+                if (shift_toggle) {
+                    scene_tree_cancel_drag(e);
+                } else {
+                    scene_tree_begin_drag(e, entity_index);
+                }
             }
             if (hovered && dragging && entity_index != e->scene_tree_drag_entity) {
                 e->scene_tree_drop_target = entity_index;
@@ -1916,6 +2045,7 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
 
 static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state *e,
                                              int entity_index, int depth, int click,
+                                             int shift_toggle,
                                              const int *parent_of, int entity_count,
                                              int *visited) {
     int child;
@@ -1924,7 +2054,8 @@ static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state 
     if (visited[entity_index]) return;
 
     visited[entity_index] = 1;
-    scene_tree_emit_entity_row(gs, e, entity_index, depth, click, parent_of, entity_count);
+    scene_tree_emit_entity_row(gs, e, entity_index, depth, click, shift_toggle,
+                               parent_of, entity_count);
 
     if (entity_index >= 0 && entity_index < SCENE_TREE_MAX_ENTITIES) {
         collapsed = e->scene_tree_collapsed[entity_index] ? 1 : 0;
@@ -1937,6 +2068,7 @@ static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state 
     for (child = 0; child < entity_count; child++) {
         if (parent_of[child] == entity_index && child != entity_index) {
             scene_tree_emit_entity_recursive(gs, e, child, depth + 1, click,
+                                             shift_toggle,
                                              parent_of, entity_count, visited);
         }
     }
@@ -1964,7 +2096,7 @@ static int panel_event_hit(dock_state *d, PanelId panel, SDL_Window *evwin,
 
 /* ── Internal helpers ─────────────────────────────────────────── */
 
-static Vec3 cam_forward(editor_state *e) {
+static Vec3 cam_forward(const editor_state *e) {
     return VEC3(
         cosf(e->cam_pitch) * sinf(e->cam_yaw),
         sinf(e->cam_pitch),
@@ -2095,6 +2227,9 @@ static Vec3 world_to_screen(Vec3 pos, Mat4 vp, float w, float h) {
     }
 }
 
+static Mat4 editor_world_matrix_for_entity(const game_state *gs, int entity_index);
+static Vec3 editor_transform_point(Mat4 m, Vec3 p);
+
 static float pt_seg_dist_sq(Vec3 p, Vec3 a, Vec3 b) {
     float dx = b.x - a.x, dy = b.y - a.y;
     float len_sq = dx*dx + dy*dy;
@@ -2105,6 +2240,209 @@ static float pt_seg_dist_sq(Vec3 p, Vec3 a, Vec3 b) {
     qx = a.x + t*dx - p.x;
     qy = a.y + t*dy - p.y;
     return qx*qx + qy*qy;
+}
+
+static int editor_build_pick_ray(const editor_state *e, float panel_x, float panel_y,
+                                 Vec3 *out_origin, Vec3 *out_dir) {
+    float w, h;
+    float nx, ny;
+    float aspect;
+    Vec3 fwd, right, up;
+    if (!e || !out_origin || !out_dir) return 0;
+
+    w = e->panel_w;
+    h = e->panel_h;
+    if (w < 1.0f || h < 1.0f) return 0;
+
+    nx = (panel_x / w) * 2.0f - 1.0f;
+    ny = 1.0f - (panel_y / h) * 2.0f;
+
+    fwd = vec3_normalize(cam_forward(e));
+    right = vec3_normalize(vec3_cross(fwd, VEC3(0.0f, 1.0f, 0.0f)));
+    if (vec3_len(right) < 1e-4f) right = VEC3(1.0f, 0.0f, 0.0f);
+    up = vec3_normalize(vec3_cross(right, fwd));
+    if (vec3_len(up) < 1e-4f) up = VEC3(0.0f, 1.0f, 0.0f);
+
+    aspect = w / h;
+    if (e->cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
+        float ortho_size = editor_ortho_size(e);
+        float half_h = ortho_size * 0.5f;
+        float half_w = half_h * aspect;
+        *out_origin = vec3_add(e->cam_pos,
+                               vec3_add(vec3_scale(right, nx * half_w),
+                                        vec3_scale(up, ny * half_h)));
+        *out_dir = fwd;
+    } else {
+        float tan_half_fov = tanf(60.0f * 3.14159265f / 180.0f * 0.5f);
+        Vec3 dir = vec3_add(fwd,
+                            vec3_add(vec3_scale(right, nx * tan_half_fov * aspect),
+                                     vec3_scale(up, ny * tan_half_fov)));
+        *out_origin = e->cam_pos;
+        *out_dir = vec3_normalize(dir);
+    }
+    return 1;
+}
+
+static int ray_sphere_hit(Vec3 ro, Vec3 rd, Vec3 center, float radius, float *out_t) {
+    Vec3 oc = vec3_sub(ro, center);
+    float a = vec3_dot(rd, rd);
+    float b = 2.0f * vec3_dot(oc, rd);
+    float c = vec3_dot(oc, oc) - radius * radius;
+    float disc = b * b - 4.0f * a * c;
+    float t0, t1, t;
+    if (disc < 0.0f) return 0;
+
+    disc = sqrtf(disc);
+    t0 = (-b - disc) / (2.0f * a);
+    t1 = (-b + disc) / (2.0f * a);
+    t = (t0 > 0.0f) ? t0 : ((t1 > 0.0f) ? t1 : -1.0f);
+    if (t <= 0.0f) return 0;
+    if (out_t) *out_t = t;
+    return 1;
+}
+
+static float editor_pick_projected_radius_px(const editor_state *e, Vec3 center_world,
+                                             float radius_world) {
+    const float fov_rad = 60.0f * 3.14159265f / 180.0f;
+    if (!e || radius_world <= 0.0f || e->panel_h < 1.0f) return 0.0f;
+
+    if (e->cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
+        float ortho_size = editor_ortho_size(e);
+        if (ortho_size < 0.001f) return 0.0f;
+        return radius_world * (e->panel_h / ortho_size);
+    } else {
+        Vec3 to_center = vec3_sub(center_world, e->cam_pos);
+        Vec3 fwd = vec3_normalize(cam_forward(e));
+        float depth = vec3_dot(to_center, fwd);
+        float focal_px;
+        if (depth < 0.05f) return 0.0f;
+        focal_px = (e->panel_h * 0.5f) / tanf(fov_rad * 0.5f);
+        return (radius_world / depth) * focal_px;
+    }
+}
+
+static int editor_pick_click_through_allows(const editor_state *e, Vec3 center_world,
+                                            float radius_world) {
+    float radius_px;
+    float cam_dist;
+    if (!e) return 0;
+    radius_px = editor_pick_projected_radius_px(e, center_world, radius_world);
+    cam_dist = vec3_len(vec3_sub(center_world, e->cam_pos));
+    if (radius_px < EDITOR_PICK_MIN_SCREEN_RADIUS_PX &&
+        cam_dist > EDITOR_PICK_TINY_MAX_DISTANCE) {
+        return 0;
+    }
+    return 1;
+}
+
+static int editor_pick_entity_sphere(const game_state *gs, int entity_index,
+                                     Vec3 *out_center_world, float *out_radius_world) {
+    const mesh_component *mc;
+    const scene_model_asset *asset = NULL;
+    const box_collider_component *boxc = NULL;
+    const capsule_collider_component *capc = NULL;
+    Mat4 world;
+    Vec3 center_local = VEC3(0.0f, 0.0f, 0.0f);
+    Vec3 center_world;
+    Vec3 axis_x, axis_y, axis_z;
+    float sx, sy, sz, max_scale;
+    float radius_local = 0.0f;
+    float radius_world;
+    int has_pick_volume = 0;
+
+    if (!gs || !out_center_world || !out_radius_world) return 0;
+
+    mc = find_mesh_component_read(gs, entity_index);
+    if (mc && mc->visible) {
+        asset = find_scene_model_asset_read(gs, mc->model_asset_index);
+        if (asset && asset->loaded && asset->model.mesh.primitive_count > 0) {
+            center_local = VEC3(asset->model.mesh.bounds_center[0],
+                                asset->model.mesh.bounds_center[1],
+                                asset->model.mesh.bounds_center[2]);
+            radius_local = asset->model.mesh.bounds_radius > 0.01f
+                               ? asset->model.mesh.bounds_radius
+                               : 0.75f;
+            has_pick_volume = 1;
+        }
+    }
+
+    if (!has_pick_volume) {
+        capc = find_capsule_collider_component_read(gs, entity_index);
+        if (capc) {
+            float r = fabsf(capc->radius);
+            float hh = fabsf(capc->half_height);
+            radius_local = r + hh;
+            if (radius_local < 0.1f) radius_local = 0.1f;
+            has_pick_volume = 1;
+        } else {
+            boxc = find_box_collider_component_read(gs, entity_index);
+            if (boxc) {
+                float hx = fabsf(boxc->rect.w) * 0.5f;
+                float hz = fabsf(boxc->rect.h) * 0.5f;
+                float hy = fabsf(boxc->half_height);
+                if (hx < 0.01f && hz < 0.01f) {
+                    hx = 0.5f;
+                    hz = 0.5f;
+                }
+                if (hy < 0.01f) hy = fmaxf(0.5f, fmaxf(hx, hz));
+                radius_local = sqrtf(hx * hx + hy * hy + hz * hz);
+                if (radius_local < 0.1f) radius_local = 0.1f;
+                has_pick_volume = 1;
+            }
+        }
+    }
+
+    if (!has_pick_volume) return 0;
+
+    world = editor_world_matrix_for_entity(gs, entity_index);
+    center_world = editor_transform_point(world, center_local);
+
+    axis_x = VEC3(world.m[0], world.m[1], world.m[2]);
+    axis_y = VEC3(world.m[4], world.m[5], world.m[6]);
+    axis_z = VEC3(world.m[8], world.m[9], world.m[10]);
+    sx = vec3_len(axis_x);
+    sy = vec3_len(axis_y);
+    sz = vec3_len(axis_z);
+    max_scale = fmaxf(sx, fmaxf(sy, sz));
+    if (max_scale < 1e-4f) max_scale = 1.0f;
+
+    radius_world = radius_local * max_scale;
+    if (radius_world < 0.05f) radius_world = 0.05f;
+
+    *out_center_world = center_world;
+    *out_radius_world = radius_world;
+    return 1;
+}
+
+static int editor_pick_scene_entity(const game_state *gs, const editor_state *e,
+                                    float panel_x, float panel_y, int *out_entity) {
+    int i;
+    int entity_count;
+    int best_entity = -1;
+    float best_t = 1e30f;
+    Vec3 ray_origin, ray_dir;
+    if (!gs || !e || !out_entity || !gs->scene_entities) return 0;
+    if (!editor_build_pick_ray(e, panel_x, panel_y, &ray_origin, &ray_dir)) return 0;
+    entity_count = gs->scene_entity_count;
+    if (entity_count > SCENE_TREE_MAX_ENTITIES) entity_count = SCENE_TREE_MAX_ENTITIES;
+
+    for (i = 0; i < entity_count; i++) {
+        Vec3 center_world;
+        float radius_world;
+        float hit_t;
+
+        if (!editor_pick_entity_sphere(gs, i, &center_world, &radius_world)) continue;
+        if (!ray_sphere_hit(ray_origin, ray_dir, center_world, radius_world, &hit_t)) continue;
+        if (!editor_pick_click_through_allows(e, center_world, radius_world)) continue;
+        if (hit_t < best_t) {
+            best_t = hit_t;
+            best_entity = i;
+        }
+    }
+
+    if (best_entity < 0) return 0;
+    *out_entity = best_entity;
+    return 1;
 }
 
 static void add_line(editor_state *e, Vec3 a, Vec3 b, float r, float g, float bl) {
@@ -2892,11 +3230,14 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     if (e->menu_open == 0) e->menu_open = -1;
     if (e->menu_hover == 0) e->menu_hover = -1;
     e->scene_selected_entity = 0;
+    memset(e->scene_selection_mask, 0, sizeof(e->scene_selection_mask));
+    e->scene_selection_count = 0;
     memset(e->scene_tree_collapsed, 0, sizeof(e->scene_tree_collapsed));
     e->scene_tree_drag_active = 0;
     if (e->scene_tree_drag_entity == 0) e->scene_tree_drag_entity = -1;
     if (e->scene_tree_drop_target == 0) e->scene_tree_drop_target = -1;
     e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+    e->scene_tree_click_shift = 0;
     if (e->project_browser_mouse_x == 0.0f) e->project_browser_mouse_x = -10000.0f;
     if (e->project_browser_mouse_y == 0.0f) e->project_browser_mouse_y = -10000.0f;
     e->project_browser_scroll_y = 0.0f;
@@ -3463,20 +3804,8 @@ static int pb_build_folder_list(project_data *proj, char folders[][256]) {
     int count = 0;
     int i;
     char dir[256];
-    for (i = 0; i < proj->model_count; i++) {
-        pb_extract_dir(proj->model_paths[i], dir, 256);
-        if (dir[0]) pb_add_folder_chain(folders, &count, dir);
-    }
-    for (i = 0; i < proj->animation_count; i++) {
-        pb_extract_dir(proj->animation_paths[i], dir, 256);
-        if (dir[0]) pb_add_folder_chain(folders, &count, dir);
-    }
-    for (i = 0; i < proj->dungeon_piece_count; i++) {
-        pb_extract_dir(proj->dungeon_piece_paths[i], dir, 256);
-        if (dir[0]) pb_add_folder_chain(folders, &count, dir);
-    }
-    for (i = 0; i < proj->sprite_count; i++) {
-        pb_extract_dir(proj->sprite_paths[i], dir, 256);
+    for (i = 0; i < proj->asset_count; i++) {
+        pb_extract_dir(proj->assets[i].path, dir, 256);
         if (dir[0]) pb_add_folder_chain(folders, &count, dir);
     }
     qsort(folders, (size_t)count, 256, pb_folder_cmp);
@@ -3605,6 +3934,7 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     int scene_node;
     int win_w, win_h;
     int click;
+    int shift_toggle;
     int entity_count;
     int parent_of[SCENE_TREE_MAX_ENTITIES];
     int visited[SCENE_TREE_MAX_ENTITIES];
@@ -3632,6 +3962,7 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
 
     click = e->scene_tree_click;
+    shift_toggle = click && e->scene_tree_click_shift;
     if (e->scene_tree_drag_active && e->scene_tree_mouse_down) {
         e->scene_tree_drop_target = -1;
         e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
@@ -3689,12 +4020,14 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
                         int is_root = (p < 0 || p >= entity_count || p == i);
                         if (is_root) {
                             scene_tree_emit_entity_recursive(gs, e, i, 0, click,
+                                                             shift_toggle,
                                                              parent_of, entity_count, visited);
                         }
                     }
                     for (i = 0; i < entity_count; i++) {
                         if (!visited[i]) {
                             scene_tree_emit_entity_recursive(gs, e, i, 0, click,
+                                                             shift_toggle,
                                                              parent_of, entity_count, visited);
                         }
                     }
@@ -3723,7 +4056,7 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
 
         if (parent >= -1 && scene_tree_parent_assignment_is_valid(child, parent, parent_of, entity_count)) {
             set_parent_transform_component(gs, child, parent);
-            e->scene_selected_entity = child;
+            editor_scene_selection_set_single(e, child);
         }
         e->scene_tree_drag_active = 0;
         e->scene_tree_drag_entity = -1;
@@ -3732,6 +4065,7 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     }
 
     e->scene_tree_click = 0;
+    e->scene_tree_click_shift = 0;
 }
 
 static void project_browser_layout(game_state *gs, editor_state *es) {
@@ -3790,49 +4124,20 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
         e->project_browser_scroll_y = 0.0f;
     }
 
-    total_assets = gs->project.model_count + gs->project.animation_count +
-                   gs->project.dungeon_piece_count + gs->project.sprite_count;
+    total_assets = gs->project.asset_count;
     snprintf(title_buf, sizeof(title_buf), "Project Browser  (%d assets)", total_assets);
     sel_path = e->pb_selected_path;
 
-    /* Build folder tree from asset paths */
     folder_count = pb_build_folder_list(&gs->project, folders);
 
-    /* Build visible asset list filtered by selected folder */
     vis_count = 0;
-    for (i = 0; i < gs->project.model_count && vis_count < PB_MAX_VIS; i++) {
-        if (pb_path_matches(gs->project.model_paths[i], sel_path)) {
-            vis_keys[vis_count] = gs->project.model_keys[i];
-            vis_paths[vis_count] = gs->project.model_paths[i];
-            vis_swatch[vis_count] = pb_asset_type_color(0);
-            vis_type[vis_count] = 0;
-            vis_count++;
-        }
-    }
-    for (i = 0; i < gs->project.animation_count && vis_count < PB_MAX_VIS; i++) {
-        if (pb_path_matches(gs->project.animation_paths[i], sel_path)) {
-            vis_keys[vis_count] = gs->project.animation_keys[i];
-            vis_paths[vis_count] = gs->project.animation_paths[i];
-            vis_swatch[vis_count] = pb_asset_type_color(1);
-            vis_type[vis_count] = 1;
-            vis_count++;
-        }
-    }
-    for (i = 0; i < gs->project.dungeon_piece_count && vis_count < PB_MAX_VIS; i++) {
-        if (pb_path_matches(gs->project.dungeon_piece_paths[i], sel_path)) {
-            vis_keys[vis_count] = gs->project.dungeon_piece_keys[i];
-            vis_paths[vis_count] = gs->project.dungeon_piece_paths[i];
-            vis_swatch[vis_count] = pb_asset_type_color(2);
-            vis_type[vis_count] = 2;
-            vis_count++;
-        }
-    }
-    for (i = 0; i < gs->project.sprite_count && vis_count < PB_MAX_VIS; i++) {
-        if (pb_path_matches(gs->project.sprite_paths[i], sel_path)) {
-            vis_keys[vis_count] = gs->project.sprite_keys[i];
-            vis_paths[vis_count] = gs->project.sprite_paths[i];
-            vis_swatch[vis_count] = pb_asset_type_color(3);
-            vis_type[vis_count] = 3;
+    for (i = 0; i < gs->project.asset_count && vis_count < PB_MAX_VIS; i++) {
+        const project_asset *a = &gs->project.assets[i];
+        if (pb_path_matches(a->path, sel_path)) {
+            vis_keys[vis_count] = a->key;
+            vis_paths[vis_count] = a->path;
+            vis_swatch[vis_count] = pb_asset_type_color((int)a->type);
+            vis_type[vis_count] = (int)a->type;
             vis_count++;
         }
     }
@@ -4212,11 +4517,12 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                         }
                     }
                 } else if (e->pb_selected_asset_type == 1) {
-                    for (ai = 0; ai < gs->project.scene_entity_count; ai++) {
-                        const project_scene_component *comp = &gs->project.scene_components[ai];
-                        if (!comp->has_mesh || !comp->has_animation) continue;
-                        if (strcmp(comp->animation_asset, e->pb_selected_asset_key) != 0) continue;
-                        bound_mesh_key = comp->mesh_model;
+                    for (ai = 0; ai < gs->project.anim_count; ai++) {
+                        const project_anim *pa = &gs->project.anims[ai];
+                        const project_mesh *pm = project_find_mesh(&gs->project, pa->entity);
+                        if (!pm) continue;
+                        if (strcmp(pa->asset, e->pb_selected_asset_key) != 0) continue;
+                        bound_mesh_key = pm->model;
                         break;
                     }
                     if (bound_mesh_key) {
@@ -6069,10 +6375,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     EDITOR_CPU_ZONE_BEGIN(e, "editor_layout_prepass");
     {
         int scene_count = gs->scene_entities ? gs->scene_entity_count : 0;
-        if (e->scene_selected_entity >= scene_count)
-            e->scene_selected_entity = scene_count - 1;
-        if (e->scene_selected_entity < 0 && scene_count > 0)
-            e->scene_selected_entity = 0;
+        editor_scene_selection_sync(e, scene_count);
     }
     EDITOR_CPU_ZONE_END(e);
     EDITOR_CPU_ZONE_BEGIN(e, "layout_memory_profiler");
@@ -6510,7 +6813,13 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                    e->gizmo_active == GIZMO_NONE) {
             float lx = 0.0f, ly = 0.0f;
             if (panel_event_hit(d, PANEL_EDITOR, evwin, ev->button.x, ev->button.y, &lx, &ly)) {
+                int picked = -1;
+                int shift_down = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
                 if (editor_toolbar_contains_point(e, lx, ly)) return 1;
+                if (editor_pick_scene_entity(gs, e, lx, ly, &picked)) {
+                    editor_scene_selection_apply_click(e, picked, shift_down);
+                    return 1;
+                }
                 editor_begin_mouse_look(e, SDL_BUTTON_LEFT);
                 return 1;
             }
@@ -6778,6 +7087,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->scene_tree_mouse_x = lx;
                 e->scene_tree_mouse_y = ly;
                 e->scene_tree_click = 1;
+                e->scene_tree_click_shift = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
             }
 
             e->project_browser_mouse_down = panel_event_hit(d, PANEL_ASSETS, evwin,
@@ -6808,6 +7118,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT) {
         e->prof_mouse_down = 0;
         e->scene_tree_mouse_down = 0;
+        e->scene_tree_click_shift = 0;
         e->project_browser_mouse_down = 0;
         e->cache_prof_mouse_down = 0;
         e->cpu_prof_mouse_down = 0;

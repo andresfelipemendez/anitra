@@ -153,40 +153,40 @@ EXPORT int init_core(const char *project_path) {
 
             /* Resolve default model paths from ECS scene mesh components */
             if (g.game.project.scene_entity_count > 0) {
-                int ei;
+                int mi;
                 int resolved_animated_model = 0;
                 int resolved_static_model = 0;
-                for (ei = 0; ei < g.game.project.scene_entity_count; ei++) {
-                    project_scene_component *comp = &g.game.project.scene_components[ei];
-                    int pi;
-                    if (!comp->has_mesh || !comp->mesh_model[0]) continue;
+                for (mi = 0; mi < g.game.project.mesh_count; mi++) {
+                    const project_mesh *pm = &g.game.project.meshes[mi];
+                    const char *model_path;
+                    const project_anim *pa;
+                    if (!pm->model[0]) continue;
 
-                    for (pi = 0; pi < g.game.project.model_count; pi++) {
-                        if (strcmp(g.game.project.model_keys[pi], comp->mesh_model) == 0) {
-                            if (strstr(comp->mesh_model, "floor") != NULL) {
-                                g.game.default_floor_model_path = g.game.project.model_paths[pi];
-                            }
-                            if (comp->has_animation && !resolved_animated_model) {
-                                g.game.default_model_path = g.game.project.model_paths[pi];
-                                resolved_animated_model = 1;
-                            }
-                            if (!resolved_animated_model &&
-                                !resolved_static_model &&
-                                strstr(comp->mesh_model, "floor") == NULL) {
-                                g.game.default_model_path = g.game.project.model_paths[pi];
-                                resolved_static_model = 1;
-                            }
-                            break;
-                        }
+                    model_path = project_find_asset(&g.game.project, pm->model, ASSET_MODEL);
+                    if (!model_path)
+                        model_path = project_find_asset(&g.game.project, pm->model, ASSET_DUNGEON_PIECE);
+                    if (!model_path) continue;
+
+                    if (strstr(pm->model, "floor") != NULL) {
+                        g.game.default_floor_model_path = model_path;
                     }
 
-                    if (comp->has_animation && comp->animation_asset[0]) {
-                        for (pi = 0; pi < g.game.project.animation_count; pi++) {
-                            if (strcmp(g.game.project.animation_keys[pi], comp->animation_asset) == 0) {
-                                g.game.default_animation_path = g.game.project.animation_paths[pi];
-                                break;
-                            }
-                        }
+                    pa = project_find_anim(&g.game.project, pm->entity);
+                    if (pa && !resolved_animated_model) {
+                        g.game.default_model_path = model_path;
+                        resolved_animated_model = 1;
+                    }
+                    if (!resolved_animated_model &&
+                        !resolved_static_model &&
+                        strstr(pm->model, "floor") == NULL) {
+                        g.game.default_model_path = model_path;
+                        resolved_static_model = 1;
+                    }
+
+                    if (pa && pa->asset[0]) {
+                        const char *anim_path = project_find_asset(&g.game.project, pa->asset, ASSET_ANIMATION);
+                        if (anim_path)
+                            g.game.default_animation_path = anim_path;
                     }
                 }
             }
@@ -194,15 +194,17 @@ EXPORT int init_core(const char *project_path) {
             /* Override sprite/texture paths from project assets */
             {
                 int si;
-                for (si = 0; si < g.game.project.sprite_count; si++) {
-                    if (strcmp(g.game.project.sprite_keys[si], "player_sheet") == 0)
-                        g.game.texture_player = g.game.project.sprite_paths[si];
-                    else if (strcmp(g.game.project.sprite_keys[si], "slime_sheet") == 0)
-                        g.game.texture_slime = g.game.project.sprite_paths[si];
-                    else if (strcmp(g.game.project.sprite_keys[si], "health_bar") == 0)
-                        g.game.texture_health_bar = g.game.project.sprite_paths[si];
-                    else if (strcmp(g.game.project.sprite_keys[si], "health_fill") == 0)
-                        g.game.texture_health_fill = g.game.project.sprite_paths[si];
+                for (si = 0; si < g.game.project.asset_count; si++) {
+                    const project_asset *a = &g.game.project.assets[si];
+                    if (a->type != ASSET_SPRITE) continue;
+                    if (strcmp(a->key, "player_sheet") == 0)
+                        g.game.texture_player = a->path;
+                    else if (strcmp(a->key, "slime_sheet") == 0)
+                        g.game.texture_slime = a->path;
+                    else if (strcmp(a->key, "health_bar") == 0)
+                        g.game.texture_health_bar = a->path;
+                    else if (strcmp(a->key, "health_fill") == 0)
+                        g.game.texture_health_fill = a->path;
                 }
             }
 

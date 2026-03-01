@@ -38,25 +38,31 @@ static void read_vec2(const toml_array_t *arr, float out[2]) {
     }
 }
 
-/* Read all key-value pairs from a table into parallel key/path arrays */
-static int read_asset_table(const toml_table_t *tbl, char keys[][64], char paths[][256], int max) {
-    int i, n;
+/* Read all key-value pairs from a TOML table into the unified asset array */
+static int read_asset_table_unified(const toml_table_t *tbl,
+                                     project_asset *assets, int *count,
+                                     int max, project_asset_type type) {
+    int i, n, added = 0;
     if (!tbl) return 0;
     n = toml_table_len(tbl);
-    if (n > max) n = max;
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < n && *count < max; i++) {
         int keylen;
         const char *k = toml_table_key(tbl, i, &keylen);
         toml_value_t v;
+        project_asset *a;
         if (!k) continue;
-        snprintf(keys[i], 64, "%.*s", keylen, k);
-        v = toml_table_string(tbl, keys[i]);
+        a = &assets[*count];
+        snprintf(a->key, 64, "%.*s", keylen, k);
+        v = toml_table_string(tbl, a->key);
         if (v.ok && v.u.s) {
-            snprintf(paths[i], 256, "%s", v.u.s);
+            snprintf(a->path, 256, "%s", v.u.s);
             free(v.u.s);
+            a->type = type;
+            (*count)++;
+            added++;
         }
     }
-    return n;
+    return added;
 }
 
 static int parse_index_key(const char *key, int keylen) {
@@ -221,7 +227,7 @@ static void parse_scene_entity_list(const toml_table_t *root, project_data *out)
     if (!arr) return;
 
     n = toml_array_len(arr);
-    if (n > PROJECT_SCENE_MAX_ENTITIES) n = PROJECT_SCENE_MAX_ENTITIES;
+    if (n > PROJECT_COMP_MAX) n = PROJECT_COMP_MAX;
     out->scene_entity_count = n;
 
     for (i = 0; i < n; i++) {
@@ -242,12 +248,15 @@ static void parse_transform_table(const toml_table_t *tbl, project_data *out) {
     for (i = 0; i < n; i++) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
+        project_transform *t;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->transform_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_transform = 1;
-        read_vec3(toml_table_array(entry, "position"),
-                  out->scene_components[entity_index].transform_position);
+        t = &out->transforms[out->transform_count++];
+        t->entity = entity_index;
+        t->position[0] = 0.0f; t->position[1] = 0.0f; t->position[2] = 0.0f;
+        read_vec3(toml_table_array(entry, "position"), t->position);
     }
 }
 
@@ -270,6 +279,7 @@ static void parse_rotation_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vd;
+        project_rotation *r;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
 
@@ -278,9 +288,11 @@ static void parse_rotation_table(const toml_table_t *tbl, project_data *out) {
         if (!vd.ok) vd = toml_table_double(entry, "y");
         if (!vd.ok) vd = toml_table_double(entry, "value");
         if (!vd.ok) continue;
+        if (out->rotation_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_rotation = 1;
-        out->scene_components[entity_index].rotation_y = (float)vd.u.d;
+        r = &out->rotations[out->rotation_count++];
+        r->entity = entity_index;
+        r->y = (float)vd.u.d;
     }
 }
 
@@ -292,6 +304,7 @@ static void parse_scale_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         float parsed_scale[3] = {1.0f, 1.0f, 1.0f};
+        project_scale *s;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
 
@@ -299,11 +312,13 @@ static void parse_scale_table(const toml_table_t *tbl, project_data *out) {
         read_vec3(toml_table_array(entry, "scale"), parsed_scale);
 
         if (is_identity_scale(parsed_scale)) continue;
+        if (out->scale_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_scale = 1;
-        out->scene_components[entity_index].scale[0] = parsed_scale[0];
-        out->scene_components[entity_index].scale[1] = parsed_scale[1];
-        out->scene_components[entity_index].scale[2] = parsed_scale[2];
+        s = &out->scales[out->scale_count++];
+        s->entity = entity_index;
+        s->value[0] = parsed_scale[0];
+        s->value[1] = parsed_scale[1];
+        s->value[2] = parsed_scale[2];
     }
 }
 
@@ -315,14 +330,18 @@ static void parse_parent_transform_table(const toml_table_t *tbl, project_data *
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vi;
+        project_parent_transform *pt;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
 
         vi = toml_table_int(entry, "parent");
         if (!vi.ok) vi = toml_table_int(entry, "entity");
         if (!vi.ok) continue;
-        out->scene_components[entity_index].has_parent_transform = 1;
-        out->scene_components[entity_index].parent_transform_entity = (int)vi.u.i;
+        if (out->parent_transform_count >= PROJECT_COMP_MAX) continue;
+
+        pt = &out->parent_transforms[out->parent_transform_count++];
+        pt->entity = entity_index;
+        pt->parent = (int)vi.u.i;
     }
 }
 
@@ -339,7 +358,10 @@ static void parse_parent_rotation_table(const toml_table_t *tbl, project_data *o
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
         vb = toml_table_bool(entry, "enabled");
         if (vb.ok) enabled = vb.u.b ? 1 : 0;
-        out->scene_components[entity_index].has_parent_rotation = enabled;
+        if (!enabled) continue;
+        if (out->parent_rotation_count >= PROJECT_COMP_MAX) continue;
+
+        out->parent_rotations[out->parent_rotation_count++].entity = entity_index;
     }
 }
 
@@ -351,15 +373,18 @@ static void parse_mesh_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vb;
+        project_mesh *m;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->mesh_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_mesh = 1;
-        out->scene_components[entity_index].mesh_visible = 1;
-        copy_toml_string(entry, "model", out->scene_components[entity_index].mesh_model,
-                         sizeof(out->scene_components[entity_index].mesh_model));
+        m = &out->meshes[out->mesh_count++];
+        m->entity = entity_index;
+        m->visible = 1;
+        m->model[0] = '\0';
+        copy_toml_string(entry, "model", m->model, sizeof(m->model));
         vb = toml_table_bool(entry, "visible");
-        if (vb.ok) out->scene_components[entity_index].mesh_visible = vb.u.b ? 1 : 0;
+        if (vb.ok) m->visible = vb.u.b ? 1 : 0;
     }
 }
 
@@ -371,31 +396,34 @@ static void parse_animation_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vb, vi, vd;
+        project_anim *a;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->anim_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_animation = 1;
-        out->scene_components[entity_index].animation_playing = 1;
-        out->scene_components[entity_index].animation_speed = 1.0f;
+        a = &out->anims[out->anim_count++];
+        a->entity = entity_index;
+        a->playing = 1;
+        a->speed = 1.0f;
+        a->clip = 0;
+        a->time = 0.0f;
+        a->asset[0] = '\0';
 
-        copy_toml_string(entry, "asset", out->scene_components[entity_index].animation_asset,
-                         sizeof(out->scene_components[entity_index].animation_asset));
-        if (!out->scene_components[entity_index].animation_asset[0]) {
-            copy_toml_string(entry, "animations", out->scene_components[entity_index].animation_asset,
-                             sizeof(out->scene_components[entity_index].animation_asset));
-        }
+        copy_toml_string(entry, "asset", a->asset, sizeof(a->asset));
+        if (!a->asset[0])
+            copy_toml_string(entry, "animations", a->asset, sizeof(a->asset));
 
         vb = toml_table_bool(entry, "playing");
-        if (vb.ok) out->scene_components[entity_index].animation_playing = vb.u.b ? 1 : 0;
+        if (vb.ok) a->playing = vb.u.b ? 1 : 0;
 
         vi = toml_table_int(entry, "clip");
-        if (vi.ok) out->scene_components[entity_index].animation_clip = (int)vi.u.i;
+        if (vi.ok) a->clip = (int)vi.u.i;
 
         vd = toml_table_double(entry, "time");
-        if (vd.ok) out->scene_components[entity_index].animation_time = (float)vd.u.d;
+        if (vd.ok) a->time = (float)vd.u.d;
 
         vd = toml_table_double(entry, "speed");
-        if (vd.ok) out->scene_components[entity_index].animation_speed = (float)vd.u.d;
+        if (vd.ok) a->speed = (float)vd.u.d;
     }
 }
 
@@ -407,15 +435,19 @@ static void parse_velocity_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vd;
+        project_velocity *vel;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->velocity_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_velocity = 1;
-        read_vec2(toml_table_array(entry, "value"), out->scene_components[entity_index].velocity);
+        vel = &out->velocities[out->velocity_count++];
+        vel->entity = entity_index;
+        vel->value[0] = 0.0f; vel->value[1] = 0.0f;
+        read_vec2(toml_table_array(entry, "value"), vel->value);
         vd = toml_table_double(entry, "x");
-        if (vd.ok) out->scene_components[entity_index].velocity[0] = (float)vd.u.d;
+        if (vd.ok) vel->value[0] = (float)vd.u.d;
         vd = toml_table_double(entry, "y");
-        if (vd.ok) out->scene_components[entity_index].velocity[1] = (float)vd.u.d;
+        if (vd.ok) vel->value[1] = (float)vd.u.d;
     }
 }
 
@@ -427,16 +459,19 @@ static void parse_rigid_body_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vb;
+        project_rigid_body *rb;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->rigid_body_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_rigid_body = 1;
-        out->scene_components[entity_index].rigid_body_use_gravity = 1;
+        rb = &out->rigid_bodies[out->rigid_body_count++];
+        rb->entity = entity_index;
+        rb->use_gravity = 1;
 
         vb = toml_table_bool(entry, "use_gravity");
         if (!vb.ok) vb = toml_table_bool(entry, "gravity");
         if (!vb.ok) vb = toml_table_bool(entry, "enabled");
-        if (vb.ok) out->scene_components[entity_index].rigid_body_use_gravity = vb.u.b ? 1 : 0;
+        if (vb.ok) rb->use_gravity = vb.u.b ? 1 : 0;
     }
 }
 
@@ -448,18 +483,21 @@ static void parse_character_controller_table(const toml_table_t *tbl, project_da
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vd;
+        project_character_controller *cc;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->character_controller_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_character_controller = 1;
-        out->scene_components[entity_index].character_controller_move_speed = 5.0f;
-        out->scene_components[entity_index].character_controller_jump_speed = 8.5f;
+        cc = &out->character_controllers[out->character_controller_count++];
+        cc->entity = entity_index;
+        cc->move_speed = 5.0f;
+        cc->jump_speed = 8.5f;
 
         vd = toml_table_double(entry, "move_speed");
-        if (vd.ok) out->scene_components[entity_index].character_controller_move_speed = (float)vd.u.d;
+        if (vd.ok) cc->move_speed = (float)vd.u.d;
         vd = toml_table_double(entry, "jump_speed");
         if (!vd.ok) vd = toml_table_double(entry, "jump");
-        if (vd.ok) out->scene_components[entity_index].character_controller_jump_speed = (float)vd.u.d;
+        if (vd.ok) cc->jump_speed = (float)vd.u.d;
     }
 }
 
@@ -471,21 +509,23 @@ static void parse_health_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vd;
+        project_health *h;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->health_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_health = 1;
-        out->scene_components[entity_index].health_current = 100.0f;
-        out->scene_components[entity_index].health_max = 100.0f;
+        h = &out->healths[out->health_count++];
+        h->entity = entity_index;
+        h->current = 100.0f;
+        h->max = 100.0f;
 
         vd = toml_table_double(entry, "current");
         if (!vd.ok) vd = toml_table_double(entry, "value");
-        if (vd.ok) out->scene_components[entity_index].health_current = (float)vd.u.d;
+        if (vd.ok) h->current = (float)vd.u.d;
 
         vd = toml_table_double(entry, "max");
-        if (vd.ok) out->scene_components[entity_index].health_max = (float)vd.u.d;
-        else out->scene_components[entity_index].health_max =
-            out->scene_components[entity_index].health_current;
+        if (vd.ok) h->max = (float)vd.u.d;
+        else h->max = h->current;
     }
 }
 
@@ -496,15 +536,17 @@ static void parse_box_collider_table(const toml_table_t *tbl, project_data *out)
     for (i = 0; i < n; i++) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
+        project_box_collider *bc;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->box_collider_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_box_collider = 1;
-        out->scene_components[entity_index].box_collider_half_extents[0] = 0.5f;
-        out->scene_components[entity_index].box_collider_half_extents[1] = 0.5f;
-        out->scene_components[entity_index].box_collider_half_extents[2] = 0.5f;
-        read_vec3(toml_table_array(entry, "half_extents"),
-                  out->scene_components[entity_index].box_collider_half_extents);
+        bc = &out->box_colliders[out->box_collider_count++];
+        bc->entity = entity_index;
+        bc->half_extents[0] = 0.5f;
+        bc->half_extents[1] = 0.5f;
+        bc->half_extents[2] = 0.5f;
+        read_vec3(toml_table_array(entry, "half_extents"), bc->half_extents);
     }
 }
 
@@ -516,37 +558,29 @@ static void parse_capsule_collider_table(const toml_table_t *tbl, project_data *
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vd;
-        int has_radius = 0;
-        int has_half_height = 0;
+        int has_radius = 0, has_half_height = 0;
+        project_capsule_collider *cc;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->capsule_collider_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_capsule_collider = 1;
-        out->scene_components[entity_index].capsule_collider_radius = 0.5f;
-        out->scene_components[entity_index].capsule_collider_half_height = 0.5f;
+        cc = &out->capsule_colliders[out->capsule_collider_count++];
+        cc->entity = entity_index;
+        cc->radius = 0.5f;
+        cc->half_height = 0.5f;
 
         vd = toml_table_double(entry, "radius");
-        if (vd.ok) {
-            out->scene_components[entity_index].capsule_collider_radius = (float)vd.u.d;
-            has_radius = 1;
-        }
+        if (vd.ok) { cc->radius = (float)vd.u.d; has_radius = 1; }
 
         vd = toml_table_double(entry, "half_height");
-        if (vd.ok) {
-            out->scene_components[entity_index].capsule_collider_half_height = (float)vd.u.d;
-            has_half_height = 1;
-        }
+        if (vd.ok) { cc->half_height = (float)vd.u.d; has_half_height = 1; }
 
         if (!has_half_height) {
             float he[3] = {0.5f, 0.5f, 0.5f};
             read_vec3(toml_table_array(entry, "half_extents"), he);
-            if (!has_radius) {
-                out->scene_components[entity_index].capsule_collider_radius = he[0] > 0.0f ? he[0] : 0.5f;
-            }
-            out->scene_components[entity_index].capsule_collider_half_height =
-                he[1] > out->scene_components[entity_index].capsule_collider_radius
-                ? he[1] - out->scene_components[entity_index].capsule_collider_radius
-                : out->scene_components[entity_index].capsule_collider_radius;
+            if (!has_radius)
+                cc->radius = he[0] > 0.0f ? he[0] : 0.5f;
+            cc->half_height = he[1] > cc->radius ? he[1] - cc->radius : cc->radius;
         }
     }
 }
@@ -559,26 +593,28 @@ static void parse_camera_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vd;
+        project_cam *c;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->camera_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_camera = 1;
-        out->scene_components[entity_index].camera_fov = 60.0f;
-        out->scene_components[entity_index].camera_near = 0.1f;
-        out->scene_components[entity_index].camera_far = 100.0f;
-        out->scene_components[entity_index].camera_up[0] = 0.0f;
-        out->scene_components[entity_index].camera_up[1] = 1.0f;
-        out->scene_components[entity_index].camera_up[2] = 0.0f;
+        c = &out->cameras[out->camera_count++];
+        c->entity = entity_index;
+        c->fov = 60.0f;
+        c->near_plane = 0.1f;
+        c->far_plane = 100.0f;
+        c->target[0] = 0.0f; c->target[1] = 0.0f; c->target[2] = 0.0f;
+        c->up[0] = 0.0f; c->up[1] = 1.0f; c->up[2] = 0.0f;
 
         vd = toml_table_double(entry, "fov");
-        if (vd.ok) out->scene_components[entity_index].camera_fov = (float)vd.u.d;
+        if (vd.ok) c->fov = (float)vd.u.d;
         vd = toml_table_double(entry, "near");
-        if (vd.ok) out->scene_components[entity_index].camera_near = (float)vd.u.d;
+        if (vd.ok) c->near_plane = (float)vd.u.d;
         vd = toml_table_double(entry, "far");
-        if (vd.ok) out->scene_components[entity_index].camera_far = (float)vd.u.d;
+        if (vd.ok) c->far_plane = (float)vd.u.d;
 
-        read_vec3(toml_table_array(entry, "target"), out->scene_components[entity_index].camera_target);
-        read_vec3(toml_table_array(entry, "up"), out->scene_components[entity_index].camera_up);
+        read_vec3(toml_table_array(entry, "target"), c->target);
+        read_vec3(toml_table_array(entry, "up"), c->up);
     }
 }
 
@@ -590,19 +626,24 @@ static void parse_trigger_table(const toml_table_t *tbl, project_data *out) {
         int entity_index = -1;
         toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
         toml_value_t vi, vd;
+        project_trigger *tr;
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+        if (out->trigger_count >= PROJECT_COMP_MAX) continue;
 
-        out->scene_components[entity_index].has_trigger = 1;
-        copy_toml_string(entry, "type", out->scene_components[entity_index].trigger_type_str,
-                         sizeof(out->scene_components[entity_index].trigger_type_str));
+        tr = &out->triggers[out->trigger_count++];
+        tr->entity = entity_index;
+        tr->type_str[0] = '\0';
+        tr->target = 0;
+        tr->radius = 1.0f;
+
+        copy_toml_string(entry, "type", tr->type_str, sizeof(tr->type_str));
 
         vi = toml_table_int(entry, "target");
-        if (vi.ok) out->scene_components[entity_index].trigger_target = (int)vi.u.i;
+        if (vi.ok) tr->target = (int)vi.u.i;
 
-        out->scene_components[entity_index].trigger_radius = 1.0f;
         vd = toml_table_double(entry, "radius");
-        if (vd.ok) out->scene_components[entity_index].trigger_radius = (float)vd.u.d;
+        if (vd.ok) tr->radius = (float)vd.u.d;
     }
 }
 
@@ -698,18 +739,15 @@ int project_load(const char *path, project_data *out) {
     /* [assets] */
     assets = toml_table_table(root, "assets");
     if (assets) {
-        out->model_count = read_asset_table(
-            toml_table_table(assets, "models"),
-            out->model_keys, out->model_paths, 32);
-        out->animation_count = read_asset_table(
-            toml_table_table(assets, "animations"),
-            out->animation_keys, out->animation_paths, 8);
-        out->dungeon_piece_count = read_asset_table(
-            toml_table_table(assets, "dungeon_pieces"),
-            out->dungeon_piece_keys, out->dungeon_piece_paths, 32);
-        out->sprite_count = read_asset_table(
-            toml_table_table(assets, "sprites"),
-            out->sprite_keys, out->sprite_paths, 16);
+        out->asset_count = 0;
+        read_asset_table_unified(toml_table_table(assets, "models"),
+                                  out->assets, &out->asset_count, PROJECT_ASSET_MAX, ASSET_MODEL);
+        read_asset_table_unified(toml_table_table(assets, "animations"),
+                                  out->assets, &out->asset_count, PROJECT_ASSET_MAX, ASSET_ANIMATION);
+        read_asset_table_unified(toml_table_table(assets, "dungeon_pieces"),
+                                  out->assets, &out->asset_count, PROJECT_ASSET_MAX, ASSET_DUNGEON_PIECE);
+        read_asset_table_unified(toml_table_table(assets, "sprites"),
+                                  out->assets, &out->asset_count, PROJECT_ASSET_MAX, ASSET_SPRITE);
     }
 
     /* New ECS scene schema:
@@ -722,10 +760,44 @@ int project_load(const char *path, project_data *out) {
         parse_legacy_scene_tables(root, out);
     }
 
-    printf("Project loaded: '%s' (v%d) — scene_entities=%d, legacy_entities=%d, pieces=%d, sprites=%d, lights=%d\n",
+    printf("Project loaded: '%s' (v%d) — scene_entities=%d, legacy_entities=%d, pieces=%d, assets=%d, lights=%d\n",
            out->name, out->version, out->scene_entity_count, out->entity_count, out->piece_count,
-           out->sprite_count, out->lighting.point_light_count);
+           out->asset_count, out->lighting.point_light_count);
 
     toml_free(root);
     return 0;
+}
+
+const project_mesh *project_find_mesh(const project_data *p, int entity) {
+    int i;
+    if (!p) return NULL;
+    for (i = 0; i < p->mesh_count; i++)
+        if (p->meshes[i].entity == entity) return &p->meshes[i];
+    return NULL;
+}
+
+const project_anim *project_find_anim(const project_data *p, int entity) {
+    int i;
+    if (!p) return NULL;
+    for (i = 0; i < p->anim_count; i++)
+        if (p->anims[i].entity == entity) return &p->anims[i];
+    return NULL;
+}
+
+const project_box_collider *project_find_box_collider(const project_data *p, int entity) {
+    int i;
+    if (!p) return NULL;
+    for (i = 0; i < p->box_collider_count; i++)
+        if (p->box_colliders[i].entity == entity) return &p->box_colliders[i];
+    return NULL;
+}
+
+const char *project_find_asset(const project_data *p, const char *key, project_asset_type type) {
+    int i;
+    if (!p || !key || !key[0]) return NULL;
+    for (i = 0; i < p->asset_count; i++) {
+        if (p->assets[i].type == type && strcmp(p->assets[i].key, key) == 0)
+            return p->assets[i].path;
+    }
+    return NULL;
 }
