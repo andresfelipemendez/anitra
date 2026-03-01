@@ -1,0 +1,364 @@
+/*
+ * cache_profiler.h — Hardware cache miss profiler (header-only, stb-style)
+ *
+ * Usage:
+ *   In exactly one .c file (externals_runtime.c):
+ *     #define CACHE_PROF_IMPL
+ *     #include "cache_profiler.h"
+ *
+ *   Everywhere else:
+ *     #include "cache_profiler.h"   // struct typedefs + function declarations only
+ *
+ * macOS: Uses kpc framework via dlopen/dlsym for hardware performance counters.
+ * Other platforms: Stub implementations, cache_prof_available() returns 0.
+ */
+
+#ifndef CACHE_PROFILER_H
+#define CACHE_PROFILER_H
+
+#include <stdint.h>
+#include <string.h>
+
+/* ── Constants ──────────────────────────────────────────────────────────── */
+
+#define CACHE_PROF_MAX_ZONES  32
+#define CACHE_PROF_MAX_STACK  16
+
+/* kpc constants */
+#define KPC_CLASS_FIXED          (1u << 0)
+#define KPC_CLASS_CONFIGURABLE   (1u << 1)
+#define KPC_MAX_COUNTERS         16
+
+/* ── Data Structures ────────────────────────────────────────────────────── */
+
+typedef struct {
+    const char *names[CACHE_PROF_MAX_ZONES];
+    uint64_t    l1d_miss[CACHE_PROF_MAX_ZONES];
+    uint64_t    l1i_miss[CACHE_PROF_MAX_ZONES];
+    uint64_t    branch_miss[CACHE_PROF_MAX_ZONES];
+    uint64_t    instructions[CACHE_PROF_MAX_ZONES];
+    uint64_t    cycles[CACHE_PROF_MAX_ZONES];
+    uint16_t    count;
+} cache_prof_frame;
+
+typedef struct {
+    uint64_t counters[KPC_MAX_COUNTERS];
+} cache_prof_snapshot;
+
+/* ── API Declarations ───────────────────────────────────────────────────── */
+
+void              cache_prof_init(void);
+void              cache_prof_shutdown(void);
+void              cache_zone_begin(const char *name);
+void              cache_zone_end(void);
+void              cache_prof_frame_reset(void);
+int               cache_prof_available(void);
+cache_prof_frame *cache_prof_get_frame(void);
+void              cache_prof_sort_zones(void);
+
+/* ── Implementation ─────────────────────────────────────────────────────── */
+
+#ifdef CACHE_PROF_IMPL
+
+#include <stdio.h>
+
+/* ── Platform detection ─────────────────────────────────────────────────── */
+
+#if defined(__APPLE__)
+#include <dlfcn.h>
+#define CACHE_PROF_MACOS 1
+#else
+#define CACHE_PROF_MACOS 0
+#endif
+
+/* ── kpc function pointer types (macOS) ─────────────────────────────────── */
+
+#if CACHE_PROF_MACOS
+
+typedef int (*kpc_set_counting_fn)(uint32_t classes);
+typedef int (*kpc_set_config_fn)(uint32_t classes, uint64_t *config);
+typedef int (*kpc_get_thread_counters_fn)(int tid, uint32_t count, uint64_t *counters);
+typedef uint32_t (*kpc_get_counter_count_fn)(uint32_t classes);
+
+/* Apple M1 configurable PMC event IDs */
+#define CACHE_PROF_EVT_L1D_MISS    0x04
+#define CACHE_PROF_EVT_L1I_MISS    0xa6
+#define CACHE_PROF_EVT_BRANCH_MISS 0xcb
+
+#endif /* CACHE_PROF_MACOS */
+
+/* ── Global state ───────────────────────────────────────────────────────── */
+
+static int                cache_prof__available = 0;
+static cache_prof_frame   cache_prof__frame;
+
+/* Zone nesting stack */
+static const char        *cache_prof__stack_names[CACHE_PROF_MAX_STACK];
+static cache_prof_snapshot cache_prof__stack_snaps[CACHE_PROF_MAX_STACK];
+static int                cache_prof__stack_depth = 0;
+
+#if CACHE_PROF_MACOS
+
+static void *cache_prof__kperf_lib = NULL;
+
+static kpc_set_counting_fn         cache_prof__kpc_set_counting = NULL;
+static kpc_set_config_fn           cache_prof__kpc_set_config = NULL;
+static kpc_get_thread_counters_fn  cache_prof__kpc_get_thread_counters = NULL;
+static kpc_get_counter_count_fn    cache_prof__kpc_get_counter_count = NULL;
+
+static uint32_t cache_prof__num_counters = 0;
+
+/* Indices into the counter array.
+   Fixed counters come first, then configurables.
+   On Apple Silicon, fixed counters 0 = instructions, 1 = cycles.
+   Configurable counters start at index = num_fixed. */
+static uint32_t cache_prof__idx_instructions = 0;
+static uint32_t cache_prof__idx_cycles       = 1;
+static uint32_t cache_prof__idx_l1d_miss     = 0;
+static uint32_t cache_prof__idx_l1i_miss     = 0;
+static uint32_t cache_prof__idx_branch_miss  = 0;
+
+#endif /* CACHE_PROF_MACOS */
+
+/* ── Snapshot helper ────────────────────────────────────────────────────── */
+
+static void cache_prof__take_snapshot(cache_prof_snapshot *snap) {
+    memset(snap, 0, sizeof(*snap));
+#if CACHE_PROF_MACOS
+    if (cache_prof__available && cache_prof__kpc_get_thread_counters) {
+        cache_prof__kpc_get_thread_counters(0, cache_prof__num_counters,
+                                            snap->counters);
+    }
+#endif
+}
+
+/* ── API function bodies ────────────────────────────────────────────────── */
+
+void cache_prof_init(void) {
+    memset(&cache_prof__frame, 0, sizeof(cache_prof__frame));
+    cache_prof__stack_depth = 0;
+    cache_prof__available = 0;
+
+#if CACHE_PROF_MACOS
+    /* Try to load the kperf dynamic library */
+    cache_prof__kperf_lib = dlopen(
+        "/System/Library/PrivateFrameworks/kperf.framework/kperf", RTLD_LAZY);
+    if (!cache_prof__kperf_lib) {
+        /* Fallback: try libkperf.dylib directly */
+        cache_prof__kperf_lib = dlopen("libkperf.dylib", RTLD_LAZY);
+    }
+    if (!cache_prof__kperf_lib) {
+        fprintf(stderr, "[cache_profiler] dlopen kperf failed: %s\n", dlerror());
+        return;
+    }
+
+    /* Resolve function pointers */
+    cache_prof__kpc_set_counting =
+        (kpc_set_counting_fn)dlsym(cache_prof__kperf_lib, "kpc_set_counting");
+    cache_prof__kpc_set_config =
+        (kpc_set_config_fn)dlsym(cache_prof__kperf_lib, "kpc_set_config");
+    cache_prof__kpc_get_thread_counters =
+        (kpc_get_thread_counters_fn)dlsym(cache_prof__kperf_lib,
+                                          "kpc_get_thread_counters");
+    cache_prof__kpc_get_counter_count =
+        (kpc_get_counter_count_fn)dlsym(cache_prof__kperf_lib,
+                                        "kpc_get_counter_count");
+
+    if (!cache_prof__kpc_set_counting ||
+        !cache_prof__kpc_set_config ||
+        !cache_prof__kpc_get_thread_counters ||
+        !cache_prof__kpc_get_counter_count) {
+        fprintf(stderr, "[cache_profiler] dlsym failed for one or more kpc "
+                        "functions\n");
+        dlclose(cache_prof__kperf_lib);
+        cache_prof__kperf_lib = NULL;
+        return;
+    }
+
+    /* Query counter count */
+    uint32_t classes = KPC_CLASS_FIXED | KPC_CLASS_CONFIGURABLE;
+    cache_prof__num_counters = cache_prof__kpc_get_counter_count(classes);
+    if (cache_prof__num_counters == 0 ||
+        cache_prof__num_counters > KPC_MAX_COUNTERS) {
+        fprintf(stderr, "[cache_profiler] unexpected counter count: %u\n",
+                cache_prof__num_counters);
+        dlclose(cache_prof__kperf_lib);
+        cache_prof__kperf_lib = NULL;
+        return;
+    }
+
+    /* Determine fixed counter count to find configurable counter base */
+    uint32_t num_fixed = cache_prof__kpc_get_counter_count(KPC_CLASS_FIXED);
+
+    /* Fixed counters: instructions (0), cycles (1) on Apple Silicon */
+    cache_prof__idx_instructions = 0;
+    cache_prof__idx_cycles       = 1;
+
+    /* Configurable counters start after fixed counters.
+       We configure 3 configurable events: L1D miss, L1I miss, branch miss.
+       Note: Event IDs are Apple M1 specific. M2/M3/M4 may differ. */
+    cache_prof__idx_l1d_miss    = num_fixed + 0;
+    cache_prof__idx_l1i_miss    = num_fixed + 1;
+    cache_prof__idx_branch_miss = num_fixed + 2;
+
+    /* Configure the PMC events */
+    uint32_t num_configurable =
+        cache_prof__kpc_get_counter_count(KPC_CLASS_CONFIGURABLE);
+
+    uint64_t config[KPC_MAX_COUNTERS];
+    memset(config, 0, sizeof(config));
+
+    if (num_configurable >= 3) {
+        config[0] = CACHE_PROF_EVT_L1D_MISS;
+        config[1] = CACHE_PROF_EVT_L1I_MISS;
+        config[2] = CACHE_PROF_EVT_BRANCH_MISS;
+    }
+
+    int ret = cache_prof__kpc_set_config(KPC_CLASS_CONFIGURABLE, config);
+    if (ret != 0) {
+        fprintf(stderr, "[cache_profiler] kpc_set_config failed: %d\n", ret);
+        dlclose(cache_prof__kperf_lib);
+        cache_prof__kperf_lib = NULL;
+        return;
+    }
+
+    /* Enable counting */
+    ret = cache_prof__kpc_set_counting(classes);
+    if (ret != 0) {
+        fprintf(stderr, "[cache_profiler] kpc_set_counting failed: %d\n", ret);
+        dlclose(cache_prof__kperf_lib);
+        cache_prof__kperf_lib = NULL;
+        return;
+    }
+
+    cache_prof__available = 1;
+    fprintf(stderr, "[cache_profiler] initialized: %u counters (%u fixed, "
+                    "%u configurable)\n",
+            cache_prof__num_counters, num_fixed, num_configurable);
+
+#endif /* CACHE_PROF_MACOS */
+}
+
+void cache_prof_shutdown(void) {
+#if CACHE_PROF_MACOS
+    if (cache_prof__kperf_lib) {
+        dlclose(cache_prof__kperf_lib);
+        cache_prof__kperf_lib = NULL;
+    }
+    cache_prof__kpc_set_counting = NULL;
+    cache_prof__kpc_set_config = NULL;
+    cache_prof__kpc_get_thread_counters = NULL;
+    cache_prof__kpc_get_counter_count = NULL;
+#endif
+    cache_prof__available = 0;
+    cache_prof__stack_depth = 0;
+}
+
+void cache_zone_begin(const char *name) {
+    if (!cache_prof__available) return;
+    if (cache_prof__stack_depth >= CACHE_PROF_MAX_STACK) return;
+
+    int d = cache_prof__stack_depth;
+    cache_prof__stack_names[d] = name;
+    cache_prof__take_snapshot(&cache_prof__stack_snaps[d]);
+    cache_prof__stack_depth = d + 1;
+}
+
+void cache_zone_end(void) {
+    if (!cache_prof__available) return;
+    if (cache_prof__stack_depth <= 0) return;
+
+    cache_prof__stack_depth--;
+    int d = cache_prof__stack_depth;
+
+    /* Take an "after" snapshot */
+    cache_prof_snapshot after;
+    cache_prof__take_snapshot(&after);
+
+    /* Compute deltas */
+    cache_prof_snapshot *before = &cache_prof__stack_snaps[d];
+
+    uint64_t l1d_miss    = 0;
+    uint64_t l1i_miss    = 0;
+    uint64_t branch_miss = 0;
+    uint64_t instructions = 0;
+    uint64_t cycles       = 0;
+
+#if CACHE_PROF_MACOS
+    l1d_miss    = after.counters[cache_prof__idx_l1d_miss]    -
+                  before->counters[cache_prof__idx_l1d_miss];
+    l1i_miss    = after.counters[cache_prof__idx_l1i_miss]    -
+                  before->counters[cache_prof__idx_l1i_miss];
+    branch_miss = after.counters[cache_prof__idx_branch_miss] -
+                  before->counters[cache_prof__idx_branch_miss];
+    instructions = after.counters[cache_prof__idx_instructions] -
+                   before->counters[cache_prof__idx_instructions];
+    cycles       = after.counters[cache_prof__idx_cycles]      -
+                   before->counters[cache_prof__idx_cycles];
+#endif
+
+    /* Append to frame SoA arrays */
+    if (cache_prof__frame.count < CACHE_PROF_MAX_ZONES) {
+        uint16_t idx = cache_prof__frame.count;
+        cache_prof__frame.names[idx]       = cache_prof__stack_names[d];
+        cache_prof__frame.l1d_miss[idx]    = l1d_miss;
+        cache_prof__frame.l1i_miss[idx]    = l1i_miss;
+        cache_prof__frame.branch_miss[idx] = branch_miss;
+        cache_prof__frame.instructions[idx] = instructions;
+        cache_prof__frame.cycles[idx]       = cycles;
+        cache_prof__frame.count = idx + 1;
+    }
+}
+
+void cache_prof_frame_reset(void) {
+    cache_prof__frame.count = 0;
+    cache_prof__stack_depth = 0;
+}
+
+int cache_prof_available(void) {
+    return cache_prof__available;
+}
+
+cache_prof_frame *cache_prof_get_frame(void) {
+    return &cache_prof__frame;
+}
+
+void cache_prof_sort_zones(void) {
+    /* Insertion sort by l1d_miss descending */
+    uint16_t n = cache_prof__frame.count;
+    uint16_t i, j;
+
+    for (i = 1; i < n; i++) {
+        /* Save element i */
+        const char *t_name   = cache_prof__frame.names[i];
+        uint64_t t_l1d       = cache_prof__frame.l1d_miss[i];
+        uint64_t t_l1i       = cache_prof__frame.l1i_miss[i];
+        uint64_t t_branch    = cache_prof__frame.branch_miss[i];
+        uint64_t t_instr     = cache_prof__frame.instructions[i];
+        uint64_t t_cyc       = cache_prof__frame.cycles[i];
+
+        j = i;
+        while (j > 0 && cache_prof__frame.l1d_miss[j - 1] < t_l1d) {
+            /* Shift element j-1 to j */
+            cache_prof__frame.names[j]        = cache_prof__frame.names[j - 1];
+            cache_prof__frame.l1d_miss[j]     = cache_prof__frame.l1d_miss[j - 1];
+            cache_prof__frame.l1i_miss[j]     = cache_prof__frame.l1i_miss[j - 1];
+            cache_prof__frame.branch_miss[j]  = cache_prof__frame.branch_miss[j - 1];
+            cache_prof__frame.instructions[j] = cache_prof__frame.instructions[j - 1];
+            cache_prof__frame.cycles[j]       = cache_prof__frame.cycles[j - 1];
+            j--;
+        }
+
+        /* Insert saved element at position j */
+        cache_prof__frame.names[j]        = t_name;
+        cache_prof__frame.l1d_miss[j]     = t_l1d;
+        cache_prof__frame.l1i_miss[j]     = t_l1i;
+        cache_prof__frame.branch_miss[j]  = t_branch;
+        cache_prof__frame.instructions[j] = t_instr;
+        cache_prof__frame.cycles[j]       = t_cyc;
+    }
+}
+
+#endif /* CACHE_PROF_IMPL */
+
+#endif /* CACHE_PROFILER_H */
