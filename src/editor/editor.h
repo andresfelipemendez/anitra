@@ -17,6 +17,7 @@ typedef struct { float x, y, z, r, g, b; } editor_line_vert;
 #define PROF_GRID_MAX_ROWS 512
 #define PROFILER_TREE_MAX_NODES 65536
 #define SCENE_TREE_MAX_ENTITIES 512
+#define EDITOR_CPU_TREE_MAX_ZONES 256
 
 /* Project browser icon grid */
 #define PB_ICON_SIZE         80
@@ -833,10 +834,27 @@ typedef struct editor_state {
     int   cpu_prof_timeline_paused;
     int   cpu_prof_timeline_offset;
     uint64_t cpu_prof_timeline_frame_id;
+    float cpu_prof_flame_zoom;
+    float cpu_prof_flame_center;
+    float cpu_prof_flame_zoom_wheel;
+    float cpu_prof_flame_pan_wheel;
+    float cpu_prof_flame_x, cpu_prof_flame_y;
+    float cpu_prof_flame_w, cpu_prof_flame_h;
+    int   cpu_prof_minimap_dragging;
+    float cpu_prof_minimap_drag_offset;
+    struct arena *cpu_prof_text_arena;
+    uint8_t cpu_prof_tree_collapsed[EDITOR_CPU_TREE_MAX_ZONES];
+    uint64_t cpu_prof_tree_frame_id;
     char  cpu_prof_hover_zone_name[64];
     int   cpu_prof_hover_zone_active;
     char  cpu_prof_selected_zone_name[64];
     int   cpu_prof_selected_zone_active;
+
+    /* Editor layout persistence (separate TOML from scene/project file). */
+    char  editor_layout_path[512];
+    uint64_t dock_layout_last_hash;
+    float dock_layout_save_accum;
+    int   dock_layout_hash_valid;
 
     /* Dock state — allocated from editor_arena. */
     dock_state *dock;

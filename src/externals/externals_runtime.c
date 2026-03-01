@@ -2892,9 +2892,22 @@ static void update_input(memory *m) {
         return;
     }
 
-    /* Suppress keyboard game input when a non-game window has focus */
+    /* Suppress keyboard game input when the app is unfocused. */
     SDL_Window *focused = SDL_GetKeyboardFocus();
     bool game_has_focus = (focused == window) || (focused == NULL);
+    if (!game_has_focus) {
+        dock_state *dock = (dock_state *)m->editor.dock;
+        if (dock) {
+            int wi;
+            for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
+                if (!dock->windows[wi].in_use) continue;
+                if (focused == (SDL_Window *)dock->windows[wi].sdl_window) {
+                    game_has_focus = true;
+                    break;
+                }
+            }
+        }
+    }
 
     // Keyboard input
     float kb_horizontal = 0.0f;

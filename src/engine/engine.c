@@ -353,17 +353,27 @@ static void run_character_controller_system(game_state *gs) {
         move_speed = cc->move_speed > 0.01f ? cc->move_speed : 5.0f;
         jump_speed = cc->jump_speed > 0.01f ? cc->jump_speed : 8.5f;
 
-        vc->velocity.x = gs->input.horizontal * move_speed;
-
-        if (!rb || !rb->use_gravity) {
+        if (rb && rb->use_gravity) {
+            float move_x = gs->input.horizontal * move_speed * gs->dt;
+            float move_z = gs->input.vertical * move_speed * gs->dt;
+            tc->position.x += move_x;
+            tc->position.z += move_z;
+            vc->velocity.x = 0.0f;
+            if ((gs->input.input_mask & INPUT_A) && fabsf(vc->velocity.y) < 0.001f) {
+                vc->velocity.y = jump_speed;
+            }
+        } else {
+            vc->velocity.x = gs->input.horizontal * move_speed;
             vc->velocity.y = gs->input.vertical * move_speed;
-        } else if ((gs->input.input_mask & INPUT_A) && fabsf(vc->velocity.y) < 0.001f) {
-            vc->velocity.y = jump_speed;
         }
 
         if (rc) {
-            if (gs->input.horizontal > deadzone) rc->rotation_y_deg = -90.0f;
-            else if (gs->input.horizontal < -deadzone) rc->rotation_y_deg = 90.0f;
+            float move_h = gs->input.horizontal;
+            float move_v = gs->input.vertical;
+            if (fabsf(move_h) > deadzone || fabsf(move_v) > deadzone) {
+                float yaw_rad = atan2f(move_h, move_v);
+                rc->rotation_y_deg = -yaw_rad * (180.0f / 3.14159265f);
+            }
         }
     }
 }

@@ -99,7 +99,7 @@ list = [
 ]
 
 [transforms]
-"0" = { position = [0.0000, -0.0974, 0.0000] }
+"0" = { position = [1.5693, -0.0974, -2.5776] }
 "1" = { position = [0.0000, 8.0000, 10.0000] }
 "2" = { position = [0.0000, -1.0000, 0.0000] }
 "3" = { position = [-6.0000, 0.0000, -6.0000] }
@@ -121,11 +121,12 @@ list = [
 "19" = { position = [0.0000, -0.8563, 0.0000] }
 
 [rotations]
-"0" = { y = 0.0000 }
+"0" = { y = -180.0000 }
 "1" = { y = 0.0000 }
 "2" = { y = 0.0000 }
 
 [parent_transform]
+"1" = { parent = 0 }
 "3" = { parent = 2 }
 "4" = { parent = 2 }
 "5" = { parent = 2 }
@@ -164,13 +165,16 @@ list = [
 "19" = { model = "knight", visible = true }
 
 [animations]
-"19" = { asset = "general", playing = true, clip = 6, time = 0.6530, speed = 1.0000 }
+"19" = { asset = "general", playing = true, clip = 6, speed = 1.0000 }
 
 [velocities]
 "0" = { value = [0.0000, 0.0000] }
 
 [rigid_bodies]
 "0" = { use_gravity = true }
+
+[character_controllers]
+"0" = { move_speed = 5.0000, jump_speed = 8.5000 }
 
 [health]
 "0" = { current = 100.0000, max = 100.0000 }

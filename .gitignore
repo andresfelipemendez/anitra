@@ -10,3 +10,5 @@ build/
 game_assets/KayKit_Adventurers_2.0_FREE/Animations/gltf/.DS_Store
 game_assets/KayKit_Adventurers_2.0_FREE/Animations/.DS_Store
 .DS_Store
+*.editor.layout.toml
+.worktrees/
