@@ -615,16 +615,6 @@ static rect collider_rect_from_half_extents(const float half_extents[3], float f
     return r;
 }
 
-static rect capsule_aabb_rect(float radius, float half_height) {
-    rect r;
-    float rr = radius > 0.0f ? radius : 0.5f;
-    float hh = half_height > 0.0f ? half_height : rr;
-    r.x = 0.0f;
-    r.y = 0.0f;
-    r.w = rr * 2.0f;
-    r.h = (hh + rr) * 2.0f;
-    return r;
-}
 
 static void *reserve_array(arena *a, void *ptr, int *capacity, int needed, size_t elem_size, const char *tag) {
     int old_capacity;
@@ -915,9 +905,6 @@ static void push_capsule_collider_component(game_state *gs, int entity_index,
     gs->capsule_collider_components[i].entity_index = entity_index;
     gs->capsule_collider_components[i].radius = radius > 0.0f ? radius : 0.5f;
     gs->capsule_collider_components[i].half_height = half_height > 0.0f ? half_height : gs->capsule_collider_components[i].radius;
-    gs->capsule_collider_components[i].aabb = capsule_aabb_rect(
-        gs->capsule_collider_components[i].radius,
-        gs->capsule_collider_components[i].half_height);
 }
 
 static void push_mesh_component(game_state *gs, int entity_index, int asset_index) {

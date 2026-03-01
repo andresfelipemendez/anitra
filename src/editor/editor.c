@@ -671,16 +671,6 @@ static int has_capsule_collider_component(const game_state *gs, int entity_index
     return 0;
 }
 
-static rect capsule_aabb_rect(float radius, float half_height) {
-    float rr = radius > 0.0f ? radius : 0.5f;
-    float hh = half_height > 0.0f ? half_height : rr;
-    rect r;
-    r.x = 0.0f;
-    r.y = 0.0f;
-    r.w = rr * 2.0f;
-    r.h = (hh + rr) * 2.0f;
-    return r;
-}
 
 static int has_any_collider_component(const game_state *gs, int entity_index,
                                       rect *out_rect, int *out_is_capsule,
@@ -6644,7 +6634,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             capsule_collider_component *cc = find_capsule_collider_component_mut(gs, e->gizmo_entity_index);
             float axis_scale = e->gizmo_drag_axis_local_scale;
             float local_delta;
-            rect updated;
             if (!cc) return 0;
             if (axis_scale < 0.001f) axis_scale = 1.0f;
             local_delta = world_delta / axis_scale;
@@ -6653,10 +6642,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             } else {
                 cc->half_height = fmaxf(0.05f, e->gizmo_drag_start_capsule_half_height + local_delta);
             }
-            updated = capsule_aabb_rect(cc->radius, cc->half_height);
-            updated.x = cc->aabb.x;
-            updated.y = cc->aabb.y;
-            cc->aabb = updated;
         }
     }
 

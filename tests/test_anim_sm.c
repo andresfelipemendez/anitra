@@ -21,8 +21,9 @@
 
 /* ── Stubs for external deps (physics, gltf_loader) ───────────────────── */
 
-void collision(game_state *gs) { (void)gs; }
-void apply_movement(game_state *gs) { (void)gs; }
+void debug_draw_rect(debug_renderer *dr, vec2 center, float width, float height, debug_color color) {
+    (void)dr; (void)center; (void)width; (void)height; (void)color;
+}
 GltfModel load_glb(const char *path, arena *a) {
     GltfModel m; memset(&m, 0, sizeof(m)); (void)path; (void)a; return m;
 }
@@ -37,6 +38,34 @@ void debug_draw_line(debug_renderer *dr, vec2 start, vec2 end, debug_color color
 /* Include the engine sources (contains all static SM functions + anim) */
 #include "anim.c"
 #include "engine.c"
+
+/* physics.c duplicates many static helpers from engine.c — rename to avoid
+   redefinition in this single-translation-unit test build. */
+#define find_transform_component      phys_find_transform_component
+#define find_parent_transform_component phys_find_parent_transform_component
+#define find_health_component         phys_find_health_component
+#define find_velocity_component       phys_find_velocity_component
+#define find_rigid_body_component     phys_find_rigid_body_component
+#define find_character_controller_component phys_find_character_controller_component
+#define find_box_collider_component   phys_find_box_collider_component
+#define find_capsule_collider_component phys_find_capsule_collider_component
+#define find_camera_component         phys_find_camera_component
+#define find_mesh_component           phys_find_mesh_component
+#define resolve_world_position        phys_resolve_world_position
+#define resolve_parent_world_offset   phys_resolve_parent_world_offset
+#include "engine/physics.c"
+#undef find_transform_component
+#undef find_parent_transform_component
+#undef find_health_component
+#undef find_velocity_component
+#undef find_rigid_body_component
+#undef find_character_controller_component
+#undef find_box_collider_component
+#undef find_capsule_collider_component
+#undef find_camera_component
+#undef find_mesh_component
+#undef resolve_world_position
+#undef resolve_parent_world_offset
 
 /* ── Minimal test harness (same as test_dock.c) ───────────────────────── */
 
@@ -68,6 +97,17 @@ static int tests_failed = 0;
     if ((a) != (b)) { \
         printf("FAIL\n    %s:%d: %s == %d, expected %d\n", \
                __FILE__, __LINE__, #a, (int)(a), (int)(b)); \
+        tests_failed++; \
+        tests_passed--; \
+        return; \
+    } \
+} while(0)
+
+#define ASSERT_FLOAT_EQ(a, b) do { \
+    float _a = (a), _b = (b); \
+    if ((_a - _b) > 0.001f || (_b - _a) > 0.001f) { \
+        printf("FAIL\n    %s:%d: %s == %.4f, expected %.4f\n", \
+               __FILE__, __LINE__, #a, _a, _b); \
         tests_failed++; \
         tests_passed--; \
         return; \
@@ -867,7 +907,7 @@ static void setup_project_scene(game_state *gs) {
 
         bi = gs->box_collider_component_count++;
         gs->box_collider_components[bi].entity_index = eidx;
-        gs->box_collider_components[bi].rect = (rect){0, 0, 4.0f, 0.4f};
+        gs->box_collider_components[bi].rect = (rect){0, 0, 4.0f, 4.0f};
         gs->box_collider_components[bi].half_height = 0.2f;
     }
 
@@ -881,6 +921,29 @@ static void setup_project_scene(game_state *gs) {
     ti = gs->transform_component_count++;
     gs->transform_components[ti].entity_index = 19;
     gs->transform_components[ti].position = VEC3(0, -0.86f, 0);
+
+    /* Entities 20-23: south wall segments at z=-8, parented to floor_root.
+       4 units wide (X), 0.5 thick (Z), 4 tall (Y). */
+    {
+        static const float wall_x[4] = { -6.0f, -2.0f, 2.0f, 6.0f };
+        int w;
+        for (w = 0; w < 4; w++) {
+            int eidx = 20 + w;
+            ti = gs->transform_component_count++;
+            gs->transform_components[ti].entity_index = eidx;
+            gs->transform_components[ti].position = VEC3(wall_x[w], 0.0f, -8.0f);
+
+            pti = gs->parent_transform_component_count++;
+            gs->parent_transform_components[pti].entity_index = eidx;
+            gs->parent_transform_components[pti].parent_entity_index = 2;
+
+            bi = gs->box_collider_component_count++;
+            gs->box_collider_components[bi].entity_index = eidx;
+            gs->box_collider_components[bi].rect = (rect){0, 0, 4.0f, 0.5f};
+            gs->box_collider_components[bi].half_height = 2.0f;
+        }
+        gs->scene_entity_count = 24;
+    }
 }
 
 /* ── Tests: Full project scene (matches project.toml) ────────────────── */
@@ -957,6 +1020,59 @@ TEST(full_scene_bidirectional_transition) {
         anim_sm_update(sm, gs, 1.0f / 60.0f);
     ASSERT_EQ(sm->states[0].count, 1); /* back in idle */
     ASSERT_EQ(sm->states[1].count, 0);
+}
+
+/* ── Tests: Wall collision + sliding ─────────────────────────────────── */
+
+TEST(wall_blocks_movement_into_wall) {
+    game_state *gs = setup_game_state();
+    float start_z;
+    setup_project_scene(gs);
+    /* Place player close to south wall (wall world z = -1 + -8 = -9,
+       wall near edge = -9 + 0.25 = -8.75).  Capsule radius=0.38.
+       At z=-7.3, capsule edge = -7.68, gap to wall = 0.07.
+       One frame at v=-5: move = -0.083, edge = -7.76 → overlaps wall. */
+    gs->transform_components[0].position = VEC3(0.0f, -0.10f, -7.3f);
+    gs->dt = 1.0f / 60.0f;
+    /* Push toward wall (negative Z) */
+    gs->velocity_components[0].velocity = VEC3(0.0f, 0.0f, -5.0f);
+    start_z = gs->transform_components[0].position.z;
+    apply_movement(gs);
+    /* Z should NOT have moved (blocked by wall) */
+    ASSERT_FLOAT_EQ(gs->transform_components[0].position.z, start_z);
+}
+
+TEST(wall_allows_sliding_along_wall) {
+    game_state *gs = setup_game_state();
+    float start_x, start_z;
+    setup_project_scene(gs);
+    /* Same position near south wall */
+    gs->transform_components[0].position = VEC3(0.0f, -0.10f, -7.3f);
+    gs->dt = 1.0f / 60.0f;
+    /* Push diagonally into wall: X slides, Z blocked */
+    gs->velocity_components[0].velocity = VEC3(5.0f, 0.0f, -5.0f);
+    start_x = gs->transform_components[0].position.x;
+    start_z = gs->transform_components[0].position.z;
+    apply_movement(gs);
+    /* X should slide (not blocked), Z should be blocked */
+    ASSERT(gs->transform_components[0].position.x > start_x);
+    ASSERT_FLOAT_EQ(gs->transform_components[0].position.z, start_z);
+}
+
+TEST(no_wall_allows_free_movement) {
+    game_state *gs = setup_game_state();
+    float start_x, start_z;
+    setup_project_scene(gs);
+    /* Player in center, far from walls */
+    gs->transform_components[0].position = VEC3(0.0f, -0.10f, 0.0f);
+    gs->dt = 1.0f / 60.0f;
+    gs->velocity_components[0].velocity = VEC3(3.0f, 0.0f, 3.0f);
+    start_x = gs->transform_components[0].position.x;
+    start_z = gs->transform_components[0].position.z;
+    apply_movement(gs);
+    /* Both axes should move freely */
+    ASSERT(gs->transform_components[0].position.x > start_x);
+    ASSERT(gs->transform_components[0].position.z > start_z);
 }
 
 /* ── Tests: Edge cases ───────────────────────────────────────────────── */
@@ -1044,6 +1160,11 @@ int main(void) {
     run_parent_child_velocity_triggers_transition();
     run_parent_child_no_velocity_stays_idle();
     run_full_scene_bidirectional_transition();
+
+    /* Wall collision + sliding */
+    run_wall_blocks_movement_into_wall();
+    run_wall_allows_sliding_along_wall();
+    run_no_wall_allows_free_movement();
 
     /* Edge cases */
     run_update_with_zero_instances_is_noop();

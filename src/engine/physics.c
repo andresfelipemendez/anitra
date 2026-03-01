@@ -324,10 +324,17 @@ static rect *collider_rect_ptr(box_collider_component *bc, capsule_collider_comp
 }
 
 static void sync_collider_to_pos(box_collider_component *bc, capsule_collider_component *cc, vec2 pos) {
-    rect *r = collider_rect_ptr(bc, cc);
-    if (!r) return;
-    r->x = pos.x;
-    r->y = pos.y;
+    if (cc) {
+        cc->aabb.x = pos.x;
+        cc->aabb.y = pos.y;
+        cc->aabb.w = cc->radius * 2.0f;
+        cc->aabb.h = cc->radius * 2.0f;
+        return;
+    }
+    if (bc) {
+        bc->rect.x = pos.x;
+        bc->rect.y = pos.y;
+    }
 }
 
 static int animator_hitbox_active(const animator *a) {
