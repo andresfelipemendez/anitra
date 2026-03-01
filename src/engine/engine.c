@@ -152,6 +152,16 @@ static capsule_collider_component *find_capsule_collider_component(game_state *g
     return NULL;
 }
 
+static trigger_component *find_trigger_component(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->trigger_components) return NULL;
+    for (i = 0; i < gs->trigger_component_count; i++) {
+        trigger_component *tc = &gs->trigger_components[i];
+        if (tc->entity_index == entity_index) return tc;
+    }
+    return NULL;
+}
+
 static scene_model_asset *find_scene_model_asset(game_state *gs, int asset_index) {
     if (!gs || asset_index < 0 || asset_index >= gs->scene_model_asset_count) return NULL;
     return &gs->scene_model_assets[asset_index];
@@ -704,6 +714,9 @@ static int ensure_scene_storage(game_state *gs, int needed_entities) {
     gs->camera_components = (camera_component *)reserve_array(gs->gameplay, gs->camera_components,
                                                               &gs->camera_component_capacity, needed_entities,
                                                               sizeof(camera_component), "camera_components");
+    gs->trigger_components = (trigger_component *)reserve_array(gs->gameplay, gs->trigger_components,
+                                                                &gs->trigger_component_capacity, needed_entities,
+                                                                sizeof(trigger_component), "trigger_components");
 
     if (!gs->scene_entities || !gs->transform_components || !gs->mesh_components || !gs->camera_components) {
         return 0;
@@ -773,6 +786,9 @@ static void clear_scene_storage(game_state *gs) {
     if (gs->camera_components && gs->camera_component_capacity > 0) {
         memset(gs->camera_components, 0, (size_t)gs->camera_component_capacity * sizeof(camera_component));
     }
+    if (gs->trigger_components && gs->trigger_component_capacity > 0) {
+        memset(gs->trigger_components, 0, (size_t)gs->trigger_component_capacity * sizeof(trigger_component));
+    }
 
     gs->scene_entity_count = 0;
     gs->parent_component_count = 0;
@@ -791,6 +807,7 @@ static void clear_scene_storage(game_state *gs) {
     gs->animation_component_count = 0;
     gs->animation_transition_count = 0;
     gs->camera_component_count = 0;
+    gs->trigger_component_count = 0;
     /* Keep registered model assets so scene resets can reuse loaded meshes/animations. */
     gs->scene_primary_skinned_entity = -1;
     gs->scene_camera_entity = -1;
@@ -941,6 +958,20 @@ static void push_camera_component(game_state *gs, int entity_index, float fov, f
     gs->camera_components[i].far_plane = far_plane;
     gs->camera_components[i].target = target;
     gs->camera_components[i].up = up;
+}
+
+static void push_trigger_component(game_state *gs, int entity_index,
+                                   trigger_type type, int target_entity,
+                                   float radius) {
+    int i;
+    if (!gs || !gs->trigger_components) return;
+    if (gs->trigger_component_count >= gs->trigger_component_capacity) return;
+    i = gs->trigger_component_count++;
+    gs->trigger_components[i].entity_index = entity_index;
+    gs->trigger_components[i].type = type;
+    gs->trigger_components[i].target_entity = target_entity;
+    gs->trigger_components[i].radius = radius > 0.0f ? radius : 1.0f;
+    gs->trigger_components[i].activated = 0;
 }
 
 static int scene_name_has_player_token(const char *name) {
@@ -1152,6 +1183,12 @@ static void build_scene_from_project(game_state *gs) {
                                   VEC3(comp->camera_target[0], comp->camera_target[1], comp->camera_target[2]),
                                   VEC3(comp->camera_up[0], comp->camera_up[1], comp->camera_up[2]));
             gs->scene_camera_entity = i;
+        }
+
+        if (comp->has_trigger) {
+            trigger_type ttype = TRIGGER_DOOR;
+            if (strcmp(comp->trigger_type_str, "pickup") == 0) ttype = TRIGGER_PICKUP;
+            push_trigger_component(gs, i, ttype, comp->trigger_target, comp->trigger_radius);
         }
     }
 
@@ -2024,6 +2061,54 @@ EXPORT void assign_profiler_fns(
     pfn_cpu_zone_end = cpze;
 }
 
+static void update_triggers(game_state *gs) {
+    int i, player_entity;
+    Vec3 player_pos;
+    if (!gs || !gs->trigger_components || gs->trigger_component_count <= 0) return;
+
+    /* Find player entity (first character controller) */
+    if (gs->character_controller_component_count <= 0) return;
+    player_entity = gs->character_controller_components[0].entity_index;
+    player_pos = resolve_world_position(gs, player_entity);
+
+    for (i = 0; i < gs->trigger_component_count; i++) {
+        trigger_component *trig = &gs->trigger_components[i];
+        Vec3 trig_pos;
+        float dx, dz, dist_sq, r_sq;
+        mesh_component *mc;
+        trigger_component *door_trig;
+        mesh_component *door_mc;
+        box_collider_component *door_bc;
+
+        if (trig->type != TRIGGER_PICKUP || trig->activated) continue;
+
+        trig_pos = resolve_world_position(gs, trig->entity_index);
+        dx = player_pos.x - trig_pos.x;
+        dz = player_pos.z - trig_pos.z;
+        dist_sq = dx * dx + dz * dz;
+        r_sq = trig->radius * trig->radius;
+        if (dist_sq >= r_sq) continue;
+
+        /* Activate key: hide mesh */
+        trig->activated = 1;
+        mc = find_mesh_component(gs, trig->entity_index);
+        if (mc) mc->visible = 0;
+
+        /* Activate door: hide mesh, disable collider */
+        door_trig = find_trigger_component(gs, trig->target_entity);
+        if (door_trig) door_trig->activated = 1;
+
+        door_mc = find_mesh_component(gs, trig->target_entity);
+        if (door_mc) door_mc->visible = 0;
+
+        door_bc = find_box_collider_component(gs, trig->target_entity);
+        if (door_bc) {
+            door_bc->rect.w = 0.0f;
+            door_bc->rect.h = 0.0f;
+        }
+    }
+}
+
 #define ENGINE_CACHE_ZONE_BEGIN(name) do { if (pfn_cache_zone_begin) pfn_cache_zone_begin(name); } while(0)
 #define ENGINE_CACHE_ZONE_END()      do { if (pfn_cache_zone_end) pfn_cache_zone_end(); } while(0)
 #define ENGINE_CPU_ZONE_BEGIN(name)  do { if (pfn_cpu_zone_begin) pfn_cpu_zone_begin(name); } while(0)
@@ -2056,6 +2141,7 @@ EXPORT void update_engine(game_state *gs) {
         }
         apply_movement(gs);
         collision(gs);
+        update_triggers(gs);
         ENGINE_CACHE_ZONE_END();
         ENGINE_CPU_ZONE_END();
     }

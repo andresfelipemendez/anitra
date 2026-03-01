@@ -103,6 +103,11 @@ typedef struct project_scene_component {
     float camera_far;
     float camera_target[3];
     float camera_up[3];
+
+    int has_trigger;
+    char trigger_type_str[16];
+    int trigger_target;
+    float trigger_radius;
 } project_scene_component;
 
 typedef struct project_data {

@@ -270,6 +270,9 @@ static game_state *setup_game_state(void) {
     gs->health_components = (health_component *)arena_alloc(gs->gameplay,
         (uint32_t)(8 * sizeof(health_component)), 8, "health_comps");
     gs->health_component_capacity = 8;
+    gs->trigger_components = (trigger_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(8 * sizeof(trigger_component)), 8, "trig_comps");
+    gs->trigger_component_capacity = 8;
 
     /* Draw list */
     gs->dl.meshes = (mesh_draw_command *)arena_alloc(gs->gameplay,
@@ -1106,6 +1109,88 @@ TEST(anim_time_wraps_for_looping_clips) {
     ASSERT(sm->states[0].anim_times[0] < 1.0f);
 }
 
+/* ── Trigger system tests ─────────────────────────────────────────────── */
+
+TEST(key_pickup_opens_door) {
+    game_state *gs = setup_game_state();
+    int ti, mi, tgi, bci;
+
+    /* 3 entities: player (0), key (1), door (2) */
+    gs->scene_entity_count = 3;
+
+    /* Entity 0: player — transform, velocity, CC, capsule collider */
+    ti = gs->transform_component_count++;
+    gs->transform_components[ti].entity_index = 0;
+    gs->transform_components[ti].position = VEC3(0.0f, 0.0f, -4.0f);
+    gs->velocity_component_count++;
+    gs->velocity_components[0].entity_index = 0;
+    gs->velocity_components[0].velocity = VEC3(0, 0, 0);
+    gs->character_controller_component_count++;
+    gs->character_controller_components[0].entity_index = 0;
+    gs->character_controller_components[0].move_speed = 5.0f;
+    gs->character_controller_components[0].jump_speed = 8.5f;
+    gs->capsule_collider_component_count++;
+    gs->capsule_collider_components[0].entity_index = 0;
+    gs->capsule_collider_components[0].radius = 0.38f;
+    gs->capsule_collider_components[0].half_height = 0.46f;
+
+    /* Entity 1: key — transform, mesh (visible), PICKUP trigger targeting entity 2 */
+    ti = gs->transform_component_count++;
+    gs->transform_components[ti].entity_index = 1;
+    gs->transform_components[ti].position = VEC3(2.0f, 0.0f, -4.0f);
+    mi = gs->mesh_component_count++;
+    gs->mesh_components[mi].entity_index = 1;
+    gs->mesh_components[mi].visible = 1;
+    gs->mesh_components[mi].model_asset_index = 0;
+    tgi = gs->trigger_component_count++;
+    gs->trigger_components[tgi].entity_index = 1;
+    gs->trigger_components[tgi].type = TRIGGER_PICKUP;
+    gs->trigger_components[tgi].target_entity = 2;
+    gs->trigger_components[tgi].radius = 1.0f;
+    gs->trigger_components[tgi].activated = 0;
+
+    /* Entity 2: door — transform, mesh (visible), box collider, DOOR trigger */
+    ti = gs->transform_component_count++;
+    gs->transform_components[ti].entity_index = 2;
+    gs->transform_components[ti].position = VEC3(-2.0f, 0.0f, -8.0f);
+    mi = gs->mesh_component_count++;
+    gs->mesh_components[mi].entity_index = 2;
+    gs->mesh_components[mi].visible = 1;
+    gs->mesh_components[mi].model_asset_index = 0;
+    bci = gs->box_collider_component_count++;
+    gs->box_collider_components[bci].entity_index = 2;
+    gs->box_collider_components[bci].rect.w = 4.0f;
+    gs->box_collider_components[bci].rect.h = 0.5f;
+    gs->box_collider_components[bci].half_height = 2.0f;
+    tgi = gs->trigger_component_count++;
+    gs->trigger_components[tgi].entity_index = 2;
+    gs->trigger_components[tgi].type = TRIGGER_DOOR;
+    gs->trigger_components[tgi].target_entity = 0;
+    gs->trigger_components[tgi].radius = 0.0f;
+    gs->trigger_components[tgi].activated = 0;
+
+    /* Player at (0,0,-4), key at (2,0,-4) — distance = 2.0, radius = 1.0 → not triggered */
+    update_triggers(gs);
+    ASSERT_EQ(gs->trigger_components[0].activated, 0);
+    ASSERT_EQ(gs->mesh_components[0].visible, 1); /* key mesh still visible */
+    ASSERT_EQ(gs->mesh_components[1].visible, 1); /* door mesh still visible */
+    ASSERT(gs->box_collider_components[0].rect.w > 0.0f); /* door collider active */
+
+    /* Move player to key position */
+    gs->transform_components[0].position = VEC3(2.0f, 0.0f, -4.0f);
+    update_triggers(gs);
+
+    /* Key trigger activated, key mesh hidden */
+    ASSERT_EQ(gs->trigger_components[0].activated, 1);
+    ASSERT_EQ(gs->mesh_components[0].visible, 0);
+
+    /* Door trigger activated, door mesh hidden, door collider disabled */
+    ASSERT_EQ(gs->trigger_components[1].activated, 1);
+    ASSERT_EQ(gs->mesh_components[1].visible, 0);
+    ASSERT_FLOAT_EQ(gs->box_collider_components[0].rect.w, 0.0f);
+    ASSERT_FLOAT_EQ(gs->box_collider_components[0].rect.h, 0.0f);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1169,6 +1254,9 @@ int main(void) {
     /* Edge cases */
     run_update_with_zero_instances_is_noop();
     run_anim_time_wraps_for_looping_clips();
+
+    /* Trigger system */
+    run_key_pickup_opens_door();
 
     printf("\n  ── Results: %d passed, %d failed, %d total ──\n\n",
            tests_passed, tests_failed, tests_run);

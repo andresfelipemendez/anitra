@@ -184,6 +184,16 @@ typedef struct camera_component {
     Vec3 up;
 } camera_component;
 
+typedef enum { TRIGGER_PICKUP, TRIGGER_DOOR } trigger_type;
+
+typedef struct trigger_component {
+    int entity_index;
+    trigger_type type;
+    int target_entity;
+    float radius;
+    int activated;
+} trigger_component;
+
 typedef enum InputButton {
     INPUT_A = 1 << 0,
     INPUT_B = 1 << 1,
@@ -340,6 +350,9 @@ typedef struct game_state {
   camera_component *camera_components;
   int camera_component_count;
   int camera_component_capacity;
+  trigger_component *trigger_components;
+  int trigger_component_count;
+  int trigger_component_capacity;
 
   mesh3d_state mesh3d;
   anim_sm anim;

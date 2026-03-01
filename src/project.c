@@ -582,6 +582,30 @@ static void parse_camera_table(const toml_table_t *tbl, project_data *out) {
     }
 }
 
+static void parse_trigger_table(const toml_table_t *tbl, project_data *out) {
+    int i, n;
+    if (!tbl || out->scene_entity_count <= 0) return;
+    n = toml_table_len(tbl);
+    for (i = 0; i < n; i++) {
+        int entity_index = -1;
+        toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
+        toml_value_t vi, vd;
+        if (!entry) continue;
+        if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+
+        out->scene_components[entity_index].has_trigger = 1;
+        copy_toml_string(entry, "type", out->scene_components[entity_index].trigger_type_str,
+                         sizeof(out->scene_components[entity_index].trigger_type_str));
+
+        vi = toml_table_int(entry, "target");
+        if (vi.ok) out->scene_components[entity_index].trigger_target = (int)vi.u.i;
+
+        out->scene_components[entity_index].trigger_radius = 1.0f;
+        vd = toml_table_double(entry, "radius");
+        if (vd.ok) out->scene_components[entity_index].trigger_radius = (float)vd.u.d;
+    }
+}
+
 static void parse_ecs_component_tables(const toml_table_t *root, project_data *out) {
     parse_transform_table(toml_table_table(root, "transforms"), out);
     parse_rotation_table(toml_table_table(root, "rotations"), out);
@@ -598,6 +622,7 @@ static void parse_ecs_component_tables(const toml_table_t *root, project_data *o
     parse_capsule_collider_table(toml_table_table(root, "capsule_colliders"), out);
     parse_box_collider_table(toml_table_table(root, "colliders"), out); /* legacy */
     parse_camera_table(toml_table_table(root, "cameras"), out);
+    parse_trigger_table(toml_table_table(root, "triggers"), out);
 }
 
 /* ── Public API ──────────────────────────────────────────────────────── */

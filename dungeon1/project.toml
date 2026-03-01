@@ -40,6 +40,7 @@ barrel_large = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/barrel
 barrel_small = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/barrel_small.gltf"
 column       = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/column.gltf"
 pillar       = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/pillar.gltf"
+key          = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/key.gltf"
 
 [assets.sprites]
 player_sheet = "assets/char_spritesheet.png"
@@ -122,7 +123,8 @@ list = [
   "barrel_1",
   "chest_0",
   "column_0",
-  "column_1"
+  "column_1",
+  "key"
 ]
 
 [transforms]
@@ -173,6 +175,7 @@ list = [
 "44" = { position = [5.0000, 0.0000, 6.0000] }
 "45" = { position = [-2.0000, 0.0000, 0.0000] }
 "46" = { position = [2.0000, 0.0000, 0.0000] }
+"47" = { position = [2.0000, 0.0000, -4.0000] }
 
 [rotations]
 "0" = { y = -180.0000 }
@@ -248,6 +251,7 @@ list = [
 "44" = { parent = 2 }
 "45" = { parent = 2 }
 "46" = { parent = 2 }
+"47" = { parent = 2 }
 
 [meshes]
 "3" = { model = "floor_tile_large", visible = true }
@@ -294,6 +298,7 @@ list = [
 "44" = { model = "chest_gold", visible = true }
 "45" = { model = "column", visible = true }
 "46" = { model = "column", visible = true }
+"47" = { model = "key", visible = true }
 
 [animations]
 "19" = { asset = "general", playing = true, clip = 6, speed = 1.0000 }
@@ -358,4 +363,8 @@ list = [
 
 [cameras]
 "1" = { fov = 45.0000, near = 0.1000, far = 100.0000, target = [0.0000, 0.0000, 0.0000], up = [0.0000, 1.0000, 0.0000] }
+
+[triggers]
+"47" = { type = "pickup", target = 21, radius = 1.0 }
+"21" = { type = "door" }
 
