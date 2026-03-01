@@ -81,7 +81,9 @@ static const char *panel_names[PANEL_COUNT] = {
     "Scene Tree",
     "Inspector",
     "Outline",
-    "Project"
+    "Project",
+    "Cache Profiler",
+    "CPU Profiler"
 };
 
 /* Dock node structure */
@@ -274,11 +276,13 @@ static void dock_init_default(dock_state *d) {
     d->nodes[assets_leaf].panels[0] = PANEL_ASSETS;
     d->nodes[assets_leaf].panel_count = 1;
 
-    /* Right leaf: Profiler + Inspector tabs (Inspector active by default) */
+    /* Right leaf: Profiler + Inspector + Cache Profiler + CPU Profiler tabs */
     right = dock_alloc_node(d);
     d->nodes[right].panels[0] = PANEL_PROFILER;
     d->nodes[right].panels[1] = PANEL_INSPECTOR;
-    d->nodes[right].panel_count = 2;
+    d->nodes[right].panels[2] = PANEL_CACHE_PROFILER;
+    d->nodes[right].panels[3] = PANEL_CPU_PROFILER;
+    d->nodes[right].panel_count = 4;
     d->nodes[right].active_tab = 1;
 
     /* Wire up children */
@@ -808,6 +812,24 @@ typedef struct editor_state {
     int   menu_hover;              /* which submenu item is hovered (-1 = none) */
     float menu_mouse_x, menu_mouse_y; /* mouse position in window coords */
     int   menu_click;              /* 1 on the frame left button was pressed in menu bar area */
+
+    /* Cache profiler panel — Clay render output */
+    void *cache_prof_clay_ctx;
+    int   cache_prof_cmd_count;
+    void *cache_prof_cmd_array;
+    float cache_prof_mouse_x, cache_prof_mouse_y;
+    float cache_prof_scroll_y;
+    int   cache_prof_mouse_down;
+    int   cache_prof_click;
+
+    /* CPU profiler panel — Clay render output */
+    void *cpu_prof_clay_ctx;
+    int   cpu_prof_cmd_count;
+    void *cpu_prof_cmd_array;
+    float cpu_prof_mouse_x, cpu_prof_mouse_y;
+    float cpu_prof_scroll_y;
+    int   cpu_prof_mouse_down;
+    int   cpu_prof_click;
 
     /* Dock state — allocated from editor_arena. */
     dock_state *dock;
