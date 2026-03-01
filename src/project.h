@@ -67,7 +67,6 @@ typedef struct project_scene_component {
 
     int has_mesh;
     char mesh_model[64];
-    char mesh_kind[32];
     int mesh_visible;
 
     int has_animation;
@@ -80,13 +79,19 @@ typedef struct project_scene_component {
     int has_velocity;
     float velocity[2];
 
+    int has_rigid_body;
+    int rigid_body_use_gravity;
+
     int has_health;
     float health_current;
     float health_max;
 
-    int has_collider;
-    char collider_type[32];
-    float collider_half_extents[3];
+    int has_box_collider;
+    float box_collider_half_extents[3];
+
+    int has_capsule_collider;
+    float capsule_collider_radius;
+    float capsule_collider_half_height;
 
     int has_camera;
     float camera_fov;

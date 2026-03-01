@@ -20,6 +20,9 @@ typedef struct { float x, y, z, r, g, b; } editor_line_vert;
 #define MENU_BAR_HEIGHT 28
 #endif
 
+#define EDITOR_CAMERA_PERSPECTIVE 0
+#define EDITOR_CAMERA_ORTHOGRAPHIC 1
+
 typedef struct editor_state {
     /* Arena pointers — set by externals init, used by editor for allocation */
     struct arena *root_arena;      /* pointer to memory.arena (for profiler arena display) */
@@ -32,7 +35,10 @@ typedef struct editor_state {
     Vec3  cam_pos;
     float cam_yaw, cam_pitch;
     float cam_speed, cam_sens;
+    int   cam_projection_mode; /* EDITOR_CAMERA_* */
+    float cam_ortho_size;      /* vertical orthographic span in world units */
     int   cam_mouse_look;
+    uint8_t cam_mouse_button; /* SDL_BUTTON_LEFT / SDL_BUTTON_RIGHT while looking */
 
     /* Window state */
     void *window;        /* SDL_Window* — set by externals, read by editor */
@@ -44,10 +50,17 @@ typedef struct editor_state {
     float panel_w, panel_h;   /* content area size in pixels (below header) */
 
     /* Gizmo */
-    int   gizmo_hovered;   /* 0=none, 1=X, 2=Y, 3=Z */
+    int   gizmo_hovered;   /* 0=none, 1=X, 2=Y, 3=Z, 4..9=capsule edit handles */
     int   gizmo_active;
+    int   gizmo_entity_index;
     Vec3  gizmo_drag_start_eye;
     Vec3  gizmo_drag_start_target;
+    Vec3  gizmo_drag_start_entity_pos;
+    Vec3  gizmo_drag_axis_world;
+    int   gizmo_drag_mode;              /* 0=translate, 1=capsule radius, 2=capsule half-height */
+    float gizmo_drag_start_capsule_radius;
+    float gizmo_drag_start_capsule_half_height;
+    float gizmo_drag_axis_local_scale;  /* world-to-local conversion factor for collider drags */
     float gizmo_drag_accum;
     Vec3  gizmo_screen_axis;
     float gizmo_world_per_pixel;
@@ -111,6 +124,9 @@ typedef struct editor_state {
     void *menu_bar_clay_ctx;       /* Clay_Context* in editor_arena */
     int   menu_bar_cmd_count;      /* number of Clay_RenderCommand items */
     void *menu_bar_cmd_array;      /* Clay_RenderCommand* in Clay arena memory */
+    void *editor_toolbar_clay_ctx; /* Clay_Context* for editor viewport toolbar */
+    int   editor_toolbar_cmd_count;
+    void *editor_toolbar_cmd_array;
 
     /* Menu bar interaction state */
     int   menu_open;               /* which top-level menu is open (-1 = none) */

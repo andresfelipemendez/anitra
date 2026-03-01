@@ -83,7 +83,6 @@ static int query_sprite_render_items(game_state *gs, sprite_render_item *out_ite
         Vec3 world_pos;
 
         if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
-        if (mc->kind != MESH_KIND_SKINNED) continue;
         if (!mc->visible) continue;
 
         tc = find_transform_component(gs, entity_index);

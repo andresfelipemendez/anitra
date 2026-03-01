@@ -7,11 +7,51 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <errno.h>
 
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
 
 #define PROFILER_MAX_FLAT_RECORDS 65536
+
+enum {
+    GIZMO_NONE = 0,
+    GIZMO_TRANSLATE_X = 1,
+    GIZMO_TRANSLATE_Y = 2,
+    GIZMO_TRANSLATE_Z = 3,
+    GIZMO_CAPSULE_RADIUS_POS_X = 4,
+    GIZMO_CAPSULE_RADIUS_NEG_X = 5,
+    GIZMO_CAPSULE_RADIUS_POS_Z = 6,
+    GIZMO_CAPSULE_RADIUS_NEG_Z = 7,
+    GIZMO_CAPSULE_HEIGHT_TOP = 8,
+    GIZMO_CAPSULE_HEIGHT_BOTTOM = 9
+};
+
+enum {
+    EDITOR_TOOLBAR_ACTION_NONE = 0,
+    EDITOR_TOOLBAR_ACTION_PERSPECTIVE,
+    EDITOR_TOOLBAR_ACTION_ORTHOGRAPHIC,
+    EDITOR_TOOLBAR_ACTION_FRONT,
+    EDITOR_TOOLBAR_ACTION_SIDE,
+    EDITOR_TOOLBAR_ACTION_TOP
+};
+
+enum {
+    EDITOR_VIEW_PRESET_FRONT = 0,
+    EDITOR_VIEW_PRESET_SIDE,
+    EDITOR_VIEW_PRESET_TOP
+};
+
+#define EDITOR_VIEWBAR_HEIGHT          42.0f
+#define EDITOR_VIEWBAR_MARGIN_X        10.0f
+#define EDITOR_VIEWBAR_MARGIN_Y         8.0f
+#define EDITOR_VIEWBAR_ROW_HEIGHT      30.0f
+#define EDITOR_VIEWBAR_ROW_PADDING_X    8.0f
+#define EDITOR_VIEWBAR_BUTTON_HEIGHT   22.0f
+#define EDITOR_VIEWBAR_TOGGLE_WIDTH   112.0f
+#define EDITOR_VIEWBAR_VIEW_WIDTH      68.0f
+#define EDITOR_VIEWBAR_BUTTON_GAP       6.0f
+#define EDITOR_VIEWBAR_GROUP_GAP       14.0f
 
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
@@ -278,14 +318,13 @@ static int has_parent_rotation_component(const game_state *gs, int entity_index)
     return 0;
 }
 
-static int has_mesh_component(const game_state *gs, int entity_index, int *out_visible, mesh_kind *out_kind) {
+static int has_mesh_component(const game_state *gs, int entity_index, int *out_visible) {
     int i;
     if (!gs->mesh_components) return 0;
     for (i = 0; i < gs->mesh_component_count; i++) {
         mesh_component *mc = &gs->mesh_components[i];
         if (mc->entity_index == entity_index) {
             if (out_visible) *out_visible = mc->visible;
-            if (out_kind) *out_kind = mc->kind;
             return 1;
         }
     }
@@ -320,6 +359,26 @@ static int has_transform_component(const game_state *gs, int entity_index, Vec3 
         }
     }
     return 0;
+}
+
+static transform_component *find_transform_component_mut(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->transform_components) return NULL;
+    for (i = 0; i < gs->transform_component_count; i++) {
+        transform_component *tc = &gs->transform_components[i];
+        if (tc->entity_index == entity_index) return tc;
+    }
+    return NULL;
+}
+
+static capsule_collider_component *find_capsule_collider_component_mut(game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->capsule_collider_components) return NULL;
+    for (i = 0; i < gs->capsule_collider_component_count; i++) {
+        capsule_collider_component *cc = &gs->capsule_collider_components[i];
+        if (cc->entity_index == entity_index) return cc;
+    }
+    return NULL;
 }
 
 static int has_rotation_component(const game_state *gs, int entity_index, float *out_rotation_y_deg) {
@@ -375,15 +434,66 @@ static int has_health_component(const game_state *gs, int entity_index, float *o
     return 0;
 }
 
-static int has_collider_component(const game_state *gs, int entity_index, rect *out_rect) {
+static int has_box_collider_component(const game_state *gs, int entity_index, rect *out_rect) {
     int i;
-    if (!gs->collider_components) return 0;
-    for (i = 0; i < gs->collider_component_count; i++) {
-        collider_component *cc = &gs->collider_components[i];
+    if (!gs->box_collider_components) return 0;
+    for (i = 0; i < gs->box_collider_component_count; i++) {
+        box_collider_component *cc = &gs->box_collider_components[i];
         if (cc->entity_index == entity_index) {
             if (out_rect) *out_rect = cc->rect;
             return 1;
         }
+    }
+    return 0;
+}
+
+static int has_capsule_collider_component(const game_state *gs, int entity_index,
+                                          float *out_radius, float *out_half_height,
+                                          rect *out_aabb) {
+    int i;
+    if (!gs->capsule_collider_components) return 0;
+    for (i = 0; i < gs->capsule_collider_component_count; i++) {
+        capsule_collider_component *cc = &gs->capsule_collider_components[i];
+        if (cc->entity_index == entity_index) {
+            if (out_radius) *out_radius = cc->radius;
+            if (out_half_height) *out_half_height = cc->half_height;
+            if (out_aabb) *out_aabb = cc->aabb;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static rect capsule_aabb_rect(float radius, float half_height) {
+    float rr = radius > 0.0f ? radius : 0.5f;
+    float hh = half_height > 0.0f ? half_height : rr;
+    rect r;
+    r.x = 0.0f;
+    r.y = 0.0f;
+    r.w = rr * 2.0f;
+    r.h = (hh + rr) * 2.0f;
+    return r;
+}
+
+static int has_any_collider_component(const game_state *gs, int entity_index,
+                                      rect *out_rect, int *out_is_capsule,
+                                      float *out_radius, float *out_half_height) {
+    rect box;
+    rect capsule_aabb;
+    float radius = 0.0f, half_height = 0.0f;
+    if (has_capsule_collider_component(gs, entity_index, &radius, &half_height, &capsule_aabb)) {
+        if (out_rect) *out_rect = capsule_aabb;
+        if (out_is_capsule) *out_is_capsule = 1;
+        if (out_radius) *out_radius = radius;
+        if (out_half_height) *out_half_height = half_height;
+        return 1;
+    }
+    if (has_box_collider_component(gs, entity_index, &box)) {
+        if (out_rect) *out_rect = box;
+        if (out_is_capsule) *out_is_capsule = 0;
+        if (out_radius) *out_radius = 0.0f;
+        if (out_half_height) *out_half_height = 0.0f;
+        return 1;
     }
     return 0;
 }
@@ -405,6 +515,465 @@ static int has_camera_component(const game_state *gs, int entity_index,
         }
     }
     return 0;
+}
+
+static int has_rigid_body_component(const game_state *gs, int entity_index, int *out_use_gravity) {
+    int i;
+    if (!gs->rigid_body_components) return 0;
+    for (i = 0; i < gs->rigid_body_component_count; i++) {
+        rigid_body_component *rb = &gs->rigid_body_components[i];
+        if (rb->entity_index == entity_index) {
+            if (out_use_gravity) *out_use_gravity = rb->use_gravity ? 1 : 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const mesh_component *find_mesh_component_read(const game_state *gs, int entity_index) {
+    int i;
+    if (!gs || !gs->mesh_components) return NULL;
+    for (i = 0; i < gs->mesh_component_count; i++) {
+        const mesh_component *mc = &gs->mesh_components[i];
+        if (mc->entity_index == entity_index) return mc;
+    }
+    return NULL;
+}
+
+static const scene_model_asset *find_scene_model_asset_read(const game_state *gs, int asset_index) {
+    if (!gs || asset_index < 0 || asset_index >= gs->scene_model_asset_count) return NULL;
+    return &gs->scene_model_assets[asset_index];
+}
+
+static int string_starts_with(const char *s, const char *prefix) {
+    int i;
+    if (!s || !prefix) return 0;
+    for (i = 0; prefix[i]; i++) {
+        if (s[i] != prefix[i]) return 0;
+    }
+    return 1;
+}
+
+static void toml_write_escaped_string(FILE *fp, const char *text) {
+    const unsigned char *p;
+    if (!fp) return;
+    if (!text) text = "";
+    fputc('"', fp);
+    p = (const unsigned char *)text;
+    while (*p) {
+        unsigned char c = *p++;
+        if (c == '\\') {
+            fputs("\\\\", fp);
+        } else if (c == '"') {
+            fputs("\\\"", fp);
+        } else if (c == '\n') {
+            fputs("\\n", fp);
+        } else if (c == '\r') {
+            fputs("\\r", fp);
+        } else if (c == '\t') {
+            fputs("\\t", fp);
+        } else {
+            fputc((int)c, fp);
+        }
+    }
+    fputc('"', fp);
+}
+
+static void toml_write_assets_table(FILE *fp,
+                                    const char *section_name,
+                                    const char keys[][64],
+                                    const char paths[][256],
+                                    int count) {
+    int i;
+    if (!fp || !section_name || count <= 0) return;
+    fprintf(fp, "[assets.%s]\n", section_name);
+    for (i = 0; i < count; i++) {
+        if (!keys[i][0] || !paths[i][0]) continue;
+        fprintf(fp, "%-12s = ", keys[i]);
+        toml_write_escaped_string(fp, paths[i]);
+        fputc('\n', fp);
+    }
+    fputc('\n', fp);
+}
+
+static const char *scene_entity_name_for_save(const game_state *gs,
+                                              int entity_index,
+                                              char *fallback,
+                                              int fallback_size) {
+    if (gs &&
+        entity_index >= 0 &&
+        entity_index < gs->project.scene_entity_count &&
+        gs->project.scene_entity_names[entity_index][0]) {
+        return gs->project.scene_entity_names[entity_index];
+    }
+
+    if (!fallback || fallback_size <= 0) return "entity";
+    snprintf(fallback, (size_t)fallback_size, "entity_%d", entity_index);
+    return fallback;
+}
+
+static const char *mesh_model_key_for_save(const game_state *gs,
+                                           int entity_index,
+                                           char *fallback,
+                                           int fallback_size) {
+    const project_data *project;
+    const mesh_component *mc;
+    const scene_model_asset *asset;
+    int i;
+    if (!gs) return NULL;
+
+    project = &gs->project;
+    if (entity_index >= 0 &&
+        entity_index < project->scene_entity_count &&
+        project->scene_components[entity_index].has_mesh &&
+        project->scene_components[entity_index].mesh_model[0]) {
+        return project->scene_components[entity_index].mesh_model;
+    }
+
+    mc = find_mesh_component_read(gs, entity_index);
+    if (!mc) return NULL;
+    asset = find_scene_model_asset_read(gs, mc->model_asset_index);
+    if (!asset) return NULL;
+
+    if (asset->key[0] && !string_starts_with(asset->key, "asset_")) {
+        return asset->key;
+    }
+
+    for (i = 0; i < project->model_count; i++) {
+        if (strcmp(project->model_paths[i], asset->path) == 0) {
+            return project->model_keys[i];
+        }
+    }
+    for (i = 0; i < project->dungeon_piece_count; i++) {
+        if (strcmp(project->dungeon_piece_paths[i], asset->path) == 0) {
+            return project->dungeon_piece_keys[i];
+        }
+    }
+
+    if (asset->key[0]) return asset->key;
+    if (asset->path[0]) return asset->path;
+    if (!fallback || fallback_size <= 0) return "model";
+    snprintf(fallback, (size_t)fallback_size, "model_%d", entity_index);
+    return fallback;
+}
+
+static const char *animation_asset_key_for_save(const game_state *gs,
+                                                int entity_index,
+                                                char *fallback,
+                                                int fallback_size) {
+    const project_data *project;
+    const mesh_component *mc;
+    const scene_model_asset *asset;
+    int i;
+    if (!gs) return NULL;
+
+    project = &gs->project;
+    if (entity_index >= 0 &&
+        entity_index < project->scene_entity_count &&
+        project->scene_components[entity_index].has_animation &&
+        project->scene_components[entity_index].animation_asset[0]) {
+        return project->scene_components[entity_index].animation_asset;
+    }
+
+    mc = find_mesh_component_read(gs, entity_index);
+    if (mc) {
+        asset = find_scene_model_asset_read(gs, mc->model_asset_index);
+        if (asset && asset->animation_path[0]) {
+            for (i = 0; i < project->animation_count; i++) {
+                if (strcmp(project->animation_paths[i], asset->animation_path) == 0) {
+                    return project->animation_keys[i];
+                }
+            }
+        }
+    }
+
+    if (project->animation_count > 0 && project->animation_keys[0][0]) {
+        return project->animation_keys[0];
+    }
+
+    if (!fallback || fallback_size <= 0) return NULL;
+    fallback[0] = '\0';
+    return fallback;
+}
+
+static int scene_entity_count_for_save(const game_state *gs) {
+    int count = 0;
+    if (!gs) return 0;
+    if (gs->scene_entities && gs->scene_entity_count > 0) {
+        count = gs->scene_entity_count;
+    } else if (gs->project.scene_entity_count > 0) {
+        count = gs->project.scene_entity_count;
+    }
+    if (count < 0) count = 0;
+    if (count > PROJECT_SCENE_MAX_ENTITIES) count = PROJECT_SCENE_MAX_ENTITIES;
+    return count;
+}
+
+static int editor_save_scene_to_toml(game_state *gs, const char *path) {
+    FILE *fp;
+    const project_data *project;
+    int scene_count;
+    int i;
+    int count;
+
+    if (!gs || !path || !path[0] || !gs->project_loaded) return 0;
+
+    project = &gs->project;
+    scene_count = scene_entity_count_for_save(gs);
+    fp = fopen(path, "wb");
+    if (!fp) {
+        fprintf(stderr, "editor save failed for '%s': %s\n", path, strerror(errno));
+        return 0;
+    }
+
+    fprintf(fp, "# Saved by Anitra editor\n\n");
+
+    fprintf(fp, "[project]\n");
+    fprintf(fp, "name = ");
+    toml_write_escaped_string(fp, project->name[0] ? project->name : "Anitra Scene");
+    fputc('\n', fp);
+    fprintf(fp, "version = %d\n\n", project->version > 0 ? project->version : 1);
+
+    toml_write_assets_table(fp, "models", project->model_keys, project->model_paths, project->model_count);
+    toml_write_assets_table(fp, "animations", project->animation_keys, project->animation_paths, project->animation_count);
+    toml_write_assets_table(fp, "dungeon_pieces", project->dungeon_piece_keys, project->dungeon_piece_paths, project->dungeon_piece_count);
+    toml_write_assets_table(fp, "sprites", project->sprite_keys, project->sprite_paths, project->sprite_count);
+
+    if (project->has_camera) {
+        fprintf(fp, "[camera]\n");
+        fprintf(fp, "eye    = [%.4f, %.4f, %.4f]\n",
+                project->camera.eye[0], project->camera.eye[1], project->camera.eye[2]);
+        fprintf(fp, "target = [%.4f, %.4f, %.4f]\n",
+                project->camera.target[0], project->camera.target[1], project->camera.target[2]);
+        fprintf(fp, "up     = [%.4f, %.4f, %.4f]\n",
+                project->camera.up[0], project->camera.up[1], project->camera.up[2]);
+        fprintf(fp, "fov    = %.4f\n\n", project->camera.fov);
+    }
+
+    if (project->has_lighting) {
+        fprintf(fp, "[lighting]\n");
+        fprintf(fp, "ambient = [%.4f, %.4f, %.4f]\n\n",
+                project->lighting.ambient[0],
+                project->lighting.ambient[1],
+                project->lighting.ambient[2]);
+        for (i = 0; i < project->lighting.point_light_count; i++) {
+            const project_point_light *pl = &project->lighting.point_lights[i];
+            fprintf(fp, "[[lighting.point_lights]]\n");
+            fprintf(fp, "position  = [%.4f, %.4f, %.4f]\n",
+                    pl->position[0], pl->position[1], pl->position[2]);
+            fprintf(fp, "color     = [%.4f, %.4f, %.4f]\n",
+                    pl->color[0], pl->color[1], pl->color[2]);
+            fprintf(fp, "intensity = %.4f\n", pl->intensity);
+            fprintf(fp, "radius    = %.4f\n\n", pl->radius);
+        }
+    }
+
+    fprintf(fp, "[entities]\n");
+    fprintf(fp, "list = [\n");
+    for (i = 0; i < scene_count; i++) {
+        char name_buf[64];
+        const char *entity_name = scene_entity_name_for_save(gs, i, name_buf, (int)sizeof(name_buf));
+        fprintf(fp, "  ");
+        toml_write_escaped_string(fp, entity_name);
+        if (i + 1 < scene_count) fputc(',', fp);
+        fputc('\n', fp);
+    }
+    fprintf(fp, "]\n\n");
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_transform_component(gs, i, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[transforms]\n");
+        for (i = 0; i < scene_count; i++) {
+            Vec3 pos;
+            if (!has_transform_component(gs, i, &pos)) continue;
+            fprintf(fp, "\"%d\" = { position = [%.4f, %.4f, %.4f] }\n", i, pos.x, pos.y, pos.z);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_rotation_component(gs, i, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[rotations]\n");
+        for (i = 0; i < scene_count; i++) {
+            float y = 0.0f;
+            if (!has_rotation_component(gs, i, &y)) continue;
+            fprintf(fp, "\"%d\" = { y = %.4f }\n", i, y);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_scale_component(gs, i, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[scales]\n");
+        for (i = 0; i < scene_count; i++) {
+            Vec3 sc;
+            if (!has_scale_component(gs, i, &sc)) continue;
+            fprintf(fp, "\"%d\" = { scale = [%.4f, %.4f, %.4f] }\n", i, sc.x, sc.y, sc.z);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_parent_transform_component(gs, i, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[parent_transform]\n");
+        for (i = 0; i < scene_count; i++) {
+            int parent = -1;
+            if (!has_parent_transform_component(gs, i, &parent)) continue;
+            fprintf(fp, "\"%d\" = { parent = %d }\n", i, parent);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_parent_rotation_component(gs, i)) count++;
+    if (count > 0) {
+        fprintf(fp, "[parent_rotation]\n");
+        for (i = 0; i < scene_count; i++) {
+            if (!has_parent_rotation_component(gs, i)) continue;
+            fprintf(fp, "\"%d\" = { enabled = true }\n", i);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_mesh_component(gs, i, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[meshes]\n");
+        for (i = 0; i < scene_count; i++) {
+            int visible = 1;
+            const char *model_key;
+            char model_buf[96];
+            if (!has_mesh_component(gs, i, &visible)) continue;
+            model_key = mesh_model_key_for_save(gs, i, model_buf, (int)sizeof(model_buf));
+            if (!model_key || !model_key[0]) continue;
+            fprintf(fp, "\"%d\" = { model = ", i);
+            toml_write_escaped_string(fp, model_key);
+            fprintf(fp, ", visible = %s }\n", visible ? "true" : "false");
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_animation_component(gs, i, NULL, NULL, NULL, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[animations]\n");
+        for (i = 0; i < scene_count; i++) {
+            int playing = 0;
+            int clip = 0;
+            float time = 0.0f;
+            float speed = 1.0f;
+            const char *asset_key;
+            char asset_buf[96];
+            if (!has_animation_component(gs, i, &playing, &clip, &time, &speed)) continue;
+            asset_key = animation_asset_key_for_save(gs, i, asset_buf, (int)sizeof(asset_buf));
+            fprintf(fp, "\"%d\" = { ", i);
+            if (asset_key && asset_key[0]) {
+                fprintf(fp, "asset = ");
+                toml_write_escaped_string(fp, asset_key);
+                fprintf(fp, ", ");
+            }
+            fprintf(fp, "playing = %s, clip = %d, time = %.4f, speed = %.4f }\n",
+                    playing ? "true" : "false", clip, time, speed);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_velocity_component(gs, i, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[velocities]\n");
+        for (i = 0; i < scene_count; i++) {
+            vec2 vel;
+            if (!has_velocity_component(gs, i, &vel)) continue;
+            fprintf(fp, "\"%d\" = { value = [%.4f, %.4f] }\n", i, vel.x, vel.y);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_rigid_body_component(gs, i, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[rigid_bodies]\n");
+        for (i = 0; i < scene_count; i++) {
+            int use_gravity = 1;
+            if (!has_rigid_body_component(gs, i, &use_gravity)) continue;
+            fprintf(fp, "\"%d\" = { use_gravity = %s }\n", i, use_gravity ? "true" : "false");
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_health_component(gs, i, NULL, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[health]\n");
+        for (i = 0; i < scene_count; i++) {
+            float current = 0.0f, max = 0.0f;
+            if (!has_health_component(gs, i, &current, &max)) continue;
+            fprintf(fp, "\"%d\" = { current = %.4f, max = %.4f }\n", i, current, max);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_box_collider_component(gs, i, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[box_colliders]\n");
+        for (i = 0; i < scene_count; i++) {
+            rect box;
+            float hx, hy, hz;
+            if (!has_box_collider_component(gs, i, &box)) continue;
+            hx = fabsf(box.w) * 0.5f;
+            hz = fabsf(box.h) * 0.5f;
+            hy = 0.5f;
+            if (i >= 0 &&
+                i < project->scene_entity_count &&
+                project->scene_components[i].has_box_collider &&
+                project->scene_components[i].box_collider_half_extents[1] > 0.0f) {
+                hy = project->scene_components[i].box_collider_half_extents[1];
+            }
+            fprintf(fp, "\"%d\" = { type = \"box\", half_extents = [%.4f, %.4f, %.4f] }\n", i, hx, hy, hz);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_capsule_collider_component(gs, i, NULL, NULL, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[capsule_colliders]\n");
+        for (i = 0; i < scene_count; i++) {
+            float radius = 0.0f;
+            float half_height = 0.0f;
+            if (!has_capsule_collider_component(gs, i, &radius, &half_height, NULL)) continue;
+            fprintf(fp, "\"%d\" = { radius = %.4f, half_height = %.4f }\n", i, radius, half_height);
+        }
+        fputc('\n', fp);
+    }
+
+    count = 0;
+    for (i = 0; i < scene_count; i++) if (has_camera_component(gs, i, NULL, NULL, NULL, NULL, NULL)) count++;
+    if (count > 0) {
+        fprintf(fp, "[cameras]\n");
+        for (i = 0; i < scene_count; i++) {
+            float fov = 60.0f, near_plane = 0.1f, far_plane = 100.0f;
+            Vec3 target = VEC3(0.0f, 0.0f, 0.0f);
+            Vec3 up = VEC3(0.0f, 1.0f, 0.0f);
+            if (!has_camera_component(gs, i, &fov, &near_plane, &far_plane, &target, &up)) continue;
+            fprintf(fp, "\"%d\" = { fov = %.4f, near = %.4f, far = %.4f, target = [%.4f, %.4f, %.4f], up = [%.4f, %.4f, %.4f] }\n",
+                    i, fov, near_plane, far_plane, target.x, target.y, target.z, up.x, up.y, up.z);
+        }
+        fputc('\n', fp);
+    }
+
+    if (fclose(fp) != 0) {
+        fprintf(stderr, "editor save failed closing '%s': %s\n", path, strerror(errno));
+        return 0;
+    }
+
+    return 1;
 }
 
 static void build_scene_parent_lookup(const game_state *gs, int entity_count, int *parent_of) {
@@ -516,6 +1085,80 @@ static Vec3 cam_forward(editor_state *e) {
     );
 }
 
+static float editor_ortho_size(const editor_state *e) {
+    float sz = (e && e->cam_ortho_size > 0.05f) ? e->cam_ortho_size : 12.0f;
+    if (sz < 0.5f) sz = 0.5f;
+    return sz;
+}
+
+static Mat4 editor_projection_matrix(const editor_state *e, float panel_w, float panel_h) {
+    float safe_h = panel_h > 1.0f ? panel_h : 1.0f;
+    float aspect = panel_w / safe_h;
+    if (aspect < 0.01f) aspect = 0.01f;
+
+    if (e && e->cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
+        float half_h = editor_ortho_size(e) * 0.5f;
+        float half_w = half_h * aspect;
+        return mat4_orthographic(-half_w, half_w, -half_h, half_h, 0.1f, 200.0f);
+    }
+
+    return mat4_perspective(60.0f * 3.14159265f / 180.0f, aspect, 0.1f, 200.0f);
+}
+
+static int point_in_rect(float px, float py, float x, float y, float w, float h) {
+    return px >= x && py >= y && px < (x + w) && py < (y + h);
+}
+
+static int editor_toolbar_contains_point(const editor_state *e, float lx, float ly) {
+    if (!e) return 0;
+    if (lx < 0.0f || lx >= e->panel_w) return 0;
+    return ly >= 0.0f && ly < EDITOR_VIEWBAR_HEIGHT;
+}
+
+static int editor_toolbar_button_hit(const editor_state *e, float lx, float ly) {
+    float btn_y = EDITOR_VIEWBAR_MARGIN_Y + (EDITOR_VIEWBAR_ROW_HEIGHT - EDITOR_VIEWBAR_BUTTON_HEIGHT) * 0.5f;
+    float btn_x = EDITOR_VIEWBAR_MARGIN_X + EDITOR_VIEWBAR_ROW_PADDING_X;
+    (void)e;
+
+    if (point_in_rect(lx, ly, btn_x, btn_y, EDITOR_VIEWBAR_TOGGLE_WIDTH, EDITOR_VIEWBAR_BUTTON_HEIGHT))
+        return EDITOR_TOOLBAR_ACTION_PERSPECTIVE;
+    btn_x += EDITOR_VIEWBAR_TOGGLE_WIDTH + EDITOR_VIEWBAR_BUTTON_GAP;
+
+    if (point_in_rect(lx, ly, btn_x, btn_y, EDITOR_VIEWBAR_TOGGLE_WIDTH, EDITOR_VIEWBAR_BUTTON_HEIGHT))
+        return EDITOR_TOOLBAR_ACTION_ORTHOGRAPHIC;
+    btn_x += EDITOR_VIEWBAR_TOGGLE_WIDTH + EDITOR_VIEWBAR_GROUP_GAP;
+
+    if (point_in_rect(lx, ly, btn_x, btn_y, EDITOR_VIEWBAR_VIEW_WIDTH, EDITOR_VIEWBAR_BUTTON_HEIGHT))
+        return EDITOR_TOOLBAR_ACTION_FRONT;
+    btn_x += EDITOR_VIEWBAR_VIEW_WIDTH + EDITOR_VIEWBAR_BUTTON_GAP;
+
+    if (point_in_rect(lx, ly, btn_x, btn_y, EDITOR_VIEWBAR_VIEW_WIDTH, EDITOR_VIEWBAR_BUTTON_HEIGHT))
+        return EDITOR_TOOLBAR_ACTION_SIDE;
+    btn_x += EDITOR_VIEWBAR_VIEW_WIDTH + EDITOR_VIEWBAR_BUTTON_GAP;
+
+    if (point_in_rect(lx, ly, btn_x, btn_y, EDITOR_VIEWBAR_VIEW_WIDTH, EDITOR_VIEWBAR_BUTTON_HEIGHT))
+        return EDITOR_TOOLBAR_ACTION_TOP;
+
+    return EDITOR_TOOLBAR_ACTION_NONE;
+}
+
+static void editor_begin_mouse_look(editor_state *e, uint8_t button) {
+    float flush_dx, flush_dy;
+    if (!e || !e->window || e->cam_mouse_look) return;
+    e->cam_mouse_look = 1;
+    e->cam_mouse_button = button;
+    SDL_SetWindowRelativeMouseMode((SDL_Window *)e->window, 1);
+    /* Clear any accumulated relative delta so drag starts from click point. */
+    SDL_GetRelativeMouseState(&flush_dx, &flush_dy);
+}
+
+static void editor_end_mouse_look(editor_state *e) {
+    if (!e || !e->window || !e->cam_mouse_look) return;
+    e->cam_mouse_look = 0;
+    e->cam_mouse_button = 0;
+    SDL_SetWindowRelativeMouseMode((SDL_Window *)e->window, 0);
+}
+
 static Vec3 world_to_screen(Vec3 pos, Mat4 vp, float w, float h) {
     float cx = vp.m[0]*pos.x + vp.m[4]*pos.y + vp.m[8]*pos.z  + vp.m[12];
     float cy = vp.m[1]*pos.x + vp.m[5]*pos.y + vp.m[9]*pos.z  + vp.m[13];
@@ -550,14 +1193,417 @@ static void add_line(editor_state *e, Vec3 a, Vec3 b, float r, float g, float bl
     e->line_count++;
 }
 
+static Vec3 editor_transform_point(Mat4 m, Vec3 p);
+static float editor_gizmo_axis_len(const editor_state *e, Vec3 origin);
+static float editor_handle_draw_size(const editor_state *e, Vec3 origin);
+
+typedef struct capsule_handle_info {
+    int id;
+    Vec3 position;
+    Vec3 axis_world;
+    float axis_local_scale;
+} capsule_handle_info;
+
+static void editor_world_basis_axes(Mat4 world, Vec3 out_axes[3], float out_scales[3]) {
+    Vec3 raw_axes[3];
+    int i;
+    raw_axes[0] = VEC3(world.m[0], world.m[1], world.m[2]);
+    raw_axes[1] = VEC3(world.m[4], world.m[5], world.m[6]);
+    raw_axes[2] = VEC3(world.m[8], world.m[9], world.m[10]);
+    for (i = 0; i < 3; i++) {
+        float scale = vec3_len(raw_axes[i]);
+        if (scale < 0.001f) {
+            scale = 1.0f;
+            out_axes[i] = (i == 0) ? VEC3(1.0f, 0.0f, 0.0f)
+                                    : ((i == 1) ? VEC3(0.0f, 1.0f, 0.0f)
+                                                : VEC3(0.0f, 0.0f, 1.0f));
+        } else {
+            out_axes[i] = vec3_scale(raw_axes[i], 1.0f / scale);
+        }
+        if (out_scales) out_scales[i] = scale;
+    }
+}
+
+static void setup_drag_screen_axis(editor_state *e, Mat4 vp, float fw2, float fh2,
+                                   Vec3 drag_origin, Vec3 axis_world, float axis_len) {
+    Vec3 center_s = world_to_screen(drag_origin, vp, fw2, fh2);
+    Vec3 tip_s = world_to_screen(vec3_add(drag_origin, vec3_scale(axis_world, axis_len)), vp, fw2, fh2);
+    float sdx = tip_s.x - center_s.x;
+    float sdy = tip_s.y - center_s.y;
+    float slen = sqrtf(sdx * sdx + sdy * sdy);
+    if (slen > 0.001f) {
+        e->gizmo_screen_axis = VEC3(sdx / slen, sdy / slen, 0);
+        e->gizmo_world_per_pixel = axis_len / slen;
+    } else {
+        e->gizmo_screen_axis = VEC3(1.0f, 0.0f, 0.0f);
+        e->gizmo_world_per_pixel = 0.01f;
+    }
+}
+
+static int build_capsule_edit_handles(Mat4 world, float radius, float half_height,
+                                      capsule_handle_info out_handles[6]) {
+    Vec3 axes[3];
+    float scales[3];
+    float rr = radius > 0.05f ? radius : 0.3f;
+    float hh = half_height > 0.0f ? half_height : rr;
+    float top_y = hh + rr;
+    editor_world_basis_axes(world, axes, scales);
+
+    out_handles[0].id = GIZMO_CAPSULE_RADIUS_POS_X;
+    out_handles[0].position = editor_transform_point(world, VEC3(rr, 0.0f, 0.0f));
+    out_handles[0].axis_world = axes[0];
+    out_handles[0].axis_local_scale = scales[0];
+
+    out_handles[1].id = GIZMO_CAPSULE_RADIUS_NEG_X;
+    out_handles[1].position = editor_transform_point(world, VEC3(-rr, 0.0f, 0.0f));
+    out_handles[1].axis_world = vec3_scale(axes[0], -1.0f);
+    out_handles[1].axis_local_scale = scales[0];
+
+    out_handles[2].id = GIZMO_CAPSULE_RADIUS_POS_Z;
+    out_handles[2].position = editor_transform_point(world, VEC3(0.0f, 0.0f, rr));
+    out_handles[2].axis_world = axes[2];
+    out_handles[2].axis_local_scale = scales[2];
+
+    out_handles[3].id = GIZMO_CAPSULE_RADIUS_NEG_Z;
+    out_handles[3].position = editor_transform_point(world, VEC3(0.0f, 0.0f, -rr));
+    out_handles[3].axis_world = vec3_scale(axes[2], -1.0f);
+    out_handles[3].axis_local_scale = scales[2];
+
+    out_handles[4].id = GIZMO_CAPSULE_HEIGHT_TOP;
+    out_handles[4].position = editor_transform_point(world, VEC3(0.0f, top_y, 0.0f));
+    out_handles[4].axis_world = axes[1];
+    out_handles[4].axis_local_scale = scales[1];
+
+    out_handles[5].id = GIZMO_CAPSULE_HEIGHT_BOTTOM;
+    out_handles[5].position = editor_transform_point(world, VEC3(0.0f, -top_y, 0.0f));
+    out_handles[5].axis_world = vec3_scale(axes[1], -1.0f);
+    out_handles[5].axis_local_scale = scales[1];
+
+    return 6;
+}
+
+static void draw_capsule_handle_cross(editor_state *e, Vec3 center, Vec3 axis_a, Vec3 axis_b,
+                                      float half_size, float r, float g, float b) {
+    add_line(e,
+             vec3_sub(center, vec3_scale(axis_a, half_size)),
+             vec3_add(center, vec3_scale(axis_a, half_size)),
+             r, g, b);
+    add_line(e,
+             vec3_sub(center, vec3_scale(axis_b, half_size)),
+             vec3_add(center, vec3_scale(axis_b, half_size)),
+             r, g, b);
+}
+
+static void draw_selected_entity_capsule_handles(editor_state *e, Mat4 world, float radius, float half_height) {
+    capsule_handle_info handles[6];
+    Vec3 axes[3];
+    int i;
+    float base_size;
+    editor_world_basis_axes(world, axes, NULL);
+    build_capsule_edit_handles(world, radius, half_height, handles);
+
+    base_size = editor_handle_draw_size(e, VEC3(world.m[12], world.m[13], world.m[14]));
+
+    for (i = 0; i < 6; i++) {
+        float r = 0.35f, g = 0.92f, b = 1.0f;
+        int id = handles[i].id;
+        if (e->gizmo_hovered == id || e->gizmo_active == id) {
+            r = 1.0f; g = 0.95f; b = 0.25f;
+        }
+
+        if (id == GIZMO_CAPSULE_HEIGHT_TOP || id == GIZMO_CAPSULE_HEIGHT_BOTTOM) {
+            draw_capsule_handle_cross(e, handles[i].position, axes[0], axes[2], base_size, r, g, b);
+        } else {
+            draw_capsule_handle_cross(e, handles[i].position, axes[1], handles[i].axis_world, base_size, r, g, b);
+        }
+    }
+}
+
+static Quat editor_quat_from_y_deg(float degrees) {
+    float half = (degrees * 3.14159265f / 180.0f) * 0.5f;
+    return QUAT(0.0f, sinf(half), 0.0f, cosf(half));
+}
+
+static Vec3 editor_normalize_scale(Vec3 s) {
+    if (s.x == 0.0f) s.x = 1.0f;
+    if (s.y == 0.0f) s.y = 1.0f;
+    if (s.z == 0.0f) s.z = 1.0f;
+    return s;
+}
+
+static Mat4 editor_local_matrix_for_entity(const game_state *gs, int entity_index) {
+    Vec3 position = VEC3(0.0f, 0.0f, 0.0f);
+    float rotation_y = 0.0f;
+    Vec3 scale = VEC3(1.0f, 1.0f, 1.0f);
+    has_transform_component(gs, entity_index, &position);
+    has_rotation_component(gs, entity_index, &rotation_y);
+    if (has_scale_component(gs, entity_index, &scale)) {
+        scale = editor_normalize_scale(scale);
+    }
+    return mat4_from_trs(position, editor_quat_from_y_deg(rotation_y), scale);
+}
+
+static Mat4 editor_world_matrix_for_entity(const game_state *gs, int entity_index) {
+    int chain[SCENE_TREE_MAX_ENTITIES];
+    int chain_count = 0;
+    int current = entity_index;
+    int guard = 0;
+    Mat4 world = mat4_identity();
+
+    if (!gs || !gs->scene_entities) return world;
+    if (entity_index < 0 || entity_index >= gs->scene_entity_count) return world;
+
+    while (guard < SCENE_TREE_MAX_ENTITIES &&
+           current >= 0 && current < gs->scene_entity_count) {
+        int parent = -1;
+        chain[chain_count++] = current;
+        if (!has_parent_transform_component(gs, current, &parent)) break;
+        if (parent == current) break;
+        current = parent;
+        guard++;
+    }
+
+    while (chain_count > 0) {
+        int idx = chain[--chain_count];
+        world = mat4_mul(world, editor_local_matrix_for_entity(gs, idx));
+    }
+
+    return world;
+}
+
+static Vec3 editor_transform_point(Mat4 m, Vec3 p) {
+    return VEC3(
+        m.m[0] * p.x + m.m[4] * p.y + m.m[8]  * p.z + m.m[12],
+        m.m[1] * p.x + m.m[5] * p.y + m.m[9]  * p.z + m.m[13],
+        m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14]
+    );
+}
+
+static float editor_gizmo_axis_len(const editor_state *e, Vec3 origin) {
+    float len;
+    if (!e) return 0.15f;
+    if (e->cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
+        len = editor_ortho_size(e) * 0.08f;
+    } else {
+        float dist = vec3_len(vec3_sub(origin, e->cam_pos));
+        len = dist * 0.08f;
+    }
+    if (len < 0.15f) len = 0.15f;
+    return len;
+}
+
+static float editor_handle_draw_size(const editor_state *e, Vec3 origin) {
+    float size;
+    if (!e) return 0.04f;
+    if (e->cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
+        size = editor_ortho_size(e) * 0.012f;
+    } else {
+        float dist = vec3_len(vec3_sub(origin, e->cam_pos));
+        size = dist * 0.012f;
+    }
+    if (size < 0.04f) size = 0.04f;
+    if (size > 0.18f) size = 0.18f;
+    return size;
+}
+
+static Vec3 editor_camera_focus_point(const game_state *gs, const editor_state *e) {
+    int selected;
+    Mat4 world;
+    if (!gs || !e || !gs->scene_entities) return VEC3(0.0f, 0.0f, 0.0f);
+    selected = e->scene_selected_entity;
+    if (selected < 0 || selected >= gs->scene_entity_count) return VEC3(0.0f, 0.0f, 0.0f);
+    if (!has_transform_component(gs, selected, NULL)) return VEC3(0.0f, 0.0f, 0.0f);
+    world = editor_world_matrix_for_entity(gs, selected);
+    return VEC3(world.m[12], world.m[13], world.m[14]);
+}
+
+static void editor_snap_camera_to_preset(const game_state *gs, editor_state *e, int preset) {
+    Vec3 focus;
+    Vec3 forward;
+    float yaw = e ? e->cam_yaw : 0.0f;
+    float pitch = e ? e->cam_pitch : 0.0f;
+    float dist;
+
+    if (!e) return;
+
+    focus = editor_camera_focus_point(gs, e);
+    dist = vec3_len(vec3_sub(e->cam_pos, focus));
+    if (dist < 2.0f) dist = 8.0f;
+
+    if (preset == EDITOR_VIEW_PRESET_FRONT) {
+        yaw = 3.14159265f;
+        pitch = 0.0f;
+    } else if (preset == EDITOR_VIEW_PRESET_SIDE) {
+        yaw = -1.57079633f;
+        pitch = 0.0f;
+    } else {
+        yaw = 3.14159265f;
+        pitch = -1.55f;
+    }
+
+    e->cam_yaw = yaw;
+    e->cam_pitch = pitch;
+    forward = cam_forward(e);
+    e->cam_pos = vec3_sub(focus, vec3_scale(forward, dist));
+}
+
+static void editor_apply_toolbar_action(game_state *gs, editor_state *e, int action) {
+    if (!e) return;
+
+    switch (action) {
+    case EDITOR_TOOLBAR_ACTION_PERSPECTIVE:
+        e->cam_projection_mode = EDITOR_CAMERA_PERSPECTIVE;
+        break;
+    case EDITOR_TOOLBAR_ACTION_ORTHOGRAPHIC:
+        if (e->cam_projection_mode != EDITOR_CAMERA_ORTHOGRAPHIC) {
+            Vec3 focus = editor_camera_focus_point(gs, e);
+            float dist = vec3_len(vec3_sub(e->cam_pos, focus));
+            if (dist < 2.0f) dist = 2.0f;
+            e->cam_ortho_size = fmaxf(2.0f, fminf(80.0f, dist * 1.2f));
+        }
+        e->cam_projection_mode = EDITOR_CAMERA_ORTHOGRAPHIC;
+        break;
+    case EDITOR_TOOLBAR_ACTION_FRONT:
+        editor_snap_camera_to_preset(gs, e, EDITOR_VIEW_PRESET_FRONT);
+        break;
+    case EDITOR_TOOLBAR_ACTION_SIDE:
+        editor_snap_camera_to_preset(gs, e, EDITOR_VIEW_PRESET_SIDE);
+        break;
+    case EDITOR_TOOLBAR_ACTION_TOP:
+        editor_snap_camera_to_preset(gs, e, EDITOR_VIEW_PRESET_TOP);
+        break;
+    default:
+        break;
+    }
+}
+
+static void draw_selected_entity_bounds(editor_state *e, Mat4 world, float hx, float hy, float hz) {
+    Vec3 corners[8];
+    corners[0] = editor_transform_point(world, VEC3(-hx, -hy, -hz));
+    corners[1] = editor_transform_point(world, VEC3( hx, -hy, -hz));
+    corners[2] = editor_transform_point(world, VEC3( hx, -hy,  hz));
+    corners[3] = editor_transform_point(world, VEC3(-hx, -hy,  hz));
+    corners[4] = editor_transform_point(world, VEC3(-hx,  hy, -hz));
+    corners[5] = editor_transform_point(world, VEC3( hx,  hy, -hz));
+    corners[6] = editor_transform_point(world, VEC3( hx,  hy,  hz));
+    corners[7] = editor_transform_point(world, VEC3(-hx,  hy,  hz));
+
+    add_line(e, corners[0], corners[1], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[1], corners[2], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[2], corners[3], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[3], corners[0], 0.95f, 0.82f, 0.25f);
+
+    add_line(e, corners[4], corners[5], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[5], corners[6], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[6], corners[7], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[7], corners[4], 0.95f, 0.82f, 0.25f);
+
+    add_line(e, corners[0], corners[4], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[1], corners[5], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[2], corners[6], 0.95f, 0.82f, 0.25f);
+    add_line(e, corners[3], corners[7], 0.95f, 0.82f, 0.25f);
+}
+
+static void draw_selected_entity_capsule(editor_state *e, Mat4 world, float radius, float half_height) {
+    int i;
+    const int segments = 20;
+    float rr = radius > 0.05f ? radius : 0.3f;
+    float hh = half_height > 0.0f ? half_height : rr;
+    Vec3 top_center = editor_transform_point(world, VEC3(0.0f, hh, 0.0f));
+    Vec3 bottom_center = editor_transform_point(world, VEC3(0.0f, -hh, 0.0f));
+    Vec3 prev_top = top_center;
+    Vec3 prev_bottom = bottom_center;
+
+    for (i = 0; i <= segments; i++) {
+        float t = (float)i / (float)segments;
+        float a = t * 2.0f * 3.14159265f;
+        Vec3 local_top = VEC3(cosf(a) * rr, hh, sinf(a) * rr);
+        Vec3 local_bottom = VEC3(cosf(a) * rr, -hh, sinf(a) * rr);
+        Vec3 ptop = editor_transform_point(world, local_top);
+        Vec3 pbottom = editor_transform_point(world, local_bottom);
+        if (i > 0) {
+            add_line(e, prev_top, ptop, 0.95f, 0.82f, 0.25f);
+            add_line(e, prev_bottom, pbottom, 0.95f, 0.82f, 0.25f);
+        }
+        prev_top = ptop;
+        prev_bottom = pbottom;
+    }
+
+    for (i = 1; i <= segments; i++) {
+        float t0 = (float)(i - 1) / (float)segments;
+        float t1 = (float)i / (float)segments;
+        float a0 = t0 * 3.14159265f;
+        float a1 = t1 * 3.14159265f;
+
+        Vec3 top_x0 = editor_transform_point(world, VEC3(cosf(a0) * rr, hh + sinf(a0) * rr, 0.0f));
+        Vec3 top_x1 = editor_transform_point(world, VEC3(cosf(a1) * rr, hh + sinf(a1) * rr, 0.0f));
+        Vec3 top_z0 = editor_transform_point(world, VEC3(0.0f, hh + sinf(a0) * rr, cosf(a0) * rr));
+        Vec3 top_z1 = editor_transform_point(world, VEC3(0.0f, hh + sinf(a1) * rr, cosf(a1) * rr));
+        Vec3 bot_x0 = editor_transform_point(world, VEC3(cosf(a0) * rr, -hh - sinf(a0) * rr, 0.0f));
+        Vec3 bot_x1 = editor_transform_point(world, VEC3(cosf(a1) * rr, -hh - sinf(a1) * rr, 0.0f));
+        Vec3 bot_z0 = editor_transform_point(world, VEC3(0.0f, -hh - sinf(a0) * rr, cosf(a0) * rr));
+        Vec3 bot_z1 = editor_transform_point(world, VEC3(0.0f, -hh - sinf(a1) * rr, cosf(a1) * rr));
+
+        add_line(e, top_x0, top_x1, 0.95f, 0.82f, 0.25f);
+        add_line(e, top_z0, top_z1, 0.95f, 0.82f, 0.25f);
+        add_line(e, bot_x0, bot_x1, 0.95f, 0.82f, 0.25f);
+        add_line(e, bot_z0, bot_z1, 0.95f, 0.82f, 0.25f);
+    }
+
+    add_line(e, editor_transform_point(world, VEC3(rr, hh, 0.0f)),
+             editor_transform_point(world, VEC3(rr, -hh, 0.0f)), 0.95f, 0.82f, 0.25f);
+    add_line(e, editor_transform_point(world, VEC3(-rr, hh, 0.0f)),
+             editor_transform_point(world, VEC3(-rr, -hh, 0.0f)), 0.95f, 0.82f, 0.25f);
+    add_line(e, editor_transform_point(world, VEC3(0.0f, hh, rr)),
+             editor_transform_point(world, VEC3(0.0f, -hh, rr)), 0.95f, 0.82f, 0.25f);
+    add_line(e, editor_transform_point(world, VEC3(0.0f, hh, -rr)),
+             editor_transform_point(world, VEC3(0.0f, -hh, -rr)), 0.95f, 0.82f, 0.25f);
+}
+
+static void draw_selected_entity_gizmo(editor_state *e, Mat4 world) {
+    Vec3 origin = VEC3(world.m[12], world.m[13], world.m[14]);
+    Vec3 x_axis = vec3_normalize(VEC3(world.m[0], world.m[1], world.m[2]));
+    Vec3 y_axis = vec3_normalize(VEC3(world.m[4], world.m[5], world.m[6]));
+    Vec3 z_axis = vec3_normalize(VEC3(world.m[8], world.m[9], world.m[10]));
+    float len = editor_gizmo_axis_len(e, origin);
+
+    if (vec3_len(x_axis) < 0.001f) x_axis = VEC3(1.0f, 0.0f, 0.0f);
+    if (vec3_len(y_axis) < 0.001f) y_axis = VEC3(0.0f, 1.0f, 0.0f);
+    if (vec3_len(z_axis) < 0.001f) z_axis = VEC3(0.0f, 0.0f, 1.0f);
+
+    add_line(e, origin, vec3_add(origin, vec3_scale(x_axis, len)), 1.0f, 0.2f, 0.2f);
+    add_line(e, origin, vec3_add(origin, vec3_scale(y_axis, len)), 0.2f, 1.0f, 0.2f);
+    add_line(e, origin, vec3_add(origin, vec3_scale(z_axis, len)), 0.2f, 0.4f, 1.0f);
+}
+
+static int selected_entity_gizmo_basis(const game_state *gs, const editor_state *e,
+                                       Vec3 *out_origin, Vec3 axes[3], float *out_len) {
+    int selected;
+    Mat4 world;
+    if (!gs || !e || !gs->scene_entities) return 0;
+    selected = e->scene_selected_entity;
+    if (selected < 0 || selected >= gs->scene_entity_count) return 0;
+    if (!has_transform_component(gs, selected, NULL)) return 0;
+
+    world = editor_world_matrix_for_entity(gs, selected);
+    *out_origin = VEC3(world.m[12], world.m[13], world.m[14]);
+    axes[0] = vec3_normalize(VEC3(world.m[0], world.m[1], world.m[2]));
+    axes[1] = vec3_normalize(VEC3(world.m[4], world.m[5], world.m[6]));
+    axes[2] = vec3_normalize(VEC3(world.m[8], world.m[9], world.m[10]));
+    if (vec3_len(axes[0]) < 0.001f) axes[0] = VEC3(1.0f, 0.0f, 0.0f);
+    if (vec3_len(axes[1]) < 0.001f) axes[1] = VEC3(0.0f, 1.0f, 0.0f);
+    if (vec3_len(axes[2]) < 0.001f) axes[2] = VEC3(0.0f, 0.0f, 1.0f);
+    *out_len = editor_gizmo_axis_len(e, *out_origin);
+    return 1;
+}
+
 /* ── Line building ─────────────────────────────────────────────── */
 
 static void build_lines(game_state *gs, editor_state *es) {
     editor_state *e = es;
     float gc = 0.3f;
     int i;
-    Vec3 axis_dirs[3];
-    float colors[3][3];
+    int selected = -1;
 
     e->line_count = 0;
 
@@ -572,32 +1618,54 @@ static void build_lines(game_state *gs, editor_state *es) {
     add_line(e, VEC3(0, 0, -10), VEC3(0, 0, 10), 0.2f, 0.2f, 0.8f);  /* Z blue */
     add_line(e, VEC3(0, 0, 0),   VEC3(0, 2, 0),  0.2f, 0.8f, 0.2f);  /* Y green */
 
-    /* Floor entity wireframe from ECS components (Transform + Mesh(kind=floor) + Collider). */
-    if (gs->mesh_components) {
-        int mi;
-        int floor_entity = -1;
-        for (mi = 0; mi < gs->mesh_component_count; mi++) {
-            mesh_component *mc = &gs->mesh_components[mi];
-            if (!mc->visible) continue;
-            if (mc->kind != MESH_KIND_FLOOR) continue;
-            floor_entity = mc->entity_index;
-            break;
-        }
-        if (floor_entity >= 0) {
-            Vec3 floor_pos = VEC3(0.0f, 0.0f, 0.0f);
-            rect floor_box = {0.0f, 0.0f, 0.0f, 0.0f};
-            if (has_transform_component(gs, floor_entity, &floor_pos) &&
-                has_collider_component(gs, floor_entity, &floor_box)) {
-                float hx = floor_box.w * 0.5f;
-                float hz = floor_box.h * 0.5f;
-                Vec3 a = VEC3(floor_pos.x - hx, floor_pos.y, floor_pos.z - hz);
-                Vec3 b = VEC3(floor_pos.x + hx, floor_pos.y, floor_pos.z - hz);
-                Vec3 c = VEC3(floor_pos.x + hx, floor_pos.y, floor_pos.z + hz);
-                Vec3 d = VEC3(floor_pos.x - hx, floor_pos.y, floor_pos.z + hz);
-                add_line(e, a, b, 0.25f, 0.55f, 0.25f);
-                add_line(e, b, c, 0.25f, 0.55f, 0.25f);
-                add_line(e, c, d, 0.25f, 0.55f, 0.25f);
-                add_line(e, d, a, 0.25f, 0.55f, 0.25f);
+    selected = e->scene_selected_entity;
+    if (gs->scene_entities &&
+        selected >= 0 && selected < gs->scene_entity_count) {
+        Vec3 tpos = VEC3(0.0f, 0.0f, 0.0f);
+        Vec3 tscale = VEC3(1.0f, 1.0f, 1.0f);
+        rect crect = {0.0f, 0.0f, 0.0f, 0.0f};
+        int collider_is_capsule = 0;
+        float capsule_radius = 0.0f;
+        float capsule_half_height = 0.0f;
+        int mesh_visible = 0;
+        int has_transform = has_transform_component(gs, selected, &tpos);
+        int has_rotation = has_rotation_component(gs, selected, NULL);
+        int has_scale = has_scale_component(gs, selected, &tscale);
+        int has_collider = has_any_collider_component(gs, selected, &crect,
+                                                      &collider_is_capsule,
+                                                      &capsule_radius,
+                                                      &capsule_half_height);
+        int has_mesh = has_mesh_component(gs, selected, &mesh_visible);
+        int has_any_visual = has_transform || has_rotation || has_scale || has_collider || has_mesh;
+
+        if (has_any_visual) {
+            Mat4 world = editor_world_matrix_for_entity(gs, selected);
+            float hx = 0.5f;
+            float hy = 0.5f;
+            float hz = 0.5f;
+
+            if (has_scale) {
+                hx = fmaxf(0.05f, hx * fabsf(tscale.x));
+                hy = fmaxf(0.05f, hy * fabsf(tscale.y));
+                hz = fmaxf(0.05f, hz * fabsf(tscale.z));
+            }
+            if (has_collider) {
+                float chx = fmaxf(0.05f, fabsf(crect.w) * 0.5f);
+                float chz = fmaxf(0.05f, fabsf(crect.h) * 0.5f);
+                hx = fmaxf(hx, chx);
+                hz = fmaxf(hz, chz);
+                hy = fmaxf(hy, fmaxf(0.2f, fmaxf(chx, chz)));
+            }
+
+            if (has_collider && collider_is_capsule) {
+                draw_selected_entity_capsule(e, world, capsule_radius, capsule_half_height);
+                draw_selected_entity_capsule_handles(e, world, capsule_radius, capsule_half_height);
+            } else {
+                draw_selected_entity_bounds(e, world, hx, hy, hz);
+            }
+
+            if (has_transform || has_rotation || has_scale) {
+                draw_selected_entity_gizmo(e, world);
             }
         }
     }
@@ -644,42 +1712,6 @@ static void build_lines(game_state *gs, editor_state *es) {
         for (i = 0; i < 4; i++) add_line(e, f[i], f[(i+1)%4], cr, cg2, cb);
         add_line(e, eye, vec3_add(eye, vec3_scale(up, 0.3f)), 0.2f, 1.0f, 0.2f);
 
-        /* Translate gizmo at game camera eye */
-        {
-            Vec3 giz = eye;
-            float giz_dist = vec3_len(vec3_sub(giz, e->cam_pos));
-            float giz_len  = giz_dist * 0.08f;
-            if (giz_len < 0.1f) giz_len = 0.1f;
-
-            axis_dirs[0] = VEC3(1,0,0); axis_dirs[1] = VEC3(0,1,0); axis_dirs[2] = VEC3(0,0,1);
-            colors[0][0] = 1.0f; colors[0][1] = 0.2f; colors[0][2] = 0.2f;
-            colors[1][0] = 0.2f; colors[1][1] = 1.0f; colors[1][2] = 0.2f;
-            colors[2][0] = 0.2f; colors[2][1] = 0.2f; colors[2][2] = 1.0f;
-
-            for (i = 0; i < 3; i++) {
-                int ax = i + 1;
-                int hl = (e->gizmo_active == ax || (e->gizmo_active == 0 && e->gizmo_hovered == ax));
-                float cr2 = hl ? 1.0f : colors[i][0];
-                float cg3 = hl ? 1.0f : colors[i][1];
-                float cb2 = hl ? 0.2f : colors[i][2];
-                Vec3 tip = vec3_add(giz, vec3_scale(axis_dirs[i], giz_len));
-                float ah;
-                int a1, a2;
-                Vec3 perp1, perp2, back;
-
-                add_line(e, giz, tip, cr2, cg3, cb2);
-
-                /* Arrowhead */
-                ah = giz_len * 0.15f;
-                a1 = (i + 1) % 3; a2 = (i + 2) % 3;
-                perp1 = axis_dirs[a1]; perp2 = axis_dirs[a2];
-                back = vec3_sub(tip, vec3_scale(axis_dirs[i], ah));
-                add_line(e, tip, vec3_add(back, vec3_scale(perp1,  ah * 0.5f)), cr2, cg3, cb2);
-                add_line(e, tip, vec3_add(back, vec3_scale(perp1, -ah * 0.5f)), cr2, cg3, cb2);
-                add_line(e, tip, vec3_add(back, vec3_scale(perp2,  ah * 0.5f)), cr2, cg3, cb2);
-                add_line(e, tip, vec3_add(back, vec3_scale(perp2, -ah * 0.5f)), cr2, cg3, cb2);
-            }
-        }
     }
 }
 
@@ -725,21 +1757,22 @@ static void update_gizmo_hover(game_state *gs, editor_state *es) {
     editor_state *e = es;
     SDL_Window *mouse_win;
     int i;
-    float fw2, fh2, ed_aspect, mx, my;
+    float fw2, fh2, mx, my;
     Mat4 ed_proj, ed_view, vp;
     Vec3 ed_fwd, giz, mouse, center_s;
-    float giz_dist, giz_len, best_dist;
+    float giz_len, best_dist;
     Vec3 axis_dirs[3];
+    int selected;
 
-    if (!e->open || !e->window || !gs->mesh3d.visible) {
-        e->gizmo_hovered = 0;
+    if (!e->open || !e->window) {
+        e->gizmo_hovered = GIZMO_NONE;
         return;
     }
-    if (e->gizmo_active != 0) return;
+    if (e->gizmo_active != GIZMO_NONE) return;
 
     mouse_win = SDL_GetMouseFocus();
     if (mouse_win != (SDL_Window *)e->window) {
-        e->gizmo_hovered = 0;
+        e->gizmo_hovered = GIZMO_NONE;
         return;
     }
 
@@ -747,8 +1780,7 @@ static void update_gizmo_hover(game_state *gs, editor_state *es) {
     fw2 = e->panel_w; fh2 = e->panel_h;
     if (fw2 < 1 || fh2 < 1) return;
 
-    ed_aspect = fw2 / fh2;
-    ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
+    ed_proj = editor_projection_matrix(e, fw2, fh2);
     ed_fwd  = cam_forward(e);
     ed_view = mat4_look_at(e->cam_pos, vec3_add(e->cam_pos, ed_fwd), VEC3(0, 1, 0));
     vp = mat4_mul(ed_proj, ed_view);
@@ -757,27 +1789,49 @@ static void update_gizmo_hover(game_state *gs, editor_state *es) {
     SDL_GetMouseState(&mx, &my);
     mx -= e->panel_x;
     my -= e->panel_y;
+    if (editor_toolbar_contains_point(e, mx, my)) {
+        e->gizmo_hovered = GIZMO_NONE;
+        return;
+    }
     mouse = VEC3(mx, my, 0);
 
-    giz = gs->mesh3d.camera_eye;
-    giz_dist = vec3_len(vec3_sub(giz, e->cam_pos));
-    giz_len  = giz_dist * 0.08f;
-    if (giz_len < 0.1f) giz_len = 0.1f;
+    if (!selected_entity_gizmo_basis(gs, e, &giz, axis_dirs, &giz_len)) {
+        e->gizmo_hovered = GIZMO_NONE;
+        return;
+    }
 
     center_s = world_to_screen(giz, vp, fw2, fh2);
-    axis_dirs[0] = VEC3(giz_len, 0, 0);
-    axis_dirs[1] = VEC3(0, giz_len, 0);
-    axis_dirs[2] = VEC3(0, 0, giz_len);
+    selected = e->scene_selected_entity;
 
-    e->gizmo_hovered = 0;
-    best_dist = 12.0f * 12.0f;
+    e->gizmo_hovered = GIZMO_NONE;
+    best_dist = 14.0f * 14.0f;
 
     for (i = 0; i < 3; i++) {
-        Vec3 tip_s = world_to_screen(vec3_add(giz, axis_dirs[i]), vp, fw2, fh2);
+        Vec3 tip_s = world_to_screen(vec3_add(giz, vec3_scale(axis_dirs[i], giz_len)), vp, fw2, fh2);
         float d = pt_seg_dist_sq(mouse, center_s, tip_s);
         if (d < best_dist) {
             best_dist = d;
             e->gizmo_hovered = i + 1;
+        }
+    }
+
+    if (selected >= 0 && selected < gs->scene_entity_count) {
+        float capsule_radius = 0.0f;
+        float capsule_half_height = 0.0f;
+        if (has_capsule_collider_component(gs, selected, &capsule_radius, &capsule_half_height, NULL)) {
+            Mat4 world = editor_world_matrix_for_entity(gs, selected);
+            capsule_handle_info handles[6];
+            int handle_count = build_capsule_edit_handles(world, capsule_radius, capsule_half_height, handles);
+            for (i = 0; i < handle_count; i++) {
+                Vec3 hs = world_to_screen(handles[i].position, vp, fw2, fh2);
+                float dx = mouse.x - hs.x;
+                float dy = mouse.y - hs.y;
+                float d = dx * dx + dy * dy;
+                if (d < best_dist) {
+                    best_dist = d;
+                    e->gizmo_hovered = handles[i].id;
+                }
+            }
         }
     }
 }
@@ -793,10 +1847,18 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->cam_pitch  = -0.3f;
     e->cam_speed  = 5.0f;
     e->cam_sens   = 0.003f;
+    e->cam_projection_mode = EDITOR_CAMERA_PERSPECTIVE;
+    e->cam_ortho_size = 12.0f;
     e->cam_mouse_look = 0;
+    e->cam_mouse_button = 0;
     e->open = 1;
-    e->gizmo_hovered = 0;
-    e->gizmo_active  = 0;
+    e->gizmo_hovered = GIZMO_NONE;
+    e->gizmo_active  = GIZMO_NONE;
+    e->gizmo_entity_index = -1;
+    e->gizmo_drag_mode = 0;
+    e->gizmo_drag_start_capsule_radius = 0.0f;
+    e->gizmo_drag_start_capsule_half_height = 0.0f;
+    e->gizmo_drag_axis_local_scale = 1.0f;
     e->line_count = 0;
     e->menu_open = -1;
     e->menu_hover = -1;
@@ -850,6 +1912,18 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             Clay_ErrorHandler err = {0};
             e->menu_bar_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){1600, MENU_BAR_HEIGHT}, err);
             Clay_SetCurrentContext((Clay_Context *)e->menu_bar_clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+        }
+    }
+
+    if (!e->editor_toolbar_clay_ctx && es->editor_arena) {
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_editor_toolbar");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->editor_toolbar_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 200}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->editor_toolbar_clay_ctx);
             Clay_SetMeasureTextFunction(profiler_measure_text, e);
         }
     }
@@ -1360,8 +2434,10 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 vec2 vvel = {0.0f, 0.0f};
                 float hcur = 0.0f, hmax = 0.0f;
                 rect crect = {0.0f, 0.0f, 0.0f, 0.0f};
+                int collider_is_capsule = 0;
+                float capsule_radius = 0.0f;
+                float capsule_half_height = 0.0f;
                 int mesh_visible = 0;
-                mesh_kind mesh_kind_value = MESH_KIND_SKINNED;
                 int anim_playing = 0;
                 int anim_clip = 0;
                 float anim_time = 0.0f;
@@ -1374,8 +2450,11 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 int has_scale = has_scale_component(gs, selected, &tscale);
                 int has_velocity = has_velocity_component(gs, selected, &vvel);
                 int has_health = has_health_component(gs, selected, &hcur, &hmax);
-                int has_collider = has_collider_component(gs, selected, &crect);
-                int has_mesh = has_mesh_component(gs, selected, &mesh_visible, &mesh_kind_value);
+                int has_collider = has_any_collider_component(gs, selected, &crect,
+                                                              &collider_is_capsule,
+                                                              &capsule_radius,
+                                                              &capsule_half_height);
+                int has_mesh = has_mesh_component(gs, selected, &mesh_visible);
                 int has_animation = has_animation_component(gs, selected,
                                                             &anim_playing, &anim_clip, &anim_time, &anim_speed);
                 int has_camera = has_camera_component(gs, selected,
@@ -1453,9 +2532,15 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                     line_i++;
                 }
                 if (has_collider) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Collider (%.2f, %.2f, %.2f, %.2f)",
-                             crect.x, crect.y, crect.w, crect.h);
+                    if (collider_is_capsule) {
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "- Capsule Collider (r=%.2f h=%.2f)",
+                                 capsule_radius, capsule_half_height);
+                    } else {
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "- Box Collider (%.2f, %.2f, %.2f, %.2f)",
+                                 crect.x, crect.y, crect.w, crect.h);
+                    }
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
                         CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = 16}));
@@ -1463,11 +2548,8 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                     line_i++;
                 }
                 if (has_mesh) {
-                    const char *mesh_kind_name = "skinned";
-                    if (mesh_kind_value == MESH_KIND_FLOOR) mesh_kind_name = "floor";
-                    else if (mesh_kind_value == MESH_KIND_STATIC) mesh_kind_name = "static";
                     snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Mesh (visible=%d kind=%s)", mesh_visible, mesh_kind_name);
+                             "- Mesh (visible=%d)", mesh_visible);
                     {
                         Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
                         CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = 16}));
@@ -1541,6 +2623,148 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     e->inspector_cmd_array = commands.internalArray;
 }
 
+static void editor_toolbar_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    Clay_Context *ctx = (Clay_Context *)e->editor_toolbar_clay_ctx;
+    Clay_RenderCommandArray commands;
+    int perspective_active;
+
+    (void)gs;
+
+    if (!ctx || e->panel_w < 1.0f || e->panel_h < 1.0f) {
+        e->editor_toolbar_cmd_count = 0;
+        e->editor_toolbar_cmd_array = NULL;
+        return;
+    }
+
+    perspective_active = (e->cam_projection_mode != EDITOR_CAMERA_ORTHOGRAPHIC);
+
+    Clay_SetCurrentContext(ctx);
+    Clay_SetLayoutDimensions((Clay_Dimensions){e->panel_w, e->panel_h});
+    Clay_BeginLayout();
+
+    CLAY(CLAY_ID("EDToolbarRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = {
+                .left = (uint16_t)EDITOR_VIEWBAR_MARGIN_X,
+                .right = (uint16_t)EDITOR_VIEWBAR_MARGIN_X,
+                .top = (uint16_t)EDITOR_VIEWBAR_MARGIN_Y,
+                .bottom = 0
+            },
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        }
+    }) {
+        CLAY(CLAY_ID("EDToolbarRow"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(EDITOR_VIEWBAR_ROW_HEIGHT) },
+                .padding = {
+                    .left = (uint16_t)EDITOR_VIEWBAR_ROW_PADDING_X,
+                    .right = (uint16_t)EDITOR_VIEWBAR_ROW_PADDING_X,
+                    .top = (uint16_t)((EDITOR_VIEWBAR_ROW_HEIGHT - EDITOR_VIEWBAR_BUTTON_HEIGHT) * 0.5f),
+                    .bottom = (uint16_t)((EDITOR_VIEWBAR_ROW_HEIGHT - EDITOR_VIEWBAR_BUTTON_HEIGHT) * 0.5f)
+                },
+                .childGap = (uint16_t)EDITOR_VIEWBAR_GROUP_GAP,
+                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                .layoutDirection = CLAY_LEFT_TO_RIGHT
+            },
+            .backgroundColor = {28, 34, 44, 224},
+            .cornerRadius = CLAY_CORNER_RADIUS(6)
+        }) {
+            CLAY(CLAY_ID("EDToolbarProjectionGroup"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIT({0}) },
+                    .childGap = (uint16_t)EDITOR_VIEWBAR_BUTTON_GAP,
+                    .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                CLAY(CLAY_ID("EDToolbarPerspective"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_TOGGLE_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = perspective_active
+                                       ? ((Clay_Color){80, 120, 176, 230})
+                                       : ((Clay_Color){56, 66, 84, 220}),
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    Clay_String cs = CLAY_STRING("Perspective");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                }
+
+                CLAY(CLAY_ID("EDToolbarOrthographic"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_TOGGLE_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = perspective_active
+                                       ? ((Clay_Color){56, 66, 84, 220})
+                                       : ((Clay_Color){80, 120, 176, 230}),
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    Clay_String cs = CLAY_STRING("Orthographic");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                }
+            }
+
+            CLAY(CLAY_ID("EDToolbarViewGroup"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIT({0}) },
+                    .childGap = (uint16_t)EDITOR_VIEWBAR_BUTTON_GAP,
+                    .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                CLAY(CLAY_ID("EDToolbarFront"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_VIEW_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = {56, 66, 84, 220},
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    Clay_String cs = CLAY_STRING("Front");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                }
+
+                CLAY(CLAY_ID("EDToolbarSide"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_VIEW_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = {56, 66, 84, 220},
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    Clay_String cs = CLAY_STRING("Side");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                }
+
+                CLAY(CLAY_ID("EDToolbarTop"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_VIEW_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = {56, 66, 84, 220},
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    Clay_String cs = CLAY_STRING("Top");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = 16}));
+                }
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    e->editor_toolbar_cmd_count = commands.length;
+    e->editor_toolbar_cmd_array = commands.internalArray;
+}
+
 EXPORT void update_editor(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
@@ -1606,6 +2830,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     profiler_layout(gs, es);
     scene_tree_layout(gs, es);
     inspector_layout(gs, es);
+    editor_toolbar_layout(gs, es);
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
     update_camera(gs, es);
@@ -1861,27 +3086,66 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     /* ── Editor-specific events below (require open panel) ── */
     if (!e->open || !e->window) return 0;
 
-    /* Right-click mouse look toggle */
+    if (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat) {
+        SDL_Window *key_window = SDL_GetWindowFromID(ev->key.windowID);
+        if (key_window == (SDL_Window *)e->window &&
+            ((ev->key.mod & SDL_KMOD_GUI) || (ev->key.mod & SDL_KMOD_CTRL)) &&
+            ev->key.key == SDLK_S) {
+            if (!gs->project_loaded || !gs->project_path[0]) {
+                fprintf(stderr, "Save skipped: no project file loaded\n");
+            } else if (editor_save_scene_to_toml(gs, gs->project_path)) {
+                fprintf(stderr, "Scene saved to %s\n", gs->project_path);
+            } else {
+                fprintf(stderr, "Save failed for %s\n", gs->project_path);
+            }
+            return 1;
+        }
+    }
+
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
-        ev->button.button == SDL_BUTTON_RIGHT) {
+        ev->button.button == SDL_BUTTON_LEFT) {
         evwin = SDL_GetWindowFromEvent(ev);
-        if (evwin == (SDL_Window *)e->window) {
-            e->cam_mouse_look = 1;
-            SDL_SetWindowRelativeMouseMode((SDL_Window *)e->window, 1);
+        {
+            float lx, ly;
+            if (panel_event_hit(d, PANEL_EDITOR, evwin, ev->button.x, ev->button.y, &lx, &ly) &&
+                editor_toolbar_contains_point(e, lx, ly)) {
+                int action = editor_toolbar_button_hit(e, lx, ly);
+                if (action != EDITOR_TOOLBAR_ACTION_NONE) {
+                    editor_apply_toolbar_action(gs, e, action);
+                }
+                return 1;
+            }
+        }
+    }
+
+    /* Mouse-look: right-button drag, or left-button drag inside editor panel (away from gizmo). */
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        evwin = SDL_GetWindowFromEvent(ev);
+        if (ev->button.button == SDL_BUTTON_RIGHT &&
+            evwin == (SDL_Window *)e->window) {
+            editor_begin_mouse_look(e, SDL_BUTTON_RIGHT);
+        } else if (ev->button.button == SDL_BUTTON_LEFT &&
+                   e->gizmo_hovered == GIZMO_NONE &&
+                   e->gizmo_active == GIZMO_NONE) {
+            float lx = 0.0f, ly = 0.0f;
+            if (panel_event_hit(d, PANEL_EDITOR, evwin, ev->button.x, ev->button.y, &lx, &ly)) {
+                if (editor_toolbar_contains_point(e, lx, ly)) return 1;
+                editor_begin_mouse_look(e, SDL_BUTTON_LEFT);
+                return 1;
+            }
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
-        ev->button.button == SDL_BUTTON_RIGHT) {
-        if (e->cam_mouse_look) {
-            e->cam_mouse_look = 0;
-            SDL_SetWindowRelativeMouseMode((SDL_Window *)e->window, 0);
+        (ev->button.button == SDL_BUTTON_LEFT ||
+         ev->button.button == SDL_BUTTON_RIGHT)) {
+        if (e->cam_mouse_look && e->cam_mouse_button == ev->button.button) {
+            editor_end_mouse_look(e);
         }
     }
     if (ev->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         evwin = SDL_GetWindowFromEvent(ev);
         if (evwin == (SDL_Window *)e->window && e->cam_mouse_look) {
-            e->cam_mouse_look = 0;
-            SDL_SetWindowRelativeMouseMode((SDL_Window *)e->window, 0);
+            editor_end_mouse_look(e);
         }
     }
 
@@ -1889,64 +3153,125 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
         ev->button.button == SDL_BUTTON_LEFT) {
         evwin = SDL_GetWindowFromEvent(ev);
-        if (evwin == (SDL_Window *)e->window && e->gizmo_hovered != 0) {
-            float fw2, fh2, ed_aspect, giz_dist, giz_len, sdx, sdy, slen;
+        if (evwin == (SDL_Window *)e->window && e->gizmo_hovered != GIZMO_NONE) {
+            float fw2, fh2, giz_len, drag_axis_len;
             Mat4 ed_proj, ed_view, vp;
-            Vec3 ed_fwd, giz, world_axis, center_s, tip_s;
+            Vec3 ed_fwd, giz;
+            Vec3 basis_axes[3];
+            int selected = e->scene_selected_entity;
+            int is_transform_drag = (e->gizmo_hovered >= GIZMO_TRANSLATE_X &&
+                                     e->gizmo_hovered <= GIZMO_TRANSLATE_Z);
+
+            if (!selected_entity_gizmo_basis(gs, e, &giz, basis_axes, &giz_len)) {
+                e->gizmo_active = GIZMO_NONE;
+                e->gizmo_entity_index = -1;
+                return 0;
+            }
 
             e->gizmo_active = e->gizmo_hovered;
-            e->gizmo_drag_start_eye    = gs->mesh3d.camera_eye;
-            e->gizmo_drag_start_target = gs->mesh3d.camera_target;
+            e->gizmo_entity_index = selected;
             e->gizmo_drag_accum = 0;
+            e->gizmo_drag_mode = 0;
+            e->gizmo_drag_axis_local_scale = 1.0f;
+            drag_axis_len = giz_len;
+
+            if (is_transform_drag) {
+                transform_component *tc = find_transform_component_mut(gs, selected);
+                int axis_index;
+                if (!tc) {
+                    e->gizmo_active = GIZMO_NONE;
+                    e->gizmo_entity_index = -1;
+                    return 0;
+                }
+                e->gizmo_drag_mode = 0;
+                e->gizmo_drag_start_entity_pos = tc->position;
+                axis_index = e->gizmo_active - 1;
+                if (axis_index < 0) axis_index = 0;
+                if (axis_index > 2) axis_index = 2;
+                e->gizmo_drag_axis_world = basis_axes[axis_index];
+            } else {
+                capsule_collider_component *cc = find_capsule_collider_component_mut(gs, selected);
+                capsule_handle_info handles[6];
+                int i, found = -1;
+                if (!cc) {
+                    e->gizmo_active = GIZMO_NONE;
+                    e->gizmo_entity_index = -1;
+                    return 0;
+                }
+                build_capsule_edit_handles(editor_world_matrix_for_entity(gs, selected),
+                                           cc->radius, cc->half_height, handles);
+                for (i = 0; i < 6; i++) {
+                    if (handles[i].id == e->gizmo_hovered) {
+                        found = i;
+                        break;
+                    }
+                }
+                if (found < 0) {
+                    e->gizmo_active = GIZMO_NONE;
+                    e->gizmo_entity_index = -1;
+                    return 0;
+                }
+
+                e->gizmo_drag_mode = (handles[found].id == GIZMO_CAPSULE_HEIGHT_TOP ||
+                                      handles[found].id == GIZMO_CAPSULE_HEIGHT_BOTTOM) ? 2 : 1;
+                e->gizmo_drag_start_capsule_radius = cc->radius;
+                e->gizmo_drag_start_capsule_half_height = cc->half_height;
+                e->gizmo_drag_axis_world = handles[found].axis_world;
+                e->gizmo_drag_axis_local_scale = handles[found].axis_local_scale;
+                giz = handles[found].position;
+                drag_axis_len = giz_len * 0.8f;
+                if (drag_axis_len < 0.12f) drag_axis_len = 0.12f;
+            }
 
             fw2 = e->panel_w; fh2 = e->panel_h;
-            ed_aspect = fw2 / fh2;
-            ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
+            ed_proj = editor_projection_matrix(e, fw2, fh2);
             ed_fwd  = cam_forward(e);
             ed_view = mat4_look_at(e->cam_pos, vec3_add(e->cam_pos, ed_fwd), VEC3(0, 1, 0));
             vp = mat4_mul(ed_proj, ed_view);
-
-            giz = gs->mesh3d.camera_eye;
-            giz_dist = vec3_len(vec3_sub(giz, e->cam_pos));
-            giz_len  = giz_dist * 0.08f;
-            if (giz_len < 0.1f) giz_len = 0.1f;
-
-            world_axis = (e->gizmo_active == 1) ? VEC3(1, 0, 0) :
-                         (e->gizmo_active == 2) ? VEC3(0, 1, 0) : VEC3(0, 0, 1);
-
-            center_s = world_to_screen(giz, vp, fw2, fh2);
-            tip_s    = world_to_screen(vec3_add(giz, vec3_scale(world_axis, giz_len)), vp, fw2, fh2);
-            sdx = tip_s.x - center_s.x;
-            sdy = tip_s.y - center_s.y;
-            slen = sqrtf(sdx * sdx + sdy * sdy);
-            if (slen > 0.001f) {
-                e->gizmo_screen_axis = VEC3(sdx / slen, sdy / slen, 0);
-                e->gizmo_world_per_pixel = giz_len / slen;
-            } else {
-                e->gizmo_screen_axis = VEC3(1, 0, 0);
-                e->gizmo_world_per_pixel = 0.01f;
-            }
+            setup_drag_screen_axis(e, vp, fw2, fh2, giz, e->gizmo_drag_axis_world, drag_axis_len);
         }
     }
 
     /* Gizmo: mouse motion during drag */
-    if (ev->type == SDL_EVENT_MOUSE_MOTION && e->gizmo_active != 0) {
+    if (ev->type == SDL_EVENT_MOUSE_MOTION && e->gizmo_active != GIZMO_NONE) {
         float dot = ev->motion.xrel * e->gizmo_screen_axis.x
                   + ev->motion.yrel * e->gizmo_screen_axis.y;
-        Vec3 world_axis, delta;
+        float world_delta;
         e->gizmo_drag_accum += dot;
+        world_delta = e->gizmo_drag_accum * e->gizmo_world_per_pixel;
 
-        world_axis = (e->gizmo_active == 1) ? VEC3(1, 0, 0) :
-                     (e->gizmo_active == 2) ? VEC3(0, 1, 0) : VEC3(0, 0, 1);
-        delta = vec3_scale(world_axis, e->gizmo_drag_accum * e->gizmo_world_per_pixel);
-        gs->mesh3d.camera_eye    = vec3_add(e->gizmo_drag_start_eye, delta);
-        gs->mesh3d.camera_target = vec3_add(e->gizmo_drag_start_target, delta);
+        if (e->gizmo_drag_mode == 0) {
+            Vec3 delta;
+            transform_component *tc = find_transform_component_mut(gs, e->gizmo_entity_index);
+            if (!tc) return 0;
+            delta = vec3_scale(e->gizmo_drag_axis_world, world_delta);
+            tc->position = vec3_add(e->gizmo_drag_start_entity_pos, delta);
+        } else {
+            capsule_collider_component *cc = find_capsule_collider_component_mut(gs, e->gizmo_entity_index);
+            float axis_scale = e->gizmo_drag_axis_local_scale;
+            float local_delta;
+            rect updated;
+            if (!cc) return 0;
+            if (axis_scale < 0.001f) axis_scale = 1.0f;
+            local_delta = world_delta / axis_scale;
+            if (e->gizmo_drag_mode == 1) {
+                cc->radius = fmaxf(0.05f, e->gizmo_drag_start_capsule_radius + local_delta);
+            } else {
+                cc->half_height = fmaxf(0.05f, e->gizmo_drag_start_capsule_half_height + local_delta);
+            }
+            updated = capsule_aabb_rect(cc->radius, cc->half_height);
+            updated.x = cc->aabb.x;
+            updated.y = cc->aabb.y;
+            cc->aabb = updated;
+        }
     }
 
     /* Gizmo: left-button up ends drag */
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
         ev->button.button == SDL_BUTTON_LEFT) {
-        e->gizmo_active = 0;
+        e->gizmo_active = GIZMO_NONE;
+        e->gizmo_entity_index = -1;
+        e->gizmo_drag_mode = 0;
     }
 
     /* ── Profiler + Scene Tree input: track mouse position + scroll for Clay containers ── */

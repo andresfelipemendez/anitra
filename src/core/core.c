@@ -120,6 +120,10 @@ EXPORT int init_core(const char *project_path) {
     g.game.shader_composite_fs = "assets/shaders/compiled/composite_fs.spv";
 
     g.game.project_loaded = 0;
+    g.game.project_path[0] = '\0';
+    if (project_path && project_path[0]) {
+        snprintf(g.game.project_path, sizeof(g.game.project_path), "%s", project_path);
+    }
 
     /* Load project file if provided */
     if (project_path) {
@@ -143,6 +147,8 @@ EXPORT int init_core(const char *project_path) {
             /* Resolve default model paths from ECS scene mesh components */
             if (g.game.project.scene_entity_count > 0) {
                 int ei;
+                int resolved_animated_model = 0;
+                int resolved_static_model = 0;
                 for (ei = 0; ei < g.game.project.scene_entity_count; ei++) {
                     project_scene_component *comp = &g.game.project.scene_components[ei];
                     int pi;
@@ -150,12 +156,18 @@ EXPORT int init_core(const char *project_path) {
 
                     for (pi = 0; pi < g.game.project.model_count; pi++) {
                         if (strcmp(g.game.project.model_keys[pi], comp->mesh_model) == 0) {
-                            if (strcmp(comp->mesh_kind, "skinned") == 0) {
-                                g.game.default_model_path = g.game.project.model_paths[pi];
-                            }
-                            if (strcmp(comp->mesh_kind, "floor") == 0 ||
-                                strstr(comp->mesh_model, "floor") != NULL) {
+                            if (strstr(comp->mesh_model, "floor") != NULL) {
                                 g.game.default_floor_model_path = g.game.project.model_paths[pi];
+                            }
+                            if (comp->has_animation && !resolved_animated_model) {
+                                g.game.default_model_path = g.game.project.model_paths[pi];
+                                resolved_animated_model = 1;
+                            }
+                            if (!resolved_animated_model &&
+                                !resolved_static_model &&
+                                strstr(comp->mesh_model, "floor") == NULL) {
+                                g.game.default_model_path = g.game.project.model_paths[pi];
+                                resolved_static_model = 1;
                             }
                             break;
                         }

@@ -469,7 +469,8 @@ static void draw_scene_meshes(memory *m,
         SDL_PushGPUVertexUniformData(cmd_buf, 0, &mesh_uniforms, sizeof(mesh_uniforms));
 
         bones_to_bind = bone_identity_buffer;
-        if (mc->kind == MESH_KIND_SKINNED &&
+        if (asset->has_skeleton &&
+            mc->entity_index == gs->scene_primary_skinned_entity &&
             bone_storage_buffer &&
             gs->mesh3d.skeleton.joint_count > 0 &&
             gs->mesh3d.skin_mats) {
@@ -965,6 +966,7 @@ static UIRenderState ui_game = {0};
 static UIRenderState ui_profiler = {0};
 static UIRenderState ui_scene_tree = {0};
 static UIRenderState ui_inspector = {0};
+static UIRenderState ui_editor_toolbar = {0};
 
 // ---------------------------------------------------------------------------
 // Build Clay render commands → vertex arrays (window-agnostic)
@@ -1377,6 +1379,18 @@ static void inspector_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
 
     ui_build_vertices(&ui_inspector, commands);
     ui_upload(cmd_buf, &ui_inspector);
+}
+
+static void editor_toolbar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
+    if (g->editor.editor_toolbar_cmd_count <= 0 || !g->editor.editor_toolbar_cmd_array)
+        return;
+
+    Clay_RenderCommandArray commands;
+    commands.length = g->editor.editor_toolbar_cmd_count;
+    commands.internalArray = (Clay_RenderCommand *)g->editor.editor_toolbar_cmd_array;
+
+    ui_build_vertices(&ui_editor_toolbar, commands);
+    ui_upload(cmd_buf, &ui_editor_toolbar);
 }
 
 /* Draw the grid texture quad during the profiler render pass.
@@ -2894,6 +2908,11 @@ EXPORT void update_externals(struct memory *m) {
         inspector_prepare(cmd_buf, m);
     }
 
+    // --- Prepare Clay UI: editor viewport toolbar (layout + upload) ---
+    if (panel_color[PANEL_EDITOR]) {
+        editor_toolbar_prepare(cmd_buf, m);
+    }
+
     // --- Upload editor 3D lines (populated by editor.dll) ---
     SDL_GPUBuffer *editor_line_gpu_buf = NULL;
     int editor_vert_count = m->editor.line_count * 2;
@@ -3242,7 +3261,7 @@ EXPORT void update_externals(struct memory *m) {
 
         /* Editor camera matrices */
         float ed_aspect = (float)ew / (float)eh;
-        Mat4 ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
+        Mat4 ed_proj;
         float ed_cp = cosf(m->editor.cam_pitch);
         Vec3 ed_fwd = VEC3(ed_cp * sinf(m->editor.cam_yaw),
                            sinf(m->editor.cam_pitch),
@@ -3250,6 +3269,14 @@ EXPORT void update_externals(struct memory *m) {
         Mat4 ed_view = mat4_look_at(m->editor.cam_pos,
                                      vec3_add(m->editor.cam_pos, ed_fwd),
                                      VEC3(0, 1, 0));
+        if (m->editor.cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
+            float ortho_size = m->editor.cam_ortho_size > 0.05f ? m->editor.cam_ortho_size : 12.0f;
+            float half_h = ortho_size * 0.5f;
+            float half_w = half_h * ed_aspect;
+            ed_proj = mat4_orthographic(-half_w, half_w, -half_h, half_h, 0.1f, 200.0f);
+        } else {
+            ed_proj = mat4_perspective(60.0f * 3.14159265f / 180.0f, ed_aspect, 0.1f, 200.0f);
+        }
 
         /* 1. 3D meshes (editor camera) */
         draw_scene_meshes(m, ed_pass, cmd_buf, ed_proj, ed_view);
@@ -3268,6 +3295,23 @@ EXPORT void update_externals(struct memory *m) {
             SDL_BindGPUVertexBuffers(ed_pass, 0, &ed_lb, 1);
 
             SDL_DrawGPUPrimitives(ed_pass, (Uint32)editor_vert_count, 1, 0, 0);
+        }
+
+        /* 3. Editor toolbar UI overlay */
+        {
+            uniform_data ed_ui_uniforms;
+            float ed_lw = (float)ew / display_density;
+            float ed_lh = (float)eh / display_density;
+            float ed_ortho[16] = {
+                2.0f/ed_lw,    0,             0,     0,
+                0,            -2.0f/ed_lh,    0,     0,
+                0,             0,            -1.0f,  0,
+               -1.0f,          1.0f,          0,     1.0f
+            };
+            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            memcpy(ed_ui_uniforms.projection, ed_ortho, sizeof(ed_ortho));
+            memcpy(ed_ui_uniforms.view, identity, sizeof(identity));
+            ui_draw(ed_pass, cmd_buf, &ed_ui_uniforms, &ui_editor_toolbar);
         }
 
         SDL_EndGPURenderPass(ed_pass);
@@ -3355,6 +3399,7 @@ EXPORT void update_externals(struct memory *m) {
     ui_release_buffers(&ui_profiler);
     ui_release_buffers(&ui_scene_tree);
     ui_release_buffers(&ui_inspector);
+    ui_release_buffers(&ui_editor_toolbar);
     if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
 
     TracyCZoneEnd(ctx_update);

@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-#include <ctype.h>
 
 /* Animation functions (from anim.c, same DLL) */
 void init_pose_from_bind(Skeleton *skel, Vec3 *trans, Quat *rot, Vec3 *scale);
@@ -14,6 +13,10 @@ void compute_world_transforms(Skeleton *skel,
                               Vec3 *trans, Quat *rot, Vec3 *scales,
                               Mat4 *out_world);
 void compute_skinning_matrices(Skeleton *skel, Mat4 *world, Mat4 *out_skinning);
+
+/* ECS physics update (from physics.c, same DLL) */
+void collision(game_state *gs);
+void apply_movement(game_state *gs);
 
 /* Asset loading (from gltf_loader.c, same DLL) */
 GltfModel load_glb(const char *path, arena *a);
@@ -29,31 +32,6 @@ typedef struct camera_query_result {
     transform_component *transform;
     camera_component *camera;
 } camera_query_result;
-
-static int str_ieq(const char *a, const char *b) {
-    unsigned char ca, cb;
-    if (!a || !b) return 0;
-    while (*a && *b) {
-        ca = (unsigned char)*a++;
-        cb = (unsigned char)*b++;
-        if (tolower(ca) != tolower(cb)) return 0;
-    }
-    return *a == '\0' && *b == '\0';
-}
-
-static int str_icontains(const char *haystack, const char *needle) {
-    int i, j;
-    if (!haystack || !needle || !needle[0]) return 0;
-    for (i = 0; haystack[i]; i++) {
-        for (j = 0; needle[j]; j++) {
-            unsigned char ch = (unsigned char)haystack[i + j];
-            if (!ch) return 0;
-            if (tolower(ch) != tolower((unsigned char)needle[j])) break;
-        }
-        if (!needle[j]) return 1;
-    }
-    return 0;
-}
 
 static Quat quat_from_y_deg(float degrees) {
     float half = (degrees * 3.14159265f / 180.0f) * 0.5f;
@@ -221,8 +199,10 @@ static mesh_component *query_primary_mesh_component(game_state *gs) {
     if (!gs || !gs->scene_entities || !gs->mesh_components) return NULL;
     for (i = 0; i < gs->mesh_component_count; i++) {
         mesh_component *mc = &gs->mesh_components[i];
+        scene_model_asset *asset;
         if (mc->entity_index < 0 || mc->entity_index >= gs->scene_entity_count) continue;
-        if (mc->kind == MESH_KIND_SKINNED) return mc;
+        asset = find_scene_model_asset(gs, mc->model_asset_index);
+        if (asset && asset->loaded && asset->has_skeleton) return mc;
     }
     for (i = 0; i < gs->mesh_component_count; i++) {
         mesh_component *mc = &gs->mesh_components[i];
@@ -240,9 +220,21 @@ static animation_component *query_primary_animation_component_for_mesh(game_stat
         animation_component *ac = &gs->animation_components[i];
         int entity_index = ac->entity_index;
         mesh_component *mc;
+        scene_model_asset *asset;
         if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
         mc = find_mesh_component(gs, entity_index);
-        if (mc && mc->kind == MESH_KIND_SKINNED) return ac;
+        if (!mc) continue;
+        asset = find_scene_model_asset(gs, mc->model_asset_index);
+        if (asset && asset->loaded && asset->has_skeleton) return ac;
+    }
+
+    for (i = 0; i < gs->animation_component_count; i++) {
+        animation_component *ac = &gs->animation_components[i];
+        int entity_index = ac->entity_index;
+        mesh_component *mc;
+        if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
+        mc = find_mesh_component(gs, entity_index);
+        if (mc) return ac;
     }
 
     return NULL;
@@ -353,10 +345,6 @@ static int register_scene_model_asset(game_state *gs,
     return i;
 }
 
-static int asset_key_is_floor(const char *asset_key) {
-    return str_icontains(asset_key, "floor");
-}
-
 static rect collider_rect_from_half_extents(const float half_extents[3], float fallback_half_extent) {
     float hx = fallback_half_extent;
     float hz = fallback_half_extent;
@@ -370,6 +358,17 @@ static rect collider_rect_from_half_extents(const float half_extents[3], float f
     r.y = 0.0f;
     r.w = hx * 2.0f;
     r.h = hz * 2.0f;
+    return r;
+}
+
+static rect capsule_aabb_rect(float radius, float half_height) {
+    rect r;
+    float rr = radius > 0.0f ? radius : 0.5f;
+    float hh = half_height > 0.0f ? half_height : rr;
+    r.x = 0.0f;
+    r.y = 0.0f;
+    r.w = rr * 2.0f;
+    r.h = (hh + rr) * 2.0f;
     return r;
 }
 
@@ -429,12 +428,21 @@ static int ensure_scene_storage(game_state *gs, int needed_entities) {
     gs->velocity_components = (velocity_component *)reserve_array(gs->gameplay, gs->velocity_components,
                                                                   &gs->velocity_component_capacity, needed_entities,
                                                                   sizeof(velocity_component), "velocity_components");
+    gs->rigid_body_components = (rigid_body_component *)reserve_array(
+        gs->gameplay, gs->rigid_body_components,
+        &gs->rigid_body_component_capacity, needed_entities,
+        sizeof(rigid_body_component), "rigid_body_components");
     gs->health_components = (health_component *)reserve_array(gs->gameplay, gs->health_components,
                                                               &gs->health_component_capacity, needed_entities,
                                                               sizeof(health_component), "health_components");
-    gs->collider_components = (collider_component *)reserve_array(gs->gameplay, gs->collider_components,
-                                                                  &gs->collider_component_capacity, needed_entities,
-                                                                  sizeof(collider_component), "collider_components");
+    gs->box_collider_components = (box_collider_component *)reserve_array(
+        gs->gameplay, gs->box_collider_components,
+        &gs->box_collider_component_capacity, needed_entities,
+        sizeof(box_collider_component), "box_collider_components");
+    gs->capsule_collider_components = (capsule_collider_component *)reserve_array(
+        gs->gameplay, gs->capsule_collider_components,
+        &gs->capsule_collider_component_capacity, needed_entities,
+        sizeof(capsule_collider_component), "capsule_collider_components");
     gs->mesh_components = (mesh_component *)reserve_array(gs->gameplay, gs->mesh_components,
                                                           &gs->mesh_component_capacity, needed_entities,
                                                           sizeof(mesh_component), "mesh_components");
@@ -480,11 +488,20 @@ static void clear_scene_storage(game_state *gs) {
     if (gs->velocity_components && gs->velocity_component_capacity > 0) {
         memset(gs->velocity_components, 0, (size_t)gs->velocity_component_capacity * sizeof(velocity_component));
     }
+    if (gs->rigid_body_components && gs->rigid_body_component_capacity > 0) {
+        memset(gs->rigid_body_components, 0,
+               (size_t)gs->rigid_body_component_capacity * sizeof(rigid_body_component));
+    }
     if (gs->health_components && gs->health_component_capacity > 0) {
         memset(gs->health_components, 0, (size_t)gs->health_component_capacity * sizeof(health_component));
     }
-    if (gs->collider_components && gs->collider_component_capacity > 0) {
-        memset(gs->collider_components, 0, (size_t)gs->collider_component_capacity * sizeof(collider_component));
+    if (gs->box_collider_components && gs->box_collider_component_capacity > 0) {
+        memset(gs->box_collider_components, 0,
+               (size_t)gs->box_collider_component_capacity * sizeof(box_collider_component));
+    }
+    if (gs->capsule_collider_components && gs->capsule_collider_component_capacity > 0) {
+        memset(gs->capsule_collider_components, 0,
+               (size_t)gs->capsule_collider_component_capacity * sizeof(capsule_collider_component));
     }
     if (gs->mesh_components && gs->mesh_component_capacity > 0) {
         memset(gs->mesh_components, 0, (size_t)gs->mesh_component_capacity * sizeof(mesh_component));
@@ -505,8 +522,10 @@ static void clear_scene_storage(game_state *gs) {
     gs->rotation_component_count = 0;
     gs->scale_component_count = 0;
     gs->velocity_component_count = 0;
+    gs->rigid_body_component_count = 0;
     gs->health_component_count = 0;
-    gs->collider_component_count = 0;
+    gs->box_collider_component_count = 0;
+    gs->capsule_collider_component_count = 0;
     gs->mesh_component_count = 0;
     gs->animation_component_count = 0;
     gs->camera_component_count = 0;
@@ -568,6 +587,15 @@ static void push_velocity_component(game_state *gs, int entity_index, vec2 veloc
     gs->velocity_components[i].velocity = velocity;
 }
 
+static void push_rigid_body_component(game_state *gs, int entity_index, int use_gravity) {
+    int i;
+    if (!gs || !gs->rigid_body_components) return;
+    if (gs->rigid_body_component_count >= gs->rigid_body_component_capacity) return;
+    i = gs->rigid_body_component_count++;
+    gs->rigid_body_components[i].entity_index = entity_index;
+    gs->rigid_body_components[i].use_gravity = use_gravity ? 1 : 0;
+}
+
 static void push_health_component(game_state *gs, int entity_index, float health, float max_health) {
     int i;
     if (!gs || !gs->health_components) return;
@@ -578,24 +606,36 @@ static void push_health_component(game_state *gs, int entity_index, float health
     gs->health_components[i].max_health = max_health;
 }
 
-static void push_collider_component(game_state *gs, int entity_index, rect box) {
+static void push_box_collider_component(game_state *gs, int entity_index, rect box) {
     int i;
-    if (!gs || !gs->collider_components) return;
-    if (gs->collider_component_count >= gs->collider_component_capacity) return;
-    i = gs->collider_component_count++;
-    gs->collider_components[i].entity_index = entity_index;
-    gs->collider_components[i].rect = box;
-    gs->collider_components[i].type = COLLIDER_BOX;
+    if (!gs || !gs->box_collider_components) return;
+    if (gs->box_collider_component_count >= gs->box_collider_component_capacity) return;
+    i = gs->box_collider_component_count++;
+    gs->box_collider_components[i].entity_index = entity_index;
+    gs->box_collider_components[i].rect = box;
 }
 
-static void push_mesh_component(game_state *gs, int entity_index, mesh_kind kind, int asset_index) {
+static void push_capsule_collider_component(game_state *gs, int entity_index,
+                                            float radius, float half_height) {
+    int i;
+    if (!gs || !gs->capsule_collider_components) return;
+    if (gs->capsule_collider_component_count >= gs->capsule_collider_component_capacity) return;
+    i = gs->capsule_collider_component_count++;
+    gs->capsule_collider_components[i].entity_index = entity_index;
+    gs->capsule_collider_components[i].radius = radius > 0.0f ? radius : 0.5f;
+    gs->capsule_collider_components[i].half_height = half_height > 0.0f ? half_height : gs->capsule_collider_components[i].radius;
+    gs->capsule_collider_components[i].aabb = capsule_aabb_rect(
+        gs->capsule_collider_components[i].radius,
+        gs->capsule_collider_components[i].half_height);
+}
+
+static void push_mesh_component(game_state *gs, int entity_index, int asset_index) {
     int i;
     if (!gs || !gs->mesh_components) return;
     if (gs->mesh_component_count >= gs->mesh_component_capacity) return;
     i = gs->mesh_component_count++;
     gs->mesh_components[i].entity_index = entity_index;
     gs->mesh_components[i].visible = 1;
-    gs->mesh_components[i].kind = kind;
     gs->mesh_components[i].model_asset_index = asset_index;
 }
 
@@ -625,13 +665,6 @@ static void push_camera_component(game_state *gs, int entity_index, float fov, f
     gs->camera_components[i].up = up;
 }
 
-static mesh_kind mesh_kind_from_string(const char *kind) {
-    if (!kind || !kind[0]) return MESH_KIND_STATIC;
-    if (str_ieq(kind, "skinned")) return MESH_KIND_SKINNED;
-    if (str_ieq(kind, "floor")) return MESH_KIND_FLOOR;
-    return MESH_KIND_STATIC;
-}
-
 static void build_fallback_scene(game_state *gs) {
     const char *model_path = NULL;
     const char *anim_path = NULL;
@@ -650,9 +683,10 @@ static void build_fallback_scene(game_state *gs) {
 
     push_transform_component(gs, entity_index, VEC3(0.0f, 0.0f, 0.0f));
     push_velocity_component(gs, entity_index, (vec2){0.0f, 0.0f});
+    push_rigid_body_component(gs, entity_index, 1);
     push_health_component(gs, entity_index, 100.0f, 100.0f);
-    push_collider_component(gs, entity_index, (rect){0.0f, 0.0f, 0.8f, 0.8f});
-    push_mesh_component(gs, entity_index, MESH_KIND_SKINNED, player_asset);
+    push_capsule_collider_component(gs, entity_index, 0.4f, 0.4f);
+    push_mesh_component(gs, entity_index, player_asset);
     push_animation_component(gs, entity_index, 0);
     gs->scene_primary_skinned_entity = entity_index;
     entity_index++;
@@ -688,7 +722,6 @@ static void build_scene_from_project(game_state *gs) {
         const char *anim_path = NULL;
         const project_scene_component *comp = &project->scene_components[i];
         int model_asset = -1;
-        mesh_kind kind = MESH_KIND_STATIC;
 
         if (comp->has_transform) {
             push_transform_component(gs, i,
@@ -720,13 +753,23 @@ static void build_scene_from_project(game_state *gs) {
             push_velocity_component(gs, i, (vec2){comp->velocity[0], comp->velocity[1]});
         }
 
+        if (comp->has_rigid_body) {
+            push_rigid_body_component(gs, i, comp->rigid_body_use_gravity);
+        }
+
         if (comp->has_health) {
             push_health_component(gs, i, comp->health_current, comp->health_max);
         }
 
-        if (comp->has_collider) {
-            rect collider_box = collider_rect_from_half_extents(comp->collider_half_extents, 0.5f);
-            push_collider_component(gs, i, collider_box);
+        if (comp->has_box_collider) {
+            rect collider_box = collider_rect_from_half_extents(comp->box_collider_half_extents, 0.5f);
+            push_box_collider_component(gs, i, collider_box);
+        }
+
+        if (comp->has_capsule_collider) {
+            push_capsule_collider_component(gs, i,
+                                            comp->capsule_collider_radius,
+                                            comp->capsule_collider_half_height);
         }
 
         if (comp->has_mesh) {
@@ -735,17 +778,10 @@ static void build_scene_from_project(game_state *gs) {
                     resolve_project_animation_path(project, comp->animation_asset, &anim_path);
                 }
                 model_asset = register_scene_model_asset(gs, comp->mesh_model, model_path, anim_path);
-                kind = mesh_kind_from_string(comp->mesh_kind);
-                if (!comp->mesh_kind[0] && asset_key_is_floor(comp->mesh_model)) {
-                    kind = MESH_KIND_FLOOR;
-                }
                 if (model_asset >= 0) {
-                    push_mesh_component(gs, i, kind, model_asset);
+                    push_mesh_component(gs, i, model_asset);
                     if (gs->mesh_component_count > 0) {
                         gs->mesh_components[gs->mesh_component_count - 1].visible = comp->mesh_visible;
-                    }
-                    if (kind == MESH_KIND_SKINNED && gs->scene_primary_skinned_entity < 0) {
-                        gs->scene_primary_skinned_entity = i;
                     }
                 }
             }
@@ -758,9 +794,6 @@ static void build_scene_from_project(game_state *gs) {
                 ac->playing = comp->animation_playing;
                 ac->anim_time = comp->animation_time;
                 if (comp->animation_speed > 0.0f) ac->speed = comp->animation_speed;
-            }
-            if (kind == MESH_KIND_SKINNED && gs->scene_primary_skinned_entity < 0) {
-                gs->scene_primary_skinned_entity = i;
             }
         }
 
@@ -853,14 +886,21 @@ static void sync_primary_mesh3d_asset(game_state *gs) {
     scene_model_asset *asset = NULL;
     Mat4 entity_world;
     if (!gs || !primary) {
-        if (gs) gs->mesh3d.visible = 0;
+        if (gs) {
+            gs->mesh3d.visible = 0;
+            gs->mesh3d.primitive_count = 0;
+            gs->mesh3d.clip_count = 0;
+            gs->scene_primary_skinned_entity = -1;
+        }
         return;
     }
 
-    gs->scene_primary_skinned_entity = (primary->kind == MESH_KIND_SKINNED) ? primary->entity_index : -1;
     asset = find_scene_model_asset(gs, primary->model_asset_index);
     if (!asset || !asset->loaded || asset->model.mesh.primitive_count == 0) {
         gs->mesh3d.visible = 0;
+        gs->mesh3d.primitive_count = 0;
+        gs->mesh3d.clip_count = 0;
+        gs->scene_primary_skinned_entity = -1;
         return;
     }
 
@@ -868,13 +908,20 @@ static void sync_primary_mesh3d_asset(game_state *gs) {
     gs->mesh3d.model_transform = mat4_mul(entity_world, asset->model.armature_transform);
     gs->mesh3d.visible = primary->visible ? 1 : 0;
 
-    if (primary->kind != MESH_KIND_SKINNED || asset->model.skeleton.joint_count == 0) {
+    if (!asset->has_skeleton || asset->model.skeleton.joint_count == 0) {
         gs->mesh3d.primitive_count = 0;
+        gs->mesh3d.clip_count = 0;
+        gs->scene_primary_skinned_entity = -1;
         return;
     }
 
+    gs->scene_primary_skinned_entity = primary->entity_index;
+
     if (!ensure_mesh3d_pose_buffers(gs, asset->model.skeleton.joint_count)) {
         gs->mesh3d.visible = 0;
+        gs->mesh3d.primitive_count = 0;
+        gs->mesh3d.clip_count = 0;
+        gs->scene_primary_skinned_entity = -1;
         return;
     }
 
@@ -1007,6 +1054,8 @@ EXPORT void update_engine(game_state *gs) {
     gs->dbg.current_line_count = 0;
 
     update_input(gs);
+    apply_movement(gs);
+    collision(gs);
 
     sync_primary_mesh3d_asset(gs);
     sync_mesh_camera_from_components(gs);

@@ -63,15 +63,10 @@ typedef struct animator {
 } animator;
 
 typedef enum {
-    COLLIDER_BOX
+    COLLIDER_BOX,
+    COLLIDER_CAPSULE
 } collider_type;
 
-
-typedef enum {
-    MESH_KIND_SKINNED,
-    MESH_KIND_STATIC,
-    MESH_KIND_FLOOR,
-} mesh_kind;
 
 typedef struct collider {
     rect rect;
@@ -101,7 +96,6 @@ typedef struct parent_rotation_component {
 typedef struct mesh_component {
     int entity_index;
     int visible;
-    mesh_kind kind;
     int model_asset_index;
 } mesh_component;
 
@@ -125,6 +119,11 @@ typedef struct velocity_component {
     vec2 velocity;
 } velocity_component;
 
+typedef struct rigid_body_component {
+    int entity_index;
+    int use_gravity;
+} rigid_body_component;
+
 typedef struct health_component {
     int entity_index;
     float health;
@@ -135,7 +134,20 @@ typedef struct collider_component {
     int entity_index;
     rect rect;
     collider_type type;
+    float half_height;
 } collider_component;
+
+typedef struct box_collider_component {
+    int entity_index;
+    rect rect;
+} box_collider_component;
+
+typedef struct capsule_collider_component {
+    int entity_index;
+    float radius;
+    float half_height;
+    rect aabb;
+} capsule_collider_component;
 
 typedef struct animation_component {
     int entity_index;
@@ -275,12 +287,18 @@ typedef struct game_state {
   velocity_component *velocity_components;
   int velocity_component_count;
   int velocity_component_capacity;
+  rigid_body_component *rigid_body_components;
+  int rigid_body_component_count;
+  int rigid_body_component_capacity;
   health_component *health_components;
   int health_component_count;
   int health_component_capacity;
-  collider_component *collider_components;
-  int collider_component_count;
-  int collider_component_capacity;
+  box_collider_component *box_collider_components;
+  int box_collider_component_count;
+  int box_collider_component_capacity;
+  capsule_collider_component *capsule_collider_components;
+  int capsule_collider_component_count;
+  int capsule_collider_component_capacity;
   mesh_component *mesh_components;
   int mesh_component_count;
   int mesh_component_capacity;
@@ -301,6 +319,7 @@ typedef struct game_state {
   int scene_camera_entity;
   project_data project;
   int project_loaded;
+  char project_path[512];
 
   /* GPU device handle — set by externals, used by engine for asset loading */
   void *gpu_device;

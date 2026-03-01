@@ -358,8 +358,6 @@ static void parse_mesh_table(const toml_table_t *tbl, project_data *out) {
         out->scene_components[entity_index].mesh_visible = 1;
         copy_toml_string(entry, "model", out->scene_components[entity_index].mesh_model,
                          sizeof(out->scene_components[entity_index].mesh_model));
-        copy_toml_string(entry, "kind", out->scene_components[entity_index].mesh_kind,
-                         sizeof(out->scene_components[entity_index].mesh_kind));
         vb = toml_table_bool(entry, "visible");
         if (vb.ok) out->scene_components[entity_index].mesh_visible = vb.u.b ? 1 : 0;
     }
@@ -421,6 +419,27 @@ static void parse_velocity_table(const toml_table_t *tbl, project_data *out) {
     }
 }
 
+static void parse_rigid_body_table(const toml_table_t *tbl, project_data *out) {
+    int i, n;
+    if (!tbl || out->scene_entity_count <= 0) return;
+    n = toml_table_len(tbl);
+    for (i = 0; i < n; i++) {
+        int entity_index = -1;
+        toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
+        toml_value_t vb;
+        if (!entry) continue;
+        if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+
+        out->scene_components[entity_index].has_rigid_body = 1;
+        out->scene_components[entity_index].rigid_body_use_gravity = 1;
+
+        vb = toml_table_bool(entry, "use_gravity");
+        if (!vb.ok) vb = toml_table_bool(entry, "gravity");
+        if (!vb.ok) vb = toml_table_bool(entry, "enabled");
+        if (vb.ok) out->scene_components[entity_index].rigid_body_use_gravity = vb.u.b ? 1 : 0;
+    }
+}
+
 static void parse_health_table(const toml_table_t *tbl, project_data *out) {
     int i, n;
     if (!tbl || out->scene_entity_count <= 0) return;
@@ -447,7 +466,7 @@ static void parse_health_table(const toml_table_t *tbl, project_data *out) {
     }
 }
 
-static void parse_collider_table(const toml_table_t *tbl, project_data *out) {
+static void parse_box_collider_table(const toml_table_t *tbl, project_data *out) {
     int i, n;
     if (!tbl || out->scene_entity_count <= 0) return;
     n = toml_table_len(tbl);
@@ -457,19 +476,55 @@ static void parse_collider_table(const toml_table_t *tbl, project_data *out) {
         if (!entry) continue;
         if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
 
-        out->scene_components[entity_index].has_collider = 1;
-        out->scene_components[entity_index].collider_half_extents[0] = 0.5f;
-        out->scene_components[entity_index].collider_half_extents[1] = 0.5f;
-        out->scene_components[entity_index].collider_half_extents[2] = 0.5f;
-
-        copy_toml_string(entry, "type", out->scene_components[entity_index].collider_type,
-                         sizeof(out->scene_components[entity_index].collider_type));
-        if (!out->scene_components[entity_index].collider_type[0]) {
-            snprintf(out->scene_components[entity_index].collider_type,
-                     sizeof(out->scene_components[entity_index].collider_type), "box");
-        }
+        out->scene_components[entity_index].has_box_collider = 1;
+        out->scene_components[entity_index].box_collider_half_extents[0] = 0.5f;
+        out->scene_components[entity_index].box_collider_half_extents[1] = 0.5f;
+        out->scene_components[entity_index].box_collider_half_extents[2] = 0.5f;
         read_vec3(toml_table_array(entry, "half_extents"),
-                  out->scene_components[entity_index].collider_half_extents);
+                  out->scene_components[entity_index].box_collider_half_extents);
+    }
+}
+
+static void parse_capsule_collider_table(const toml_table_t *tbl, project_data *out) {
+    int i, n;
+    if (!tbl || out->scene_entity_count <= 0) return;
+    n = toml_table_len(tbl);
+    for (i = 0; i < n; i++) {
+        int entity_index = -1;
+        toml_table_t *entry = indexed_subtable(tbl, i, &entity_index);
+        toml_value_t vd;
+        int has_radius = 0;
+        int has_half_height = 0;
+        if (!entry) continue;
+        if (entity_index < 0 || entity_index >= out->scene_entity_count) continue;
+
+        out->scene_components[entity_index].has_capsule_collider = 1;
+        out->scene_components[entity_index].capsule_collider_radius = 0.5f;
+        out->scene_components[entity_index].capsule_collider_half_height = 0.5f;
+
+        vd = toml_table_double(entry, "radius");
+        if (vd.ok) {
+            out->scene_components[entity_index].capsule_collider_radius = (float)vd.u.d;
+            has_radius = 1;
+        }
+
+        vd = toml_table_double(entry, "half_height");
+        if (vd.ok) {
+            out->scene_components[entity_index].capsule_collider_half_height = (float)vd.u.d;
+            has_half_height = 1;
+        }
+
+        if (!has_half_height) {
+            float he[3] = {0.5f, 0.5f, 0.5f};
+            read_vec3(toml_table_array(entry, "half_extents"), he);
+            if (!has_radius) {
+                out->scene_components[entity_index].capsule_collider_radius = he[0] > 0.0f ? he[0] : 0.5f;
+            }
+            out->scene_components[entity_index].capsule_collider_half_height =
+                he[1] > out->scene_components[entity_index].capsule_collider_radius
+                ? he[1] - out->scene_components[entity_index].capsule_collider_radius
+                : out->scene_components[entity_index].capsule_collider_radius;
+        }
     }
 }
 
@@ -513,8 +568,11 @@ static void parse_ecs_component_tables(const toml_table_t *root, project_data *o
     parse_mesh_table(toml_table_table(root, "meshes"), out);
     parse_animation_table(toml_table_table(root, "animations"), out);
     parse_velocity_table(toml_table_table(root, "velocities"), out);
+    parse_rigid_body_table(toml_table_table(root, "rigid_bodies"), out);
     parse_health_table(toml_table_table(root, "health"), out);
-    parse_collider_table(toml_table_table(root, "colliders"), out);
+    parse_box_collider_table(toml_table_table(root, "box_colliders"), out);
+    parse_capsule_collider_table(toml_table_table(root, "capsule_colliders"), out);
+    parse_box_collider_table(toml_table_table(root, "colliders"), out); /* legacy */
     parse_camera_table(toml_table_table(root, "cameras"), out);
 }
 
