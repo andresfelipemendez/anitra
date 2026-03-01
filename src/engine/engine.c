@@ -1170,6 +1170,37 @@ static void sync_primary_mesh3d_asset(game_state *gs) {
     gs->loaded_model = asset->model;
 }
 
+static void build_mesh_draw_commands(game_state *gs) {
+    int i;
+    if (!gs || !gs->dl.meshes) return;
+
+    gs->dl.mesh_count = 0;
+    if (!gs->scene_entities || !gs->mesh_components) return;
+
+    for (i = 0; i < gs->mesh_component_count; i++) {
+        mesh_component *mc = &gs->mesh_components[i];
+        scene_model_asset *asset;
+        Mat4 world;
+        Mat4 model;
+        mesh_draw_command *cmd;
+
+        if (!mc->visible) continue;
+        if (mc->entity_index < 0 || mc->entity_index >= gs->scene_entity_count) continue;
+        asset = find_scene_model_asset(gs, mc->model_asset_index);
+        if (!asset || !asset->loaded || asset->model.mesh.primitive_count == 0) continue;
+        if (gs->dl.mesh_count >= gs->dl.mesh_capacity) break;
+
+        world = resolve_world_transform(gs, mc->entity_index);
+        model = mat4_mul(world, asset->model.armature_transform);
+
+        cmd = &gs->dl.meshes[gs->dl.mesh_count++];
+        cmd->model_asset_index = mc->model_asset_index;
+        cmd->use_skinned_bones = (asset->has_skeleton &&
+                                  mc->entity_index == gs->scene_primary_skinned_entity) ? 1 : 0;
+        memcpy(cmd->model, model.m, sizeof(float) * 16);
+    }
+}
+
 void update_input(game_state* gs) {
     int attack_pressed;
     const float camera_speed = 300.0f;
@@ -1373,6 +1404,7 @@ EXPORT void update_engine(game_state *gs) {
 
     gs->dl.sprite_count = 0;
     gs->dl.line_count = 0;
+    gs->dl.mesh_count = 0;
     gs->dbg.current_line_count = 0;
 
     if (gs->editor_play_mode) {
@@ -1384,6 +1416,7 @@ EXPORT void update_engine(game_state *gs) {
 
     sync_primary_mesh3d_asset(gs);
     sync_mesh_camera_from_components(gs);
+    build_mesh_draw_commands(gs);
 
     if (gs->editor_play_mode) {
         if (gs->animation_components) {

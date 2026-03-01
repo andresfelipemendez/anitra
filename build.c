@@ -754,7 +754,7 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " src/externals/externals.c"
+        " src/externals/externals_runtime.c src/externals/externals.c"
         " " DEBUG_DIR "/SDL3.def"
         " " DEBUG_DIR "/SDL3_shadercross.def"
         " " DEBUG_DIR "/tracy.def"
@@ -769,7 +769,7 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " src/externals/externals.c"
+        " src/externals/externals_runtime.c src/externals/externals.c"
         " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -ltracy -lharfbuzz"
         " -lpthread -lm");
 #else
@@ -780,7 +780,7 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " src/externals/externals.c"
+        " src/externals/externals_runtime.c src/externals/externals.c"
         " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -ltracy -lharfbuzz"
         " -lpthread -ldl -lm");
 #endif

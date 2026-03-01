@@ -3,6 +3,7 @@
 
 #define MAX_DRAW_COMMANDS 256
 #define DRAW_LIST_MAX_DEBUG_LINES 128
+#define DRAW_LIST_MAX_MESH_COMMANDS 256
 
 typedef struct draw_command {
     int texture_id;
@@ -18,6 +19,12 @@ typedef struct debug_line_command {
     float r, g, b;
 } debug_line_command;
 
+typedef struct mesh_draw_command {
+    int model_asset_index;
+    int use_skinned_bones;
+    float model[16];
+} mesh_draw_command;
+
 typedef struct draw_list {
     draw_command *sprites;
     int sprite_count;
@@ -25,6 +32,9 @@ typedef struct draw_list {
     debug_line_command *lines;
     int line_count;
     int line_capacity;
+    mesh_draw_command *meshes;
+    int mesh_count;
+    int mesh_capacity;
     float view_matrix[16];
     float ortho_projection[16];
 } draw_list;

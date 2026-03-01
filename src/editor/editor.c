@@ -1,7 +1,6 @@
 #include <game.h>
 #include <export.h>
 #include <math3d.h>
-#include "dock.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdio.h>
@@ -2118,6 +2117,10 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->scene_tree_drag_entity = -1;
     e->scene_tree_drop_target = -1;
     e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+    e->project_browser_mouse_x = -10000.0f;
+    e->project_browser_mouse_y = -10000.0f;
+    e->project_browser_scroll_y = 0.0f;
+    e->project_browser_mouse_down = 0;
     e->initialized = 1;
 
     /* Create profiler Clay context (one-time, backed by editor_arena).
@@ -2155,6 +2158,18 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             Clay_ErrorHandler err = {0};
             e->inspector_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){420, 700}, err);
             Clay_SetCurrentContext((Clay_Context *)e->inspector_clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+        }
+    }
+
+    if (!e->project_browser_clay_ctx && es->editor_arena) {
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_project_browser");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->project_browser_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){520, 720}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->project_browser_clay_ctx);
             Clay_SetMeasureTextFunction(profiler_measure_text, e);
         }
     }
@@ -2506,6 +2521,100 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     }
 }
 
+static const char *project_browser_path_basename(const char *path) {
+    const char *slash;
+    const char *backslash;
+    const char *last;
+    if (!path || !path[0]) return "";
+    slash = strrchr(path, '/');
+    backslash = strrchr(path, '\\');
+    last = slash;
+    if (backslash && (!last || backslash > last)) last = backslash;
+    return last ? (last + 1) : path;
+}
+
+static void project_browser_emit_asset_row(int row_id,
+                                           const char *key,
+                                           const char *path,
+                                           Clay_Color swatch) {
+    const char *display_key = (key && key[0]) ? key : "(unnamed)";
+    const char *display_path = (path && path[0]) ? path : "(missing path)";
+    const char *file_name = project_browser_path_basename(display_path);
+    Clay_String text;
+
+    CLAY(CLAY_IDI("PBAssetRow", row_id), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+            .padding = CLAY_PADDING_ALL(8),
+            .childGap = 10,
+            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER },
+            .layoutDirection = CLAY_LEFT_TO_RIGHT
+        },
+        .backgroundColor = Clay_Hovered() ? ((Clay_Color){52, 60, 78, 255})
+                                          : ((Clay_Color){40, 48, 64, 255}),
+        .cornerRadius = CLAY_CORNER_RADIUS(4)
+    }) {
+        CLAY(CLAY_IDI("PBAssetSwatch", row_id), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIXED(38), CLAY_SIZING_FIXED(38) }
+            },
+            .backgroundColor = swatch,
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {}
+
+        CLAY(CLAY_IDI("PBAssetMeta", row_id), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                .childGap = 2,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            }
+        }) {
+            text = (Clay_String){false, (int32_t)strlen(display_key), display_key};
+            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {228, 234, 242, 255}, .fontSize = 16}));
+
+            text = (Clay_String){false, (int32_t)strlen(file_name), file_name};
+            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {190, 200, 220, 255}, .fontSize = 15}));
+
+            text = (Clay_String){false, (int32_t)strlen(display_path), display_path};
+            CLAY_TEXT(text, CLAY_TEXT_CONFIG({.textColor = {150, 162, 186, 255}, .fontSize = 14}));
+        }
+    }
+}
+
+static void project_browser_emit_asset_group(const char *title,
+                                             const char (*keys)[64],
+                                             const char (*paths)[256],
+                                             int count,
+                                             Clay_Color swatch,
+                                             int *row_id) {
+    int i;
+    int group_id;
+    Clay_String header = { false, (int32_t)strlen(title), title };
+    if (!row_id) return;
+    group_id = *row_id;
+    (*row_id)++;
+
+    CLAY(CLAY_IDI("PBGroup", group_id), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+            .childGap = 6,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        }
+    }) {
+        CLAY_TEXT(header, CLAY_TEXT_CONFIG({.textColor = {182, 208, 244, 255}, .fontSize = 16}));
+
+        if (count <= 0) {
+            Clay_String empty = CLAY_STRING("(none)");
+            CLAY_TEXT(empty, CLAY_TEXT_CONFIG({.textColor = {130, 142, 166, 255}, .fontSize = 15}));
+        } else {
+            for (i = 0; i < count; i++) {
+                project_browser_emit_asset_row(*row_id, keys[i], paths[i], swatch);
+                (*row_id)++;
+            }
+        }
+    }
+}
+
 static void scene_tree_layout(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
@@ -2641,6 +2750,114 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     }
 
     e->scene_tree_click = 0;
+}
+
+static void project_browser_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    Clay_Context *ctx = (Clay_Context *)e->project_browser_clay_ctx;
+    int browser_win_idx;
+    int browser_node;
+    int win_w, win_h;
+    int row_id = 0;
+    int total_assets;
+    static char title_buf[128];
+    Clay_RenderCommandArray commands;
+
+    if (!ctx) {
+        e->project_browser_cmd_count = 0;
+        e->project_browser_cmd_array = NULL;
+        return;
+    }
+
+    Clay_SetCurrentContext(ctx);
+    browser_node = dock_find_leaf_for_panel_global(d, PANEL_ASSETS, &browser_win_idx);
+    if (browser_node < 0) {
+        e->project_browser_cmd_count = 0;
+        e->project_browser_cmd_array = NULL;
+        return;
+    }
+    {
+        DockNode *n = &d->nodes[browser_node];
+        win_w = (int)n->w;
+        win_h = (int)(n->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    }
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+
+    {
+        Clay_Vector2 mpos = {e->project_browser_mouse_x, e->project_browser_mouse_y};
+        Clay_Vector2 sdelta = {0, e->project_browser_scroll_y};
+        Clay_SetPointerState(mpos, (bool)e->project_browser_mouse_down);
+        Clay_UpdateScrollContainers(true, sdelta, gs->dt);
+        e->project_browser_scroll_y = 0.0f;
+    }
+
+    total_assets = gs->project.model_count +
+                   gs->project.animation_count +
+                   gs->project.dungeon_piece_count +
+                   gs->project.sprite_count;
+    snprintf(title_buf, sizeof(title_buf), "Project Browser  (%d assets)", total_assets);
+
+    Clay_BeginLayout();
+    CLAY(CLAY_ID("PBRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 8,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+        Clay_String title = { false, (int32_t)strlen(title_buf), title_buf };
+        CLAY_TEXT(title, CLAY_TEXT_CONFIG({.textColor = {220, 226, 236, 255}, .fontSize = 16}));
+
+        CLAY(CLAY_ID("PBList"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .childGap = 10,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+        }) {
+            CLAY(CLAY_ID("PBListContent"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .childGap = 12,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                }
+            }) {
+                project_browser_emit_asset_group("Models",
+                                                 gs->project.model_keys,
+                                                 gs->project.model_paths,
+                                                 gs->project.model_count,
+                                                 (Clay_Color){94, 138, 216, 255},
+                                                 &row_id);
+                project_browser_emit_asset_group("Animations",
+                                                 gs->project.animation_keys,
+                                                 gs->project.animation_paths,
+                                                 gs->project.animation_count,
+                                                 (Clay_Color){198, 138, 84, 255},
+                                                 &row_id);
+                project_browser_emit_asset_group("Dungeon Pieces",
+                                                 gs->project.dungeon_piece_keys,
+                                                 gs->project.dungeon_piece_paths,
+                                                 gs->project.dungeon_piece_count,
+                                                 (Clay_Color){116, 172, 118, 255},
+                                                 &row_id);
+                project_browser_emit_asset_group("Sprites",
+                                                 gs->project.sprite_keys,
+                                                 gs->project.sprite_paths,
+                                                 gs->project.sprite_count,
+                                                 (Clay_Color){166, 132, 204, 255},
+                                                 &row_id);
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    e->project_browser_cmd_count = commands.length;
+    e->project_browser_cmd_array = commands.internalArray;
 }
 
 static void inspector_layout(game_state *gs, editor_state *es) {
@@ -3300,6 +3517,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     }
     profiler_layout(gs, es);
     scene_tree_layout(gs, es);
+    project_browser_layout(gs, es);
     inspector_layout(gs, es);
     menu_bar_layout(gs, es);
     editor_toolbar_layout(gs, es);
@@ -3794,7 +4012,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         e->gizmo_drag_mode = 0;
     }
 
-    /* ── Profiler + Scene Tree input: track mouse position + scroll for Clay containers ── */
+    /* ── Profiler + Scene Tree + Project Browser input for Clay containers ── */
     if (ev->type == SDL_EVENT_MOUSE_MOTION) {
         evwin = SDL_GetWindowFromEvent(ev);
         {
@@ -3809,6 +4027,13 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             } else {
                 e->scene_tree_mouse_x = -10000.0f;
                 e->scene_tree_mouse_y = -10000.0f;
+            }
+            if (panel_event_hit(d, PANEL_ASSETS, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
+                e->project_browser_mouse_x = lx;
+                e->project_browser_mouse_y = ly;
+            } else {
+                e->project_browser_mouse_x = -10000.0f;
+                e->project_browser_mouse_y = -10000.0f;
             }
         }
     }
@@ -3847,6 +4072,10 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->scene_tree_scroll_y += ev->wheel.y * 3.0f;
                 consumed = 1;
             }
+            if (panel_event_hit(d, PANEL_ASSETS, evwin, mx, my, NULL, NULL)) {
+                e->project_browser_scroll_y += ev->wheel.y * 3.0f;
+                consumed = 1;
+            }
             if (consumed) return 1;
         }
     }
@@ -3869,11 +4098,19 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->scene_tree_mouse_y = ly;
                 e->scene_tree_click = 1;
             }
+
+            e->project_browser_mouse_down = panel_event_hit(d, PANEL_ASSETS, evwin,
+                ev->button.x, ev->button.y, &lx, &ly);
+            if (e->project_browser_mouse_down) {
+                e->project_browser_mouse_x = lx;
+                e->project_browser_mouse_y = ly;
+            }
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT) {
         e->prof_mouse_down = 0;
         e->scene_tree_mouse_down = 0;
+        e->project_browser_mouse_down = 0;
     }
 
     return 0;

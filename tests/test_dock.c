@@ -1,8 +1,8 @@
 /* ── Dock system unit tests ────────────────────────────────────────────────
    Standalone test binary — no SDL, no GPU, no arena needed.
-   dock.h functions are static inline and operate on plain structs.
+   Dock helpers are defined inline in editor/editor.h.
 
-   Build:  cl /Isrc/editor tests/test_dock.c /Fe:build/test_dock.exe
+   Build:  cl /Isrc /Isrc/editor tests/test_dock.c /Fe:build/test_dock.exe
    Run:    build/test_dock.exe
    ────────────────────────────────────────────────────────────────────────── */
 
@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dock.h"
+#include "editor.h"
 
 /* ── Minimal test harness ─────────────────────────────────────────────── */
 
