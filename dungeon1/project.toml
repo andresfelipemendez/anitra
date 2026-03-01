@@ -95,7 +95,34 @@ list = [
   "floor_31",
   "floor_32",
   "floor_33",
-  "player_mesh"
+  "player_mesh",
+  "wall_s0",
+  "wall_s1",
+  "wall_s2",
+  "wall_s3",
+  "wall_n0",
+  "wall_n1",
+  "wall_n2",
+  "wall_n3",
+  "wall_w0",
+  "wall_w1",
+  "wall_w2",
+  "wall_w3",
+  "wall_e0",
+  "wall_e1",
+  "wall_e2",
+  "wall_e3",
+  "corner_sw",
+  "corner_se",
+  "corner_nw",
+  "corner_ne",
+  "torch_0",
+  "torch_1",
+  "barrel_0",
+  "barrel_1",
+  "chest_0",
+  "column_0",
+  "column_1"
 ]
 
 [transforms]
@@ -119,11 +146,61 @@ list = [
 "17" = { position = [2.0000, 0.0000, 6.0000] }
 "18" = { position = [6.0000, 0.0000, 6.0000] }
 "19" = { position = [0.0000, -0.8563, 0.0000] }
+"20" = { position = [-6.0000, 0.0000, -8.0000] }
+"21" = { position = [-2.0000, 0.0000, -8.0000] }
+"22" = { position = [2.0000, 0.0000, -8.0000] }
+"23" = { position = [6.0000, 0.0000, -8.0000] }
+"24" = { position = [-6.0000, 0.0000, 8.0000] }
+"25" = { position = [-2.0000, 0.0000, 8.0000] }
+"26" = { position = [2.0000, 0.0000, 8.0000] }
+"27" = { position = [6.0000, 0.0000, 8.0000] }
+"28" = { position = [-8.0000, 0.0000, -6.0000] }
+"29" = { position = [-8.0000, 0.0000, -2.0000] }
+"30" = { position = [-8.0000, 0.0000, 2.0000] }
+"31" = { position = [-8.0000, 0.0000, 6.0000] }
+"32" = { position = [8.0000, 0.0000, -6.0000] }
+"33" = { position = [8.0000, 0.0000, -2.0000] }
+"34" = { position = [8.0000, 0.0000, 2.0000] }
+"35" = { position = [8.0000, 0.0000, 6.0000] }
+"36" = { position = [-8.0000, 0.0000, -8.0000] }
+"37" = { position = [8.0000, 0.0000, -8.0000] }
+"38" = { position = [-8.0000, 0.0000, 8.0000] }
+"39" = { position = [8.0000, 0.0000, 8.0000] }
+"40" = { position = [-7.5000, 2.0000, 0.0000] }
+"41" = { position = [7.5000, 2.0000, 0.0000] }
+"42" = { position = [-5.0000, 0.0000, 6.0000] }
+"43" = { position = [-4.0000, 0.0000, 5.5000] }
+"44" = { position = [5.0000, 0.0000, 6.0000] }
+"45" = { position = [-2.0000, 0.0000, 0.0000] }
+"46" = { position = [2.0000, 0.0000, 0.0000] }
 
 [rotations]
 "0" = { y = -180.0000 }
 "1" = { y = 0.0000 }
 "2" = { y = 0.0000 }
+"20" = { y = 180.0000 }
+"21" = { y = 180.0000 }
+"22" = { y = 180.0000 }
+"23" = { y = 180.0000 }
+"24" = { y = 0.0000 }
+"25" = { y = 0.0000 }
+"26" = { y = 0.0000 }
+"27" = { y = 0.0000 }
+"28" = { y = 90.0000 }
+"29" = { y = 90.0000 }
+"30" = { y = 90.0000 }
+"31" = { y = 90.0000 }
+"32" = { y = -90.0000 }
+"33" = { y = -90.0000 }
+"34" = { y = -90.0000 }
+"35" = { y = -90.0000 }
+"36" = { y = 180.0000 }
+"37" = { y = 270.0000 }
+"38" = { y = 90.0000 }
+"39" = { y = 0.0000 }
+"40" = { y = 90.0000 }
+"41" = { y = -90.0000 }
+"44" = { y = 180.0000 }
 
 [parent_transform]
 "1" = { parent = 0 }
@@ -144,6 +221,33 @@ list = [
 "17" = { parent = 2 }
 "18" = { parent = 2 }
 "19" = { parent = 0 }
+"20" = { parent = 2 }
+"21" = { parent = 2 }
+"22" = { parent = 2 }
+"23" = { parent = 2 }
+"24" = { parent = 2 }
+"25" = { parent = 2 }
+"26" = { parent = 2 }
+"27" = { parent = 2 }
+"28" = { parent = 2 }
+"29" = { parent = 2 }
+"30" = { parent = 2 }
+"31" = { parent = 2 }
+"32" = { parent = 2 }
+"33" = { parent = 2 }
+"34" = { parent = 2 }
+"35" = { parent = 2 }
+"36" = { parent = 2 }
+"37" = { parent = 2 }
+"38" = { parent = 2 }
+"39" = { parent = 2 }
+"40" = { parent = 2 }
+"41" = { parent = 2 }
+"42" = { parent = 2 }
+"43" = { parent = 2 }
+"44" = { parent = 2 }
+"45" = { parent = 2 }
+"46" = { parent = 2 }
 
 [meshes]
 "3" = { model = "floor_tile_large", visible = true }
@@ -163,6 +267,33 @@ list = [
 "17" = { model = "floor_tile_large", visible = true }
 "18" = { model = "floor_tile_large", visible = true }
 "19" = { model = "knight", visible = true }
+"20" = { model = "wall", visible = true }
+"21" = { model = "wall_doorway", visible = true }
+"22" = { model = "wall", visible = true }
+"23" = { model = "wall_cracked", visible = true }
+"24" = { model = "wall_shelves", visible = true }
+"25" = { model = "wall", visible = true }
+"26" = { model = "wall_arched", visible = true }
+"27" = { model = "wall", visible = true }
+"28" = { model = "wall", visible = true }
+"29" = { model = "wall_window_closed", visible = true }
+"30" = { model = "wall", visible = true }
+"31" = { model = "wall_gated", visible = true }
+"32" = { model = "wall", visible = true }
+"33" = { model = "wall", visible = true }
+"34" = { model = "wall_broken", visible = true }
+"35" = { model = "wall", visible = true }
+"36" = { model = "wall_corner", visible = true }
+"37" = { model = "wall_corner", visible = true }
+"38" = { model = "wall_corner", visible = true }
+"39" = { model = "wall_corner", visible = true }
+"40" = { model = "torch_mounted", visible = true }
+"41" = { model = "torch_mounted", visible = true }
+"42" = { model = "barrel_large", visible = true }
+"43" = { model = "barrel_small", visible = true }
+"44" = { model = "chest_gold", visible = true }
+"45" = { model = "column", visible = true }
+"46" = { model = "column", visible = true }
 
 [animations]
 "19" = { asset = "general", playing = true, clip = 6, speed = 1.0000 }
@@ -196,6 +327,31 @@ list = [
 "16" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
 "17" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
 "18" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
+"20" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"21" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"22" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"23" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"24" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"25" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"26" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"27" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"28" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"29" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"30" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"31" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"32" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"33" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"34" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"35" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"36" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
+"37" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
+"38" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
+"39" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
+"42" = { type = "box", half_extents = [0.4000, 0.5000, 0.4000] }
+"43" = { type = "box", half_extents = [0.3000, 0.4000, 0.3000] }
+"44" = { type = "box", half_extents = [0.5000, 0.4000, 0.4000] }
+"45" = { type = "box", half_extents = [0.3000, 2.0000, 0.3000] }
+"46" = { type = "box", half_extents = [0.3000, 2.0000, 0.3000] }
 
 [capsule_colliders]
 "0" = { radius = 0.3800, half_height = 0.4600 }

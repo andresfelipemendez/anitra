@@ -147,6 +147,7 @@ typedef struct collider_component {
 typedef struct box_collider_component {
     int entity_index;
     rect rect;
+    float half_height;
 } box_collider_component;
 
 typedef struct capsule_collider_component {

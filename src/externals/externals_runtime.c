@@ -3066,6 +3066,7 @@ static void ensure_panel_textures(dock_state *d)
 
 EXPORT void update_externals(struct memory *m) {
     dock_state *dock = (dock_state *)m->editor.dock;
+    static int previous_editor_play_mode = -1;
     TracyCZoneN(ctx_update, "update_externals", 1);
     // --- Timing ---
     double now = (double)SDL_GetTicks() / 1000.0;
@@ -3153,6 +3154,21 @@ EXPORT void update_externals(struct memory *m) {
         }
         TracyCZoneEnd(ctx_poll);
     }
+
+    /* Leaving Play mode: rebuild scene from project so runtime mutations are discarded. */
+    if (previous_editor_play_mode < 0) {
+        previous_editor_play_mode = m->game.editor_play_mode ? 1 : 0;
+    }
+    if (previous_editor_play_mode == 1 && !m->game.editor_play_mode) {
+        if (g_init) {
+            g_init(&m->game);
+            m->game.editor_play_mode = 0;
+            m->game.input.horizontal = 0.0f;
+            m->game.input.vertical = 0.0f;
+            m->game.input.input_mask = 0;
+        }
+    }
+    previous_editor_play_mode = m->game.editor_play_mode ? 1 : 0;
 
     // --- Input ---
     FRAME_CPU_ZONE_BEGIN("ext_input_update");

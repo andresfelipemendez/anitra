@@ -801,7 +801,7 @@ static void clear_scene_storage(game_state *gs) {
     gs->animation_component_count = 0;
     gs->animation_transition_count = 0;
     gs->camera_component_count = 0;
-    gs->scene_model_asset_count = 0;
+    /* Keep registered model assets so scene resets can reuse loaded meshes/animations. */
     gs->scene_primary_skinned_entity = -1;
     gs->scene_camera_entity = -1;
 }
@@ -896,13 +896,14 @@ static void push_health_component(game_state *gs, int entity_index, float health
     gs->health_components[i].max_health = max_health;
 }
 
-static void push_box_collider_component(game_state *gs, int entity_index, rect box) {
+static void push_box_collider_component(game_state *gs, int entity_index, rect box, float half_height) {
     int i;
     if (!gs || !gs->box_collider_components) return;
     if (gs->box_collider_component_count >= gs->box_collider_component_capacity) return;
     i = gs->box_collider_component_count++;
     gs->box_collider_components[i].entity_index = entity_index;
     gs->box_collider_components[i].rect = box;
+    gs->box_collider_components[i].half_height = half_height;
 }
 
 static void push_capsule_collider_component(game_state *gs, int entity_index,
@@ -1121,7 +1122,8 @@ static void build_scene_from_project(game_state *gs) {
 
         if (comp->has_box_collider) {
             rect collider_box = collider_rect_from_half_extents(comp->box_collider_half_extents, 0.5f);
-            push_box_collider_component(gs, i, collider_box);
+            float box_hh = comp->box_collider_half_extents[1] > 0.0f ? comp->box_collider_half_extents[1] : 0.5f;
+            push_box_collider_component(gs, i, collider_box, box_hh);
         }
 
         if (comp->has_capsule_collider) {

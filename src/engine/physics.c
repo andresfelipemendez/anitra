@@ -391,7 +391,7 @@ void collision(game_state* gs) {
     actor_world = resolve_world_position(gs, actor.entity_index);
 
     predicted_player_pos.x = actor_world.x + (actor.velocity->velocity.x * gs->dt);
-    predicted_player_pos.y = actor_world.y + (actor.velocity->velocity.y * gs->dt);
+    predicted_player_pos.y = actor_world.z + (actor.velocity->velocity.z * gs->dt);
     sync_collider_to_pos(actor.box_collider, actor.capsule_collider, predicted_player_pos);
 
     debug_draw_rect(&gs->dbg, predicted_player_pos,
@@ -400,7 +400,7 @@ void collision(game_state* gs) {
                     DEBUG_BLUE);
 
     player_pos.x = actor_world.x;
-    player_pos.y = actor_world.y;
+    player_pos.y = actor_world.z;
     draw_center_cross(&gs->dbg, player_pos, cross_size, DEBUG_RED);
 
     player_hitbox_active = animator_hitbox_active(pa);
@@ -422,7 +422,7 @@ void collision(game_state* gs) {
         Vec3 target_world = resolve_world_position(gs, target->entity_index);
 
         sync_collider_to_pos(target->box_collider, target->capsule_collider,
-                             (vec2){target_world.x, target_world.y});
+                             (vec2){target_world.x, target_world.z});
 
         if (player_hitbox_active && bbox_collide(&player_hit_box,
             collider_rect_ptr(target->box_collider, target->capsule_collider))) {
@@ -457,12 +457,22 @@ void collision(game_state* gs) {
                         color);
 
         enemy_pos.x = target_world.x;
-        enemy_pos.y = target_world.y;
+        enemy_pos.y = target_world.z;
         draw_center_cross(&gs->dbg, enemy_pos, cross_size, DEBUG_RED);
     }
 
     sync_collider_to_pos(actor.box_collider, actor.capsule_collider,
-                         (vec2){actor_world.x, actor_world.y});
+                         (vec2){actor_world.x, actor_world.z});
+}
+
+static float collider_half_height(box_collider_component *bc, capsule_collider_component *cc) {
+    if (cc) return cc->half_height;
+    if (bc) return bc->half_height;
+    return 0.5f;
+}
+
+static int y_ranges_overlap(float y1, float hh1, float y2, float hh2) {
+    return (y1 - hh1 < y2 + hh2) && (y1 + hh1 > y2 - hh2);
 }
 
 void apply_movement(game_state* gs) {
@@ -470,49 +480,83 @@ void apply_movement(game_state* gs) {
     collider_target_view obstacles[PHYSICS_QUERY_MAX_RESULTS];
     int obstacle_count;
     int i;
-    vec2 new_pos;
-    int collision_detected = 0;
+    int horizontal_collision = 0;
+    int vertical_collision = 0;
     Vec3 actor_world;
     Vec3 actor_parent_offset;
+    float actor_hh;
     const float gravity = -18.0f;
     if (!gs || !gs->scene_entities || gs->scene_entity_count <= 0) return;
 
     if (!query_primary_actor(gs, &actor)) return;
     actor_world = resolve_world_position(gs, actor.entity_index);
     actor_parent_offset = resolve_parent_world_offset(gs, actor.entity_index);
+    actor_hh = collider_half_height(actor.box_collider, actor.capsule_collider);
 
     if (actor.rigid_body && actor.rigid_body->use_gravity) {
         actor.velocity->velocity.y += gravity * gs->dt;
     }
 
-    new_pos = (vec2){
-        actor_world.x + actor.velocity->velocity.x * gs->dt,
-        actor_world.y + actor.velocity->velocity.y * gs->dt
-    };
-
-    sync_collider_to_pos(actor.box_collider, actor.capsule_collider, new_pos);
-
     obstacle_count = query_movement_obstacles(gs, actor.entity_index,
                                               obstacles, PHYSICS_QUERY_MAX_RESULTS);
-    for (i = 0; i < obstacle_count; i++) {
-        collider_target_view *obstacle = &obstacles[i];
-        Vec3 obstacle_world = resolve_world_position(gs, obstacle->entity_index);
-        sync_collider_to_pos(obstacle->box_collider, obstacle->capsule_collider,
-                             (vec2){obstacle_world.x, obstacle_world.y});
 
-        if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
-                         collider_rect_ptr(obstacle->box_collider, obstacle->capsule_collider))) {
-            collision_detected = 1;
-            break;
+    /* Pass 1: Horizontal collision — predict XZ, check 3D AABB */
+    {
+        vec2 predicted_xz = {
+            actor_world.x + actor.velocity->velocity.x * gs->dt,
+            actor_world.z + actor.velocity->velocity.z * gs->dt
+        };
+        sync_collider_to_pos(actor.box_collider, actor.capsule_collider, predicted_xz);
+
+        for (i = 0; i < obstacle_count; i++) {
+            collider_target_view *ob = &obstacles[i];
+            Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
+            float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
+
+            sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
+                                 (vec2){ob_world.x, ob_world.z});
+
+            if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
+                             collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
+                y_ranges_overlap(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
+                horizontal_collision = 1;
+                break;
+            }
         }
     }
 
-    /* Horizontal movement (xz) always applies — collision only gates vertical */
-    actor.transform->position.x += actor.velocity->velocity.x * gs->dt;
-    actor.transform->position.z += actor.velocity->velocity.z * gs->dt;
+    /* Pass 2: Vertical collision — current XZ, predict Y */
+    {
+        vec2 current_xz = { actor_world.x, actor_world.z };
+        float predicted_y = actor_world.y + actor.velocity->velocity.y * gs->dt;
 
-    if (!collision_detected) {
-        actor.transform->position.y = new_pos.y - actor_parent_offset.y;
+        sync_collider_to_pos(actor.box_collider, actor.capsule_collider, current_xz);
+
+        for (i = 0; i < obstacle_count; i++) {
+            collider_target_view *ob = &obstacles[i];
+            Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
+            float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
+
+            sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
+                                 (vec2){ob_world.x, ob_world.z});
+
+            if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
+                             collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
+                y_ranges_overlap(predicted_y, actor_hh, ob_world.y, ob_hh)) {
+                vertical_collision = 1;
+                break;
+            }
+        }
+    }
+
+    if (!horizontal_collision) {
+        actor.transform->position.x += actor.velocity->velocity.x * gs->dt;
+        actor.transform->position.z += actor.velocity->velocity.z * gs->dt;
+    }
+
+    if (!vertical_collision) {
+        float new_y = actor_world.y + actor.velocity->velocity.y * gs->dt;
+        actor.transform->position.y = new_y - actor_parent_offset.y;
     } else if (actor.velocity->velocity.y < 0.0f) {
         actor.velocity->velocity.y = 0.0f;
     }
