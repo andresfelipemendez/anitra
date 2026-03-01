@@ -191,12 +191,12 @@ static game_state *setup_game_state(void) {
     gs->editor_play_mode = 1;
 
     /* Allocate minimal component arrays */
-    gs->scene_entity_capacity = 8;
+    gs->scene_entity_capacity = 32;
     gs->scene_entities = (entity *)arena_alloc(gs->gameplay,
-        (uint32_t)(8 * sizeof(entity)), 8, "entities");
+        (uint32_t)(32 * sizeof(entity)), 8, "entities");
     gs->mesh_components = (mesh_component *)arena_alloc(gs->gameplay,
-        (uint32_t)(8 * sizeof(mesh_component)), 8, "mesh_comps");
-    gs->mesh_component_capacity = 8;
+        (uint32_t)(32 * sizeof(mesh_component)), 8, "mesh_comps");
+    gs->mesh_component_capacity = 32;
     gs->animation_components = (animation_component *)arena_alloc(gs->gameplay,
         (uint32_t)(8 * sizeof(animation_component)), 8, "anim_comps");
     gs->animation_component_capacity = 8;
@@ -207,8 +207,29 @@ static game_state *setup_game_state(void) {
         (uint32_t)(8 * sizeof(animation_transition_entry)), 8, "anim_trans");
     gs->animation_transition_capacity = 8;
     gs->transform_components = (transform_component *)arena_alloc(gs->gameplay,
-        (uint32_t)(8 * sizeof(transform_component)), 8, "transform_comps");
-    gs->transform_component_capacity = 8;
+        (uint32_t)(32 * sizeof(transform_component)), 8, "transform_comps");
+    gs->transform_component_capacity = 32;
+    gs->parent_transform_components = (parent_transform_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(32 * sizeof(parent_transform_component)), 8, "ptc_comps");
+    gs->parent_transform_component_capacity = 32;
+    gs->character_controller_components = (character_controller_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(8 * sizeof(character_controller_component)), 8, "cc_comps");
+    gs->character_controller_component_capacity = 8;
+    gs->rigid_body_components = (rigid_body_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(8 * sizeof(rigid_body_component)), 8, "rb_comps");
+    gs->rigid_body_component_capacity = 8;
+    gs->capsule_collider_components = (capsule_collider_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(8 * sizeof(capsule_collider_component)), 8, "cap_comps");
+    gs->capsule_collider_component_capacity = 8;
+    gs->box_collider_components = (box_collider_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(32 * sizeof(box_collider_component)), 8, "box_comps");
+    gs->box_collider_component_capacity = 32;
+    gs->rotation_components = (rotation_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(8 * sizeof(rotation_component)), 8, "rot_comps");
+    gs->rotation_component_capacity = 8;
+    gs->health_components = (health_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(8 * sizeof(health_component)), 8, "health_comps");
+    gs->health_component_capacity = 8;
 
     /* Draw list */
     gs->dl.meshes = (mesh_draw_command *)arena_alloc(gs->gameplay,
@@ -451,7 +472,7 @@ TEST(velocity_above_triggers_transition_to_blend) {
     /* Give entity velocity above threshold */
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
-    gs->velocity_components[vi].velocity = (vec2){1.0f, 0.0f};
+    gs->velocity_components[vi].velocity = VEC3(1.0f, 0.0f, 0.0f);
 
     ASSERT_EQ(sm->states[0].count, 1);
     ASSERT_EQ(sm->blend_count, 0);
@@ -485,7 +506,7 @@ TEST(velocity_below_threshold_no_transition) {
     /* Velocity below threshold */
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
-    gs->velocity_components[vi].velocity = (vec2){0.1f, 0.0f};
+    gs->velocity_components[vi].velocity = VEC3(0.1f, 0.0f, 0.0f);
 
     anim_sm_update(sm, gs, 1.0f / 60.0f);
 
@@ -514,7 +535,7 @@ TEST(blend_completes_and_entity_moves_to_dest_state) {
 
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
-    gs->velocity_components[vi].velocity = (vec2){1.0f, 0.0f};
+    gs->velocity_components[vi].velocity = VEC3(1.0f, 0.0f, 0.0f);
 
     /* First frame: triggers blend */
     anim_sm_update(sm, gs, 1.0f / 60.0f);
@@ -584,7 +605,7 @@ TEST(phase5_writes_blended_skin_mats) {
 
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
-    gs->velocity_components[vi].velocity = (vec2){1.0f, 0.0f};
+    gs->velocity_components[vi].velocity = VEC3(1.0f, 0.0f, 0.0f);
 
     /* First frame triggers blend */
     anim_sm_update(sm, gs, 1.0f / 60.0f);
@@ -680,7 +701,7 @@ TEST(bidirectional_transition_idle_to_walk_and_back) {
     /* Give velocity to trigger idle -> walk */
     vi = gs->velocity_component_count++;
     gs->velocity_components[vi].entity_index = 0;
-    gs->velocity_components[vi].velocity = (vec2){1.0f, 0.0f};
+    gs->velocity_components[vi].velocity = VEC3(1.0f, 0.0f, 0.0f);
 
     /* Run until blend completes */
     for (frame = 0; frame < 20; frame++)
@@ -690,13 +711,146 @@ TEST(bidirectional_transition_idle_to_walk_and_back) {
     ASSERT_EQ(sm->states[0].count, 0);
 
     /* Stop velocity to trigger walk -> idle */
-    gs->velocity_components[vi].velocity = (vec2){0.0f, 0.0f};
+    gs->velocity_components[vi].velocity = VEC3(0.0f, 0.0f, 0.0f);
 
     for (frame = 0; frame < 20; frame++)
         anim_sm_update(sm, gs, 1.0f / 60.0f);
 
     ASSERT_EQ(sm->states[0].count, 1); /* back in idle */
     ASSERT_EQ(sm->states[1].count, 0);
+}
+
+/* ── Tests: Frame pipeline (catches ordering bugs) ───────────────────── */
+
+TEST(velocity_on_same_entity_triggers_transition) {
+    /* CC writes velocity on the same entity that has the animation.
+       SM reads it directly without needing parent chain walk. */
+    game_state *gs = setup_game_state();
+    anim_sm *sm;
+    int vi;
+    init_test_clips();
+    setup_test_model_asset(gs);
+    sm = &gs->anim;
+    anim_sm_init_pool(sm, gs->gameplay);
+    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "run", 1, 1);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+
+    add_animated_entity(gs, 0, 0, 0, 1.0f);
+    anim_sm_register_entity(sm, 0, 0, 0, 2);
+
+    /* Velocity on the same entity */
+    vi = gs->velocity_component_count++;
+    gs->velocity_components[vi].entity_index = 0;
+    gs->velocity_components[vi].velocity = VEC3(5.0f, 0.0f, 0.0f);
+
+    anim_sm_update(sm, gs, 1.0f / 60.0f);
+
+    ASSERT_EQ(sm->states[0].count, 0);
+    ASSERT_EQ(sm->blend_count, 1);
+}
+
+TEST(zero_velocity_stays_idle) {
+    /* velocity = 0 — entity stays in idle */
+    game_state *gs = setup_game_state();
+    anim_sm *sm;
+    int vi;
+    init_test_clips();
+    setup_test_model_asset(gs);
+    sm = &gs->anim;
+    anim_sm_init_pool(sm, gs->gameplay);
+    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "run", 1, 1);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+
+    add_animated_entity(gs, 0, 0, 0, 1.0f);
+    anim_sm_register_entity(sm, 0, 0, 0, 2);
+
+    vi = gs->velocity_component_count++;
+    gs->velocity_components[vi].entity_index = 0;
+    gs->velocity_components[vi].velocity = VEC3(0.0f, 0.0f, 0.0f);
+
+    anim_sm_update(sm, gs, 1.0f / 60.0f);
+
+    ASSERT_EQ(sm->states[0].count, 1);
+    ASSERT_EQ(sm->blend_count, 0);
+}
+
+/* ── Tests: Parent-child entity structure (matches project.toml) ──────
+   Entity 0 = "player": transform, velocity, CC (move_speed=5)
+   Entity 19 = "player_mesh": transform, parent_transform(parent=0),
+               mesh, animation — registered in SM
+   The SM must walk the parent chain to find CC on entity 0.
+   ──────────────────────────────────────────────────────────────────── */
+
+TEST(parent_child_velocity_triggers_transition) {
+    /* Mirrors project.toml: entity 0 = player (CC + velocity),
+       entity 19 = player_mesh (animation, parented to 0).
+       CC writes velocity on entity 0. SM walks parent chain from 19→0. */
+    game_state *gs = setup_game_state();
+    anim_sm *sm;
+    int vi, pti;
+    init_test_clips();
+    setup_test_model_asset(gs);
+    sm = &gs->anim;
+    anim_sm_init_pool(sm, gs->gameplay);
+    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "run", 1, 1);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+
+    /* Entity 0: player controller with velocity along forward (z-axis) */
+    gs->scene_entity_count = 20;
+    vi = gs->velocity_component_count++;
+    gs->velocity_components[vi].entity_index = 0;
+    gs->velocity_components[vi].velocity = VEC3(0.0f, 0.0f, 5.0f);
+
+    /* Entity 19: animated mesh, parented to entity 0 */
+    add_animated_entity(gs, 19, 0, 0, 1.0f);
+    pti = gs->parent_transform_component_count++;
+    gs->parent_transform_components[pti].entity_index = 19;
+    gs->parent_transform_components[pti].parent_entity_index = 0;
+
+    /* Register entity 19 in SM (the animated entity) */
+    anim_sm_register_entity(sm, 19, 0, 0, 2);
+
+    anim_sm_update(sm, gs, 1.0f / 60.0f);
+
+    /* SM walks 19→0, reads horizontal speed=5.0 > 0.1 threshold → transition */
+    ASSERT_EQ(sm->states[0].count, 0);
+    ASSERT_EQ(sm->blend_count, 1);
+    ASSERT_EQ(sm->blends[0].entity_index, 19);
+}
+
+TEST(parent_child_no_velocity_stays_idle) {
+    game_state *gs = setup_game_state();
+    anim_sm *sm;
+    int vi, pti;
+    init_test_clips();
+    setup_test_model_asset(gs);
+    sm = &gs->anim;
+    anim_sm_init_pool(sm, gs->gameplay);
+    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "run", 1, 1);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+
+    /* Entity 0: player controller, velocity = 0 (not moving) */
+    gs->scene_entity_count = 20;
+    vi = gs->velocity_component_count++;
+    gs->velocity_components[vi].entity_index = 0;
+    gs->velocity_components[vi].velocity = VEC3(0.0f, 0.0f, 0.0f);
+
+    /* Entity 19: animated mesh, parented to entity 0 */
+    add_animated_entity(gs, 19, 0, 0, 1.0f);
+    pti = gs->parent_transform_component_count++;
+    gs->parent_transform_components[pti].entity_index = 19;
+    gs->parent_transform_components[pti].parent_entity_index = 0;
+
+    anim_sm_register_entity(sm, 19, 0, 0, 2);
+
+    anim_sm_update(sm, gs, 1.0f / 60.0f);
+
+    ASSERT_EQ(sm->states[0].count, 1);
+    ASSERT_EQ(sm->blend_count, 0);
 }
 
 /* ── Tests: Edge cases ───────────────────────────────────────────────── */
@@ -775,6 +929,14 @@ int main(void) {
 
     /* Bidirectional */
     run_bidirectional_transition_idle_to_walk_and_back();
+
+    /* Velocity-driven transitions */
+    run_velocity_on_same_entity_triggers_transition();
+    run_zero_velocity_stays_idle();
+
+    /* Parent-child entity structure (matches project.toml) */
+    run_parent_child_velocity_triggers_transition();
+    run_parent_child_no_velocity_stays_idle();
 
     /* Edge cases */
     run_update_with_zero_instances_is_noop();

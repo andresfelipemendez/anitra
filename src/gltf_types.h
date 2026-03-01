@@ -78,6 +78,7 @@ typedef struct {
     ChannelData   *data;
     uint32_t       channel_count;
     float          duration;
+    char           name[32];
 } AnimClip;
 
 /* ── Loaded model ─────────────────────────────────────────────── */

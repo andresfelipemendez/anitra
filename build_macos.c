@@ -219,6 +219,8 @@ static time_t newest_mtime_recursive(const char *path)
     return newest;
 }
 
+static pid_t g_engine_pid;
+
 static int watch_and_rebuild(void)
 {
     int kq, engine_fd, editor_fd, core_fd, externals_fd;
@@ -330,6 +332,16 @@ static int watch_and_rebuild(void)
         int nev, i;
         int engine_changed = 0, editor_changed = 0, core_changed = 0, externals_changed = 0;
         struct timespec timeout;
+
+        /* Check if the engine process has exited */
+        if (g_engine_pid > 0) {
+            int status;
+            pid_t result = waitpid(g_engine_pid, &status, WNOHANG);
+            if (result == g_engine_pid) {
+                printf("\n--- Engine exited, stopping watch. ---\n");
+                break;
+            }
+        }
 
         timeout.tv_sec = 0;
         timeout.tv_nsec = 200 * 1000 * 1000; /* 200ms poll fallback cadence */

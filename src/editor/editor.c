@@ -614,7 +614,7 @@ static int has_scale_component(const game_state *gs, int entity_index, Vec3 *out
     return 0;
 }
 
-static int has_velocity_component(const game_state *gs, int entity_index, vec2 *out_velocity) {
+static int has_velocity_component(const game_state *gs, int entity_index, Vec3 *out_velocity) {
     int i;
     if (!gs->velocity_components) return 0;
     for (i = 0; i < gs->velocity_component_count; i++) {
@@ -1566,7 +1566,7 @@ static int editor_save_scene_to_toml(game_state *gs, const char *path) {
     if (count > 0) {
         fprintf(fp, "[velocities]\n");
         for (i = 0; i < scene_count; i++) {
-            vec2 vel;
+            Vec3 vel = VEC3(0,0,0);
             if (!has_velocity_component(gs, i, &vel)) continue;
             fprintf(fp, "\"%d\" = { value = [%.4f, %.4f] }\n", i, vel.x, vel.y);
         }
@@ -4345,7 +4345,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 Vec3 tpos = VEC3(0.0f, 0.0f, 0.0f);
                 float ry = 0.0f;
                 Vec3 tscale = VEC3(1.0f, 1.0f, 1.0f);
-                vec2 vvel = {0.0f, 0.0f};
+                Vec3 vvel = VEC3(0.0f, 0.0f, 0.0f);
                 float hcur = 0.0f, hmax = 0.0f;
                 rect crect = {0.0f, 0.0f, 0.0f, 0.0f};
                 int collider_is_capsule = 0;

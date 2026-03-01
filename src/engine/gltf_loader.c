@@ -480,6 +480,9 @@ static AnimClip extract_anim_clip(cgltf_animation *anim, cgltf_skin *skin, arena
     AnimClip clip = {0};
     uint32_t c;
 
+    if (anim->name) {
+        strncpy(clip.name, anim->name, sizeof(clip.name) - 1);
+    }
     clip.channel_count = (uint32_t)anim->channels_count;
     clip.duration = 0.0f;
 
@@ -710,6 +713,7 @@ GltfModel load_glb(const char *path, arena *ar) {
             model.clip_count * sizeof(AnimClip), 8, "anim_clips");
         for (i = 0; i < model.clip_count; i++) {
             model.clips[i] = extract_anim_clip(&data->animations[i], skin, ar);
+            printf("  clip %u: \"%s\" (%.2fs)\n", i, model.clips[i].name, model.clips[i].duration);
         }
     }
 
@@ -780,17 +784,24 @@ void load_animations_glb(const char *path, GltfModel *model, arena *ar) {
 
     if (data->animations_count > 0) {
         uint32_t i;
-        model->clip_count = (uint32_t)data->animations_count;
-        model->clips = (AnimClip *)arena_alloc(ar,
-            model->clip_count * sizeof(AnimClip), 8, "anim_clips");
-        for (i = 0; i < model->clip_count; i++) {
+        uint32_t old_count = model->clip_count;
+        uint32_t add_count = (uint32_t)data->animations_count;
+        uint32_t new_count = old_count + add_count;
+        AnimClip *new_clips = (AnimClip *)arena_alloc(ar,
+            new_count * sizeof(AnimClip), 8, "anim_clips");
+        if (old_count > 0 && model->clips) {
+            memcpy(new_clips, model->clips, old_count * sizeof(AnimClip));
+        }
+        model->clips = new_clips;
+        model->clip_count = new_count;
+        for (i = 0; i < add_count; i++) {
             AnimClip *cl;
             uint32_t c;
 
-            model->clips[i] = extract_anim_clip(&data->animations[i], skin, ar);
+            model->clips[old_count + i] = extract_anim_clip(&data->animations[i], skin, ar);
 
             /* Remap all channel joint indices from anim ordering -> character ordering */
-            cl = &model->clips[i];
+            cl = &model->clips[old_count + i];
             for (c = 0; c < cl->channel_count; c++) {
                 uint16_t old_idx = cl->headers[c].joint_index;
                 if (old_idx < anim_jc)

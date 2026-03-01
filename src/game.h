@@ -117,7 +117,7 @@ typedef struct scale_component {
 
 typedef struct velocity_component {
     int entity_index;
-    vec2 velocity;
+    Vec3 velocity;
 } velocity_component;
 
 typedef struct rigid_body_component {

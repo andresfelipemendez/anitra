@@ -433,9 +433,8 @@ static void run_character_controller_system(game_state *gs) {
                 }
             }
             move_dir = vec3_scale(move_forward, gs->input.vertical);
-            tc->position.x += move_dir.x * move_speed * gs->dt;
-            tc->position.z += move_dir.z * move_speed * gs->dt;
-            vc->velocity.x = 0.0f;
+            vc->velocity.x = move_dir.x * move_speed;
+            vc->velocity.z = move_dir.z * move_speed;
             if ((gs->input.input_mask & INPUT_A) && fabsf(vc->velocity.y) < 0.001f) {
                 vc->velocity.y = jump_speed;
             }
@@ -851,7 +850,7 @@ static void push_parent_rotation_component(game_state *gs, int entity_index) {
     gs->parent_rotation_components[i].entity_index = entity_index;
 }
 
-static void push_velocity_component(game_state *gs, int entity_index, vec2 velocity) {
+static void push_velocity_component(game_state *gs, int entity_index, Vec3 velocity) {
     int i;
     if (!gs || !gs->velocity_components) return;
     if (gs->velocity_component_count >= gs->velocity_component_capacity) return;
@@ -986,12 +985,14 @@ static void ensure_default_character_controller(game_state *gs) {
     int i;
     int player_named_candidate = -1;
     int fallback_candidate = -1;
+    int chosen = -1;
     if (!gs) return;
     if (gs->character_controller_component_count > 0) return;
 
+    /* First pass: look for player-named entity with transform (velocity optional) */
     for (i = 0; i < gs->scene_entity_count; i++) {
         const char *name = NULL;
-        if (!entity_is_controller_candidate(gs, i)) continue;
+        if (!find_transform_component(gs, i)) continue;
 
         if (i >= 0 && i < gs->project.scene_entity_count && gs->project.scene_entity_names[i][0]) {
             name = gs->project.scene_entity_names[i];
@@ -1000,14 +1001,18 @@ static void ensure_default_character_controller(game_state *gs) {
             player_named_candidate = i;
             break;
         }
-        if (fallback_candidate < 0) fallback_candidate = i;
+        if (fallback_candidate < 0 && find_velocity_component(gs, i))
+            fallback_candidate = i;
     }
 
-    if (player_named_candidate >= 0) {
-        push_character_controller_component(gs, player_named_candidate, 5.0f, 8.5f);
-    } else if (fallback_candidate >= 0) {
-        push_character_controller_component(gs, fallback_candidate, 5.0f, 8.5f);
+    chosen = (player_named_candidate >= 0) ? player_named_candidate : fallback_candidate;
+    if (chosen < 0) return;
+
+    /* Ensure velocity component exists on the chosen entity */
+    if (!find_velocity_component(gs, chosen)) {
+        push_velocity_component(gs, chosen, VEC3(0.0f, 0.0f, 0.0f));
     }
+    push_character_controller_component(gs, chosen, 5.0f, 8.5f);
 }
 
 static void build_fallback_scene(game_state *gs) {
@@ -1027,7 +1032,7 @@ static void build_fallback_scene(game_state *gs) {
     player_asset = register_scene_model_asset(gs, "player", model_path, anim_path);
 
     push_transform_component(gs, entity_index, VEC3(0.0f, 0.0f, 0.0f));
-    push_velocity_component(gs, entity_index, (vec2){0.0f, 0.0f});
+    push_velocity_component(gs, entity_index, VEC3(0.0f, 0.0f, 0.0f));
     push_rigid_body_component(gs, entity_index, 1);
     push_character_controller_component(gs, entity_index, 5.0f, 8.5f);
     push_health_component(gs, entity_index, 100.0f, 100.0f);
@@ -1097,7 +1102,7 @@ static void build_scene_from_project(game_state *gs) {
         }
 
         if (comp->has_velocity) {
-            push_velocity_component(gs, i, (vec2){comp->velocity[0], comp->velocity[1]});
+            push_velocity_component(gs, i, VEC3(comp->velocity[0], comp->velocity[1], 0.0f));
         }
 
         if (comp->has_rigid_body) {
@@ -1236,8 +1241,18 @@ static void load_scene_model_assets(game_state *gs) {
         asset->loaded = 1;
         asset->has_skeleton = asset->model.skeleton.joint_count > 0 ? 1 : 0;
 
-        if (asset->has_animation_path && asset->animation_path[0] && asset->model.clip_count == 0) {
+        if (asset->has_skeleton && asset->has_animation_path && asset->animation_path[0]) {
             load_animations_glb(asset->animation_path, &asset->model, model_arena);
+            /* Also load all other animation assets from the project */
+            {
+                int ai;
+                for (ai = 0; ai < gs->project.animation_count; ai++) {
+                    if (strcmp(gs->project.animation_paths[ai], asset->animation_path) == 0)
+                        continue;
+                    load_animations_glb(gs->project.animation_paths[ai],
+                                        &asset->model, model_arena);
+                }
+            }
         }
 
         if (asset->model.mesh.primitive_count == 0) {
@@ -1615,13 +1630,34 @@ EXPORT void init_engine(game_state *gs) {
     /* ── Anim SM: set up default states and register entities ──── */
     if (gs->anim.pool_initialized && gs->anim.state_count == 0 &&
         gs->mesh3d.clip_count > 0) {
-        int idle_state = anim_sm_add_state(&gs->anim, "idle", 0, 1);
-        if (gs->mesh3d.clip_count > 1) {
-            int walk_state = anim_sm_add_state(&gs->anim, "walk", 1, 1);
-            anim_sm_add_rule(&gs->anim, idle_state, walk_state,
-                             ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.18f);
-            anim_sm_add_rule(&gs->anim, walk_state, idle_state,
-                             ANIM_COND_VELOCITY_BELOW, 0.1f, 0.18f);
+        int idle_clip = -1, run_clip = -1;
+        uint32_t ci;
+
+        /* Find clips by name (case-insensitive substring match) */
+        for (ci = 0; ci < gs->mesh3d.clip_count; ci++) {
+            const char *n = gs->mesh3d.clips[ci].name;
+            if (idle_clip < 0 && (strstr(n, "idle") || strstr(n, "Idle")))
+                idle_clip = (int)ci;
+            else if (run_clip < 0 && (strstr(n, "run") || strstr(n, "Run")))
+                run_clip = (int)ci;
+        }
+        /* Fallback: first clip = idle, second = run */
+        if (idle_clip < 0) idle_clip = 0;
+        if (run_clip < 0 && gs->mesh3d.clip_count > 1)
+            run_clip = (idle_clip == 0) ? 1 : 0;
+
+        printf("Anim SM: idle=clip %d, run=clip %d (of %u)\n",
+               idle_clip, run_clip, gs->mesh3d.clip_count);
+
+        {
+            int idle_state = anim_sm_add_state(&gs->anim, "idle", idle_clip, 1);
+            if (run_clip >= 0) {
+                int run_state = anim_sm_add_state(&gs->anim, "run", run_clip, 1);
+                anim_sm_add_rule(&gs->anim, idle_state, run_state,
+                                 ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.18f);
+                anim_sm_add_rule(&gs->anim, run_state, idle_state,
+                                 ANIM_COND_VELOCITY_BELOW, 0.1f, 0.18f);
+            }
         }
         anim_sm_register_scene_entities(gs);
     }
@@ -1747,10 +1783,25 @@ static void update_mesh3d_from_animation_component(game_state *gs, animation_com
 /* ── Anim SM 5-phase update pipeline ─────────────────────────── */
 
 static float anim_sm_entity_speed(game_state *gs, int entity_index) {
-    velocity_component *vc = find_velocity_component(gs, entity_index);
-    if (!vc) return 0.0f;
-    return sqrtf(vc->velocity.x * vc->velocity.x +
-                 vc->velocity.y * vc->velocity.y);
+    int cur = entity_index;
+    int guard = 0;
+    /* Walk up through parents to find velocity or CC */
+    while (cur >= 0 && guard < 8) {
+        velocity_component *vc = find_velocity_component(gs, cur);
+        if (vc) {
+            float spd = sqrtf(vc->velocity.x * vc->velocity.x +
+                              vc->velocity.z * vc->velocity.z);
+            if (spd > 0.0f) return spd;
+        }
+        {
+            parent_transform_component *pt =
+                find_parent_transform_component(gs, cur);
+            if (!pt || pt->parent_entity_index == cur) break;
+            cur = pt->parent_entity_index;
+        }
+        guard++;
+    }
+    return 0.0f;
 }
 
 static int anim_sm_eval_condition(game_state *gs, anim_transition_rule *rule,
@@ -2010,6 +2061,10 @@ EXPORT void update_engine(game_state *gs) {
         ENGINE_CPU_ZONE_BEGIN("physics");
         ENGINE_CACHE_ZONE_BEGIN("physics");
         run_character_controller_system(gs);
+        /* SM reads velocity BEFORE apply_movement zeros it */
+        if (gs->anim.instance_count > 0) {
+            anim_sm_update(&gs->anim, gs, gs->dt);
+        }
         apply_movement(gs);
         collision(gs);
         ENGINE_CACHE_ZONE_END();
@@ -2025,10 +2080,7 @@ EXPORT void update_engine(game_state *gs) {
     if (gs->editor_play_mode) {
         ENGINE_CPU_ZONE_BEGIN("animation");
         ENGINE_CACHE_ZONE_BEGIN("animation");
-        if (gs->anim.instance_count > 0) {
-            /* Tables-as-states SM pipeline */
-            anim_sm_update(&gs->anim, gs, gs->dt);
-        } else {
+        if (gs->anim.instance_count == 0) {
             /* Legacy single-entity fallback */
             if (gs->animation_components) {
                 animation_component *ac = query_primary_animation_component_for_mesh(gs);

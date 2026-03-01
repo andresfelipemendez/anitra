@@ -507,12 +507,16 @@ void apply_movement(game_state* gs) {
         }
     }
 
+    /* Horizontal movement (xz) always applies — collision only gates vertical */
+    actor.transform->position.x += actor.velocity->velocity.x * gs->dt;
+    actor.transform->position.z += actor.velocity->velocity.z * gs->dt;
+
     if (!collision_detected) {
-        actor.transform->position.x = new_pos.x - actor_parent_offset.x;
         actor.transform->position.y = new_pos.y - actor_parent_offset.y;
     } else if (actor.velocity->velocity.y < 0.0f) {
         actor.velocity->velocity.y = 0.0f;
     }
 
     actor.velocity->velocity.x = 0.0f;
+    actor.velocity->velocity.z = 0.0f;
 }

@@ -20,6 +20,7 @@
 #else
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <unistd.h>
 #include <limits.h>
@@ -2090,6 +2091,7 @@ static int build_and_run(void)
     
     /* Parent process: watch for changes */
     printf("   Engine launched (PID: %d)\n", pid);
+    g_engine_pid = pid;
     return watch_and_rebuild();
 #endif
 }
