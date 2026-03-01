@@ -2458,7 +2458,9 @@ EXPORT int init_externals(struct memory *m) {
         pipe_info.vertex_input_state.num_vertex_attributes = 5;
         pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         pipe_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-        pipe_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
+        /* Dungeon assets include single-sided pieces; disabling cull avoids
+           accidental see-through when camera views back faces. */
+        pipe_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         pipe_info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
         pipe_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
 
@@ -3703,6 +3705,22 @@ EXPORT void update_externals(struct memory *m) {
         depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
 
         SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, &depth_target);
+        {
+            SDL_GPUViewport vp = {0};
+            SDL_Rect sc = {0};
+            vp.x = 0.0f;
+            vp.y = 0.0f;
+            vp.w = (float)gw;
+            vp.h = (float)gh;
+            vp.min_depth = 0.0f;
+            vp.max_depth = 1.0f;
+            sc.x = 0;
+            sc.y = 0;
+            sc.w = (int)gw;
+            sc.h = (int)gh;
+            SDL_SetGPUViewport(render_pass, &vp);
+            SDL_SetGPUScissor(render_pass, &sc);
+        }
 
         // 3D meshes from ECS scene (all model assets from project TOML)
         {
@@ -4240,6 +4258,22 @@ EXPORT void update_externals(struct memory *m) {
         ed_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
 
         SDL_GPURenderPass *ed_pass = SDL_BeginGPURenderPass(cmd_buf, &ed_ct, 1, &ed_dt);
+        {
+            SDL_GPUViewport vp = {0};
+            SDL_Rect sc = {0};
+            vp.x = 0.0f;
+            vp.y = 0.0f;
+            vp.w = (float)ew;
+            vp.h = (float)eh;
+            vp.min_depth = 0.0f;
+            vp.max_depth = 1.0f;
+            sc.x = 0;
+            sc.y = 0;
+            sc.w = (int)ew;
+            sc.h = (int)eh;
+            SDL_SetGPUViewport(ed_pass, &vp);
+            SDL_SetGPUScissor(ed_pass, &sc);
+        }
 
         /* Editor camera matrices */
         float ed_aspect = (float)ew / (float)eh;

@@ -480,7 +480,6 @@ void apply_movement(game_state* gs) {
     collider_target_view obstacles[PHYSICS_QUERY_MAX_RESULTS];
     int obstacle_count;
     int i;
-    int horizontal_collision = 0;
     int vertical_collision = 0;
     Vec3 actor_world;
     Vec3 actor_parent_offset;
@@ -500,32 +499,57 @@ void apply_movement(game_state* gs) {
     obstacle_count = query_movement_obstacles(gs, actor.entity_index,
                                               obstacles, PHYSICS_QUERY_MAX_RESULTS);
 
-    /* Pass 1: Horizontal collision — predict XZ, check 3D AABB */
+    /* Horizontal collision with wall sliding (separate-axis).
+       Test X and Z independently — blocked axis zeroes out,
+       free axis slides through.  v_slide = v - dot(v,n)*n
+       simplifies to this for axis-aligned boxes. */
     {
-        vec2 predicted_xz = {
-            actor_world.x + actor.velocity->velocity.x * gs->dt,
-            actor_world.z + actor.velocity->velocity.z * gs->dt
-        };
-        sync_collider_to_pos(actor.box_collider, actor.capsule_collider, predicted_xz);
+        float move_x = actor.velocity->velocity.x * gs->dt;
+        float move_z = actor.velocity->velocity.z * gs->dt;
 
-        for (i = 0; i < obstacle_count; i++) {
-            collider_target_view *ob = &obstacles[i];
-            Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
-            float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
-
-            sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
-                                 (vec2){ob_world.x, ob_world.z});
-
-            if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
-                             collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
-                y_ranges_overlap(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
-                horizontal_collision = 1;
-                break;
+        /* Test X axis alone */
+        {
+            vec2 test_xz = { actor_world.x + move_x, actor_world.z };
+            sync_collider_to_pos(actor.box_collider, actor.capsule_collider, test_xz);
+            for (i = 0; i < obstacle_count; i++) {
+                collider_target_view *ob = &obstacles[i];
+                Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
+                float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
+                sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
+                                     (vec2){ob_world.x, ob_world.z});
+                if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
+                                 collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
+                    y_ranges_overlap(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
+                    move_x = 0.0f;
+                    break;
+                }
             }
         }
+
+        /* Test Z axis (from resolved X) */
+        {
+            vec2 test_xz = { actor_world.x + move_x, actor_world.z + move_z };
+            sync_collider_to_pos(actor.box_collider, actor.capsule_collider, test_xz);
+            for (i = 0; i < obstacle_count; i++) {
+                collider_target_view *ob = &obstacles[i];
+                Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
+                float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
+                sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
+                                     (vec2){ob_world.x, ob_world.z});
+                if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
+                                 collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
+                    y_ranges_overlap(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
+                    move_z = 0.0f;
+                    break;
+                }
+            }
+        }
+
+        actor.transform->position.x += move_x;
+        actor.transform->position.z += move_z;
     }
 
-    /* Pass 2: Vertical collision — current XZ, predict Y */
+    /* Vertical collision — gravity / jump */
     {
         vec2 current_xz = { actor_world.x, actor_world.z };
         float predicted_y = actor_world.y + actor.velocity->velocity.y * gs->dt;
@@ -547,11 +571,6 @@ void apply_movement(game_state* gs) {
                 break;
             }
         }
-    }
-
-    if (!horizontal_collision) {
-        actor.transform->position.x += actor.velocity->velocity.x * gs->dt;
-        actor.transform->position.z += actor.velocity->velocity.z * gs->dt;
     }
 
     if (!vertical_collision) {
