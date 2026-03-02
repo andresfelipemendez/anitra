@@ -16,6 +16,7 @@ skeleton     = "game_assets/KayKit_Skeletons_1.1_FREE/characters/gltf/Skeleton_W
 [assets.animations]
 general      = "game_assets/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb"
 movement     = "game_assets/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_MovementBasic.glb"
+combat_melee = "game_assets/KayKit_Character_Animations_1.1/Animations/gltf/Rig_Medium/Rig_Medium_CombatMelee.glb"
 skeleton_general = "game_assets/KayKit_Skeletons_1.1_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb"
 
 [assets.dungeon_pieces]

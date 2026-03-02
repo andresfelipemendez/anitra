@@ -34,6 +34,7 @@ typedef enum {
     ANIM_COND_VELOCITY_ABOVE,
     ANIM_COND_VELOCITY_BELOW,
     ANIM_COND_CLIP_FINISHED,
+    ANIM_COND_INPUT_BUTTON,
     ANIM_COND_ALWAYS
 } anim_condition_type;
 

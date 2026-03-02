@@ -183,7 +183,15 @@ static ChannelHeader g_walk_headers[1] = {{0, 0, 1}};
 static ChannelTimes  g_walk_ctimes[1];
 static ChannelData   g_walk_cdata[1];
 
-static AnimClip g_clips[2];
+/* Clip 2 (attack): 2 keyframes for joint 0 translation, short duration */
+static float g_attack_times[] = {0.0f, 0.4f};
+static Vec3  g_attack_trans[] = {{0,0,0}, {0,0,1}};
+
+static ChannelHeader g_attack_headers[1] = {{0, 0, 1}};
+static ChannelTimes  g_attack_ctimes[1];
+static ChannelData   g_attack_cdata[1];
+
+static AnimClip g_clips[3];
 
 static void init_test_clips(void) {
     int i;
@@ -213,6 +221,16 @@ static void init_test_clips(void) {
     g_clips[1].data = g_walk_cdata;
     g_clips[1].channel_count = 1;
     g_clips[1].duration = 0.5f;
+
+    g_attack_ctimes[0].timestamps = g_attack_times;
+    g_attack_ctimes[0].keyframe_count = 2;
+    g_attack_cdata[0].vec3s = g_attack_trans;
+
+    g_clips[2].headers = g_attack_headers;
+    g_clips[2].times = g_attack_ctimes;
+    g_clips[2].data = g_attack_cdata;
+    g_clips[2].channel_count = 1;
+    g_clips[2].duration = 0.4f;
 }
 
 static scene_model_asset *setup_test_model_asset(game_state *gs) {
@@ -228,7 +246,7 @@ static scene_model_asset *setup_test_model_asset(game_state *gs) {
     asset->model.skeleton.rest_scales = g_rest_scale;
     asset->model.skeleton.joint_count = 2;
     asset->model.clips = g_clips;
-    asset->model.clip_count = 2;
+    asset->model.clip_count = sizeof(g_clips) / sizeof(g_clips[0]);
     asset->model.mesh.primitive_count = 1;
     gs->scene_model_asset_count = 1;
     return asset;
@@ -1676,6 +1694,144 @@ TEST(entity_without_mesh_is_passthrough) {
     ASSERT(!is_entity_visible(gs, 1));
 }
 
+/* ── Tests: Play mode init_engine integration ────────────────────────── */
+
+TEST(init_engine_sets_up_attack_state_from_clips) {
+    game_state *gs = setup_game_state();
+    scene_model_asset *asset;
+    init_test_clips();
+
+    /* Name clips so the auto-setup finds them */
+    strncpy(g_clips[0].name, "Idle", sizeof(g_clips[0].name));
+    strncpy(g_clips[1].name, "Run_A", sizeof(g_clips[1].name));
+    strncpy(g_clips[2].name, "Melee_1H_Attack_Chop", sizeof(g_clips[2].name));
+
+    /* Set up a loaded model asset with skeleton + clips + primitives */
+    asset = setup_test_model_asset(gs);
+
+    /* Project: 1 entity with mesh + anim, using a .glb path so
+       resolve_project_model_path accepts it without an asset table entry */
+    gs->project.scene_entity_count = 1;
+    gs->project_loaded = 1;
+    {
+        project_mesh pm = {0};
+        pm.entity = 0;
+        pm.visible = 1;
+        strncpy(pm.model, "test.glb", sizeof(pm.model));
+        gs->project.meshes[0] = pm;
+        gs->project.mesh_count = 1;
+    }
+    {
+        project_anim pa = {0};
+        pa.entity = 0;
+        pa.playing = 1;
+        pa.speed = 1.0f;
+        gs->project.anims[0] = pa;
+        gs->project.anim_count = 1;
+    }
+
+    /* setup_test_model_asset already set scene_model_assets[0] with skeleton,
+       clips, and primitives.  Just add the path so the dedup lookup works. */
+    strncpy(asset->path, "test.glb", sizeof(asset->path));
+    strncpy(asset->key, "test.glb", sizeof(asset->key));
+
+    /* Call init_engine — this triggers the full play mode path:
+       clear → build_scene_from_project → sync_primary → SM auto-setup */
+    init_engine(gs);
+
+    /* SM should have 3 states: idle, run, attack */
+    ASSERT_EQ(gs->anim.state_count, 3);
+    ASSERT_EQ(gs->anim.states[2].looping, 0); /* attack is non-looping */
+    ASSERT_EQ(gs->anim.states[2].clip_index, 2); /* Melee_1H_Attack_Chop = clip 2 */
+
+    /* Should have rules: idle→run, run→idle, idle→attack, run→attack, attack→idle */
+    ASSERT(gs->anim.rule_count >= 5);
+
+    /* At least one entity registered */
+    ASSERT(gs->anim.instance_count >= 1);
+
+    /* Run a frame to make sure it doesn't crash */
+    gs->editor_play_mode = 1;
+    gs->dt = 1.0f / 60.0f;
+    anim_sm_update(&gs->anim, gs, gs->dt);
+}
+
+/* ── Tests: Input button attack transitions ──────────────────────────── */
+
+TEST(input_button_triggers_attack_transition) {
+    game_state *gs = setup_game_state();
+    anim_sm *sm;
+    int frame;
+    init_test_clips();
+    setup_test_model_asset(gs);
+    sm = &gs->anim;
+    anim_sm_init_pool(sm, gs->gameplay);
+
+    /* idle=0(clip0), run=1(clip1), attack=2(clip2, non-looping) */
+    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "run", 1, 1);
+    anim_sm_add_state(sm, "attack", 2, 0);
+    anim_sm_add_rule(sm, 0, 2, ANIM_COND_INPUT_BUTTON, 2.0f, 0.08f);
+    anim_sm_add_rule(sm, 2, 0, ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f);
+
+    add_animated_entity(gs, 0, 0, 0, 1.0f);
+    anim_sm_register_entity(sm, 0, 0, 0, 2);
+
+    /* Press attack button */
+    gs->input.input_mask = INPUT_B;
+    anim_sm_update(sm, gs, 1.0f / 60.0f);
+
+    /* Entity should be blending to attack */
+    ASSERT_EQ(sm->states[0].count, 0);
+    ASSERT_EQ(sm->blend_count, 1);
+    ASSERT_EQ(sm->blends[0].to_clip, 2);
+    ASSERT_EQ(sm->blends[0].to_state, 2);
+
+    /* Complete the 0.08s blend */
+    for (frame = 0; frame < 10 && sm->blend_count > 0; frame++)
+        anim_sm_update(sm, gs, 1.0f / 60.0f);
+    ASSERT_EQ(sm->blend_count, 0);
+    ASSERT_EQ(sm->states[2].count, 1);
+
+    /* Clear input, advance past clip duration (0.4s) — returns to idle */
+    gs->input.input_mask = 0;
+    for (frame = 0; frame < 40; frame++)
+        anim_sm_update(sm, gs, 1.0f / 60.0f);
+
+    /* Should have blended back or completed blend to idle */
+    for (frame = 0; frame < 15 && sm->blend_count > 0; frame++)
+        anim_sm_update(sm, gs, 1.0f / 60.0f);
+    ASSERT_EQ(sm->states[0].count, 1);
+    ASSERT_EQ(sm->states[2].count, 0);
+}
+
+TEST(attack_does_not_retrigger_during_blend) {
+    game_state *gs = setup_game_state();
+    anim_sm *sm;
+    init_test_clips();
+    setup_test_model_asset(gs);
+    sm = &gs->anim;
+    anim_sm_init_pool(sm, gs->gameplay);
+
+    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "run", 1, 1);
+    anim_sm_add_state(sm, "attack", 2, 0);
+    anim_sm_add_rule(sm, 0, 2, ANIM_COND_INPUT_BUTTON, 2.0f, 0.08f);
+    anim_sm_add_rule(sm, 2, 0, ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f);
+
+    add_animated_entity(gs, 0, 0, 0, 1.0f);
+    anim_sm_register_entity(sm, 0, 0, 0, 2);
+
+    /* Press attack button — triggers blend */
+    gs->input.input_mask = INPUT_B;
+    anim_sm_update(sm, gs, 1.0f / 60.0f);
+    ASSERT_EQ(sm->blend_count, 1);
+
+    /* Second update with button still held — blend count stays at 1 */
+    anim_sm_update(sm, gs, 1.0f / 60.0f);
+    ASSERT_EQ(sm->blend_count, 1);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1753,6 +1909,13 @@ int main(void) {
 
     /* System table */
     run_system_table_registers_and_runs();
+
+    /* Play mode / init_engine integration */
+    run_init_engine_sets_up_attack_state_from_clips();
+
+    /* Input-button attack transitions */
+    run_input_button_triggers_attack_transition();
+    run_attack_does_not_retrigger_during_blend();
 
     /* Implicit visibility propagation */
     run_implicit_visibility_propagation();

@@ -1431,21 +1431,12 @@ static void build_mesh_draw_commands(game_state *gs) {
 }
 
 void update_input(game_state* gs) {
-    int attack_pressed;
     const float camera_speed = 300.0f;
     const float zoom_speed = 2.0f;
     camera_query_result active_camera;
     int has_active_camera = 0;
     if (!gs) return;
     has_active_camera = query_active_camera(gs, &active_camera);
-
-    attack_pressed = (gs->input.input_mask & INPUT_A);
-    if (attack_pressed) {
-        vec2 a1 = {0,0}, b1 = {10,20};
-        vec2 a2 = {10,10}, b2 = {100,200};
-        debug_draw_line(&gs->dbg, a1, b1, DEBUG_GREEN);
-        debug_draw_line(&gs->dbg, a2, b2, DEBUG_BLUE);
-    }
 
     if (gs->input.input_mask & INPUT_X) {
         if (has_active_camera) {
@@ -1686,6 +1677,13 @@ EXPORT void init_engine(game_state *gs) {
         anim_sm_init_pool(&gs->anim, gs->gameplay);
     }
 
+    /* Reset SM states/instances so they get rebuilt with fresh entities */
+    gs->anim.state_count = 0;
+    gs->anim.rule_count = 0;
+    gs->anim.instance_count = 0;
+    gs->anim.blend_count = 0;
+    gs->anim.next_skin_mats_offset = 0;
+
     clear_scene_storage(gs);
 
     if (gs->project_loaded) {
@@ -1716,7 +1714,7 @@ EXPORT void init_engine(game_state *gs) {
     /* ── Anim SM: set up default states and register entities ──── */
     if (gs->anim.pool_initialized && gs->anim.state_count == 0 &&
         gs->mesh3d.clip_count > 0) {
-        int idle_clip = -1, run_clip = -1;
+        int idle_clip = -1, run_clip = -1, attack_clip = -1;
         uint32_t ci;
 
         /* Find clips by name (case-insensitive substring match) */
@@ -1726,23 +1724,36 @@ EXPORT void init_engine(game_state *gs) {
                 idle_clip = (int)ci;
             else if (run_clip < 0 && (strstr(n, "run") || strstr(n, "Run")))
                 run_clip = (int)ci;
+            else if (attack_clip < 0 && strstr(n, "Melee_1H_Attack_Chop"))
+                attack_clip = (int)ci;
         }
         /* Fallback: first clip = idle, second = run */
         if (idle_clip < 0) idle_clip = 0;
         if (run_clip < 0 && gs->mesh3d.clip_count > 1)
             run_clip = (idle_clip == 0) ? 1 : 0;
 
-        printf("Anim SM: idle=clip %d, run=clip %d (of %u)\n",
-               idle_clip, run_clip, gs->mesh3d.clip_count);
+        printf("Anim SM: idle=clip %d, run=clip %d, attack=clip %d (of %u)\n",
+               idle_clip, run_clip, attack_clip, gs->mesh3d.clip_count);
 
         {
             int idle_state = anim_sm_add_state(&gs->anim, "idle", idle_clip, 1);
+            int run_state = -1;
             if (run_clip >= 0) {
-                int run_state = anim_sm_add_state(&gs->anim, "run", run_clip, 1);
+                run_state = anim_sm_add_state(&gs->anim, "run", run_clip, 1);
                 anim_sm_add_rule(&gs->anim, idle_state, run_state,
                                  ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.18f);
                 anim_sm_add_rule(&gs->anim, run_state, idle_state,
                                  ANIM_COND_VELOCITY_BELOW, 0.1f, 0.18f);
+            }
+            if (attack_clip >= 0) {
+                int attack_state = anim_sm_add_state(&gs->anim, "attack", attack_clip, 0);
+                anim_sm_add_rule(&gs->anim, idle_state, attack_state,
+                                 ANIM_COND_INPUT_BUTTON, (float)INPUT_B, 0.08f);
+                if (run_state >= 0)
+                    anim_sm_add_rule(&gs->anim, run_state, attack_state,
+                                     ANIM_COND_INPUT_BUTTON, (float)INPUT_B, 0.08f);
+                anim_sm_add_rule(&gs->anim, attack_state, idle_state,
+                                 ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f);
             }
         }
         anim_sm_register_scene_entities(gs);
@@ -1910,6 +1921,8 @@ static int anim_sm_eval_condition(game_state *gs, anim_transition_rule *rule,
         if ((uint32_t)clip_index >= asset->model.clip_count) return 0;
         return anim_time >= asset->model.clips[clip_index].duration;
     }
+    case ANIM_COND_INPUT_BUTTON:
+        return (gs->input.input_mask & (int)rule->threshold) != 0;
     case ANIM_COND_ALWAYS:
         return 1;
     }
