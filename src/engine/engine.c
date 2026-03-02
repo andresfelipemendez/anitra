@@ -43,6 +43,7 @@ static void system_flush_debug_lines(game_state *gs);
 static void register_system(game_state *gs, const char *name,
                             system_fn fn, int play_mode_only);
 static void update_triggers(game_state *gs);
+static void update_bone_attachments(game_state *gs);
 
 typedef struct camera_query_result {
     int entity_index;
@@ -166,6 +167,16 @@ static trigger_component *find_trigger_component(game_state *gs, int entity_inde
 static scene_model_asset *find_scene_model_asset(game_state *gs, int asset_index) {
     if (!gs || asset_index < 0 || asset_index >= gs->scene_model_asset_count) return NULL;
     return &gs->scene_model_assets[asset_index];
+}
+
+static int find_joint_by_name(Skeleton *skel, const char *name) {
+    uint32_t i;
+    if (!skel || !skel->joint_names || !name) return -1;
+    for (i = 0; i < skel->joint_count; i++) {
+        if (skel->joint_names[i] && strcmp(skel->joint_names[i], name) == 0)
+            return (int)i;
+    }
+    return -1;
 }
 
 static animation_transition_entry *find_animation_transition_entry(game_state *gs,
@@ -617,103 +628,132 @@ static rect collider_rect_from_half_extents(const float half_extents[3], float f
 }
 
 
-static void *reserve_array(arena *a, void *ptr, int *capacity, int needed, size_t elem_size, const char *tag) {
+static error_value reserve_array(arena *a, void **out_ptr, int *capacity, int needed,
+                                  size_t elem_size, const char *tag) {
     int old_capacity;
     int new_capacity;
     void *new_ptr;
+    void *ptr;
     size_t copy_count;
-    if (!a || !capacity) return ptr;
+    if (!a || !capacity || !out_ptr) ERRV_RETURN_ERR(1, tag);
+    ptr = *out_ptr;
     old_capacity = *capacity;
-    if (ptr && old_capacity >= needed) return ptr;
+    if (ptr && old_capacity >= needed) ERRV_RETURN_OK();
 
     new_capacity = old_capacity > 0 ? old_capacity : SCENE_MIN_CAPACITY;
     while (new_capacity < needed) new_capacity *= 2;
 
     new_ptr = arena_alloc(a, (uint32_t)(new_capacity * (int)elem_size), 16, tag);
-    if (!new_ptr) {
-        fprintf(stderr, "Warning: arena alloc failed for %s (%d items)\n", tag, new_capacity);
-        return ptr;
-    }
+    if (!new_ptr) ERRV_RETURN_ERR(1, tag);
 
     if (ptr && old_capacity > 0) {
         copy_count = (size_t)old_capacity * elem_size;
         memcpy(new_ptr, ptr, copy_count);
     }
     *capacity = new_capacity;
-    return new_ptr;
+    *out_ptr = new_ptr;
+    ERRV_RETURN_OK();
 }
 
-static int ensure_scene_storage(game_state *gs, int needed_entities) {
-    if (!gs || !gs->gameplay) return 0;
+static error_value ensure_scene_storage(game_state *gs, int needed_entities) {
+    error_value err;
+    if (!gs || !gs->gameplay) ERRV_RETURN_ERR(1, "ensure_scene_storage: null gs/gameplay");
     if (needed_entities < SCENE_MIN_CAPACITY) needed_entities = SCENE_MIN_CAPACITY;
 
-    gs->scene_entities = (entity *)reserve_array(gs->gameplay, gs->scene_entities,
-                                                 &gs->scene_entity_capacity, needed_entities,
-                                                 sizeof(entity), "entities");
-    gs->parent_components = (parent_component *)reserve_array(gs->gameplay, gs->parent_components,
-                                                              &gs->parent_component_capacity, needed_entities,
-                                                              sizeof(parent_component), "parent_components");
-    gs->parent_transform_components = (parent_transform_component *)reserve_array(
-        gs->gameplay, gs->parent_transform_components,
+    err = reserve_array(gs->gameplay, (void **)&gs->scene_entities,
+        &gs->scene_entity_capacity, needed_entities, sizeof(entity), "entities");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->parent_components,
+        &gs->parent_component_capacity, needed_entities, sizeof(parent_component), "parent_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->parent_transform_components,
         &gs->parent_transform_component_capacity, needed_entities,
         sizeof(parent_transform_component), "parent_transform_components");
-    gs->parent_rotation_components = (parent_rotation_component *)reserve_array(
-        gs->gameplay, gs->parent_rotation_components,
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->parent_rotation_components,
         &gs->parent_rotation_component_capacity, needed_entities,
         sizeof(parent_rotation_component), "parent_rotation_components");
-    gs->transform_components = (transform_component *)reserve_array(gs->gameplay, gs->transform_components,
-                                                                    &gs->transform_component_capacity, needed_entities,
-                                                                    sizeof(transform_component), "transform_components");
-    gs->rotation_components = (rotation_component *)reserve_array(gs->gameplay, gs->rotation_components,
-                                                                  &gs->rotation_component_capacity, needed_entities,
-                                                                  sizeof(rotation_component), "rotation_components");
-    gs->scale_components = (scale_component *)reserve_array(gs->gameplay, gs->scale_components,
-                                                            &gs->scale_component_capacity, needed_entities,
-                                                            sizeof(scale_component), "scale_components");
-    gs->velocity_components = (velocity_component *)reserve_array(gs->gameplay, gs->velocity_components,
-                                                                  &gs->velocity_component_capacity, needed_entities,
-                                                                  sizeof(velocity_component), "velocity_components");
-    gs->rigid_body_components = (rigid_body_component *)reserve_array(
-        gs->gameplay, gs->rigid_body_components,
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->transform_components,
+        &gs->transform_component_capacity, needed_entities,
+        sizeof(transform_component), "transform_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->rotation_components,
+        &gs->rotation_component_capacity, needed_entities,
+        sizeof(rotation_component), "rotation_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->scale_components,
+        &gs->scale_component_capacity, needed_entities,
+        sizeof(scale_component), "scale_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->velocity_components,
+        &gs->velocity_component_capacity, needed_entities,
+        sizeof(velocity_component), "velocity_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->rigid_body_components,
         &gs->rigid_body_component_capacity, needed_entities,
         sizeof(rigid_body_component), "rigid_body_components");
-    gs->character_controller_components = (character_controller_component *)reserve_array(
-        gs->gameplay, gs->character_controller_components,
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->character_controller_components,
         &gs->character_controller_component_capacity, needed_entities,
         sizeof(character_controller_component), "character_controller_components");
-    gs->health_components = (health_component *)reserve_array(gs->gameplay, gs->health_components,
-                                                              &gs->health_component_capacity, needed_entities,
-                                                              sizeof(health_component), "health_components");
-    gs->box_collider_components = (box_collider_component *)reserve_array(
-        gs->gameplay, gs->box_collider_components,
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->health_components,
+        &gs->health_component_capacity, needed_entities,
+        sizeof(health_component), "health_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->box_collider_components,
         &gs->box_collider_component_capacity, needed_entities,
         sizeof(box_collider_component), "box_collider_components");
-    gs->capsule_collider_components = (capsule_collider_component *)reserve_array(
-        gs->gameplay, gs->capsule_collider_components,
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->capsule_collider_components,
         &gs->capsule_collider_component_capacity, needed_entities,
         sizeof(capsule_collider_component), "capsule_collider_components");
-    gs->mesh_components = (mesh_component *)reserve_array(gs->gameplay, gs->mesh_components,
-                                                          &gs->mesh_component_capacity, needed_entities,
-                                                          sizeof(mesh_component), "mesh_components");
-    gs->animation_components = (animation_component *)reserve_array(gs->gameplay, gs->animation_components,
-                                                                    &gs->animation_component_capacity, needed_entities,
-                                                                    sizeof(animation_component), "animation_components");
-    gs->animation_transition_entries = (animation_transition_entry *)reserve_array(
-        gs->gameplay, gs->animation_transition_entries,
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->mesh_components,
+        &gs->mesh_component_capacity, needed_entities,
+        sizeof(mesh_component), "mesh_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->animation_components,
+        &gs->animation_component_capacity, needed_entities,
+        sizeof(animation_component), "animation_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->animation_transition_entries,
         &gs->animation_transition_capacity, needed_entities,
         sizeof(animation_transition_entry), "animation_transition_entries");
-    gs->camera_components = (camera_component *)reserve_array(gs->gameplay, gs->camera_components,
-                                                              &gs->camera_component_capacity, needed_entities,
-                                                              sizeof(camera_component), "camera_components");
-    gs->trigger_components = (trigger_component *)reserve_array(gs->gameplay, gs->trigger_components,
-                                                                &gs->trigger_component_capacity, needed_entities,
-                                                                sizeof(trigger_component), "trigger_components");
+    if (!ERRV_IS_OK(err)) return err;
 
-    if (!gs->scene_entities) {
-        return 0;
-    }
+    err = reserve_array(gs->gameplay, (void **)&gs->camera_components,
+        &gs->camera_component_capacity, needed_entities,
+        sizeof(camera_component), "camera_components");
+    if (!ERRV_IS_OK(err)) return err;
 
-    return 1;
+    err = reserve_array(gs->gameplay, (void **)&gs->trigger_components,
+        &gs->trigger_component_capacity, needed_entities,
+        sizeof(trigger_component), "trigger_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    err = reserve_array(gs->gameplay, (void **)&gs->bone_attach_components,
+        &gs->bone_attach_component_capacity, needed_entities,
+        sizeof(bone_attach_component), "bone_attach_components");
+    if (!ERRV_IS_OK(err)) return err;
+
+    ERRV_RETURN_OK();
 }
 
 static void clear_scene_storage(game_state *gs) {
@@ -780,6 +820,10 @@ static void clear_scene_storage(game_state *gs) {
     if (gs->trigger_components && gs->trigger_component_capacity > 0) {
         memset(gs->trigger_components, 0, (size_t)gs->trigger_component_capacity * sizeof(trigger_component));
     }
+    if (gs->bone_attach_components && gs->bone_attach_component_capacity > 0) {
+        memset(gs->bone_attach_components, 0,
+               (size_t)gs->bone_attach_component_capacity * sizeof(bone_attach_component));
+    }
 
     memset(gs->parent_index, 0xFF, sizeof(gs->parent_index));
     memset(gs->parent_transform_index, 0xFF, sizeof(gs->parent_transform_index));
@@ -798,6 +842,7 @@ static void clear_scene_storage(game_state *gs) {
     memset(gs->animation_transition_index, 0xFF, sizeof(gs->animation_transition_index));
     memset(gs->camera_index, 0xFF, sizeof(gs->camera_index));
     memset(gs->trigger_index, 0xFF, sizeof(gs->trigger_index));
+    memset(gs->bone_attach_index, 0xFF, sizeof(gs->bone_attach_index));
 
     gs->scene_entity_count = 0;
     gs->parent_component_count = 0;
@@ -817,6 +862,7 @@ static void clear_scene_storage(game_state *gs) {
     gs->animation_transition_count = 0;
     gs->camera_component_count = 0;
     gs->trigger_component_count = 0;
+    gs->bone_attach_component_count = 0;
     /* Keep registered model assets so scene resets can reuse loaded meshes/animations. */
     gs->scene_primary_skinned_entity = -1;
     gs->scene_camera_entity = -1;
@@ -986,7 +1032,7 @@ static void push_camera_component(game_state *gs, int entity_index, float fov, f
 
 static void push_trigger_component(game_state *gs, int entity_index,
                                    trigger_type type, int target_entity,
-                                   float radius) {
+                                   float radius, const char *joint_name) {
     int i;
     if (!gs) return;
     if (gs->trigger_component_count >= gs->trigger_component_capacity) return;
@@ -996,7 +1042,74 @@ static void push_trigger_component(game_state *gs, int entity_index,
     gs->trigger_components[i].target_entity = target_entity;
     gs->trigger_components[i].radius = radius > 0.0f ? radius : 1.0f;
     gs->trigger_components[i].activated = 0;
+    gs->trigger_components[i].joint_name[0] = '\0';
+    if (joint_name && joint_name[0])
+        strncpy(gs->trigger_components[i].joint_name, joint_name,
+                sizeof(gs->trigger_components[i].joint_name) - 1);
     gs->trigger_index[entity_index] = i;
+}
+
+static void push_bone_attach_component(game_state *gs, int entity_index,
+                                        int target_entity, int joint_index,
+                                        Vec3 offset_pos, Quat offset_rot) {
+    int i;
+    if (!gs) return;
+    i = gs->bone_attach_component_count;
+    if (i >= gs->bone_attach_component_capacity) return;
+    gs->bone_attach_components[i].entity_index = entity_index;
+    gs->bone_attach_components[i].target_entity = target_entity;
+    gs->bone_attach_components[i].joint_index = joint_index;
+    gs->bone_attach_components[i].offset_pos = offset_pos;
+    gs->bone_attach_components[i].offset_rot = offset_rot;
+    gs->bone_attach_index[entity_index] = i;
+    gs->bone_attach_component_count++;
+}
+
+static void update_bone_attachments(game_state *gs) {
+    int i;
+    if (!gs || gs->bone_attach_component_count <= 0) return;
+
+    for (i = 0; i < gs->bone_attach_component_count; i++) {
+        bone_attach_component *ba = &gs->bone_attach_components[i];
+        anim_instance *inst;
+        mesh_component *mc;
+        scene_model_asset *asset;
+        transform_component *tc;
+        parent_transform_component *pt;
+        Mat4 skin_mat, inv_bind, joint_model, entity_world, joint_world, offset_mat, final_mat;
+
+        mc = find_mesh_component(gs, ba->target_entity);
+        if (!mc) continue;
+        asset = find_scene_model_asset(gs, mc->model_asset_index);
+        if (!asset || !asset->loaded || !asset->has_skeleton) continue;
+        if (ba->joint_index < 0 || (uint32_t)ba->joint_index >= asset->model.skeleton.joint_count) continue;
+
+        inst = anim_sm_find_instance(&gs->anim, ba->target_entity);
+        if (!inst) continue;
+
+        skin_mat = gs->anim.pool.skin_mats[inst->skin_mats_offset + ba->joint_index];
+        inv_bind = mat4_affine_inverse(asset->model.skeleton.inverse_bind[ba->joint_index]);
+        joint_model = mat4_mul(skin_mat, inv_bind);
+
+        entity_world = resolve_world_transform(gs, ba->target_entity);
+        joint_world = mat4_mul(mat4_mul(entity_world, asset->model.armature_transform), joint_model);
+
+        offset_mat = mat4_from_trs(ba->offset_pos, ba->offset_rot, VEC3(1.0f, 1.0f, 1.0f));
+        final_mat = mat4_mul(joint_world, offset_mat);
+
+        tc = find_transform_component(gs, ba->entity_index);
+        if (tc) {
+            tc->position.x = final_mat.m[12];
+            tc->position.y = final_mat.m[13];
+            tc->position.z = final_mat.m[14];
+        }
+
+        /* Clear parent_transform so resolve_world_transform doesn't double-add */
+        pt = find_parent_transform_component(gs, ba->entity_index);
+        if (pt) {
+            pt->parent_entity_index = -1;
+        }
+    }
 }
 
 static int scene_name_has_player_token(const char *name) {
@@ -1235,7 +1348,12 @@ static void build_scene_from_project(game_state *gs) {
         trigger_type ttype = TRIGGER_DOOR;
         if (tr->entity >= gs->scene_entity_count) continue;
         if (strcmp(tr->type_str, "pickup") == 0) ttype = TRIGGER_PICKUP;
-        push_trigger_component(gs, tr->entity, ttype, tr->target, tr->radius);
+        else if (strcmp(tr->type_str, "weapon_pickup") == 0) ttype = TRIGGER_WEAPON_PICKUP;
+        push_trigger_component(gs, tr->entity, ttype, tr->target, tr->radius,
+                               tr->joint[0] ? tr->joint : NULL);
+        fprintf(stderr, "[build_scene] trigger: entity=%d type='%s' ttype=%d target=%d radius=%.1f joint='%s'\n",
+                tr->entity, tr->type_str, (int)ttype, tr->target, tr->radius,
+                tr->joint[0] ? tr->joint : "");
     }
 
     if (gs->camera_component_count <= 0 && gs->scene_entity_count < gs->scene_entity_capacity) {
@@ -1491,30 +1609,37 @@ static void anim_sm_init_pool(anim_sm *sm, arena *a) {
     sm->pool_initialized = 1;
 }
 
-static int anim_sm_add_state(anim_sm *sm, const char *name, int clip_index, int looping) {
+static error_value anim_sm_add_state(anim_sm *sm, const char *name, int clip_index,
+                                      int looping, int *out_index) {
     anim_state_table *st;
-    if (sm->state_count >= ANIM_SM_MAX_STATES) return -1;
+    if (sm->state_count >= ANIM_SM_MAX_STATES)
+        ERRV_RETURN_ERR(1, "anim state overflow");
     st = &sm->states[sm->state_count];
     memset(st, 0, sizeof(*st));
     strncpy(st->name, name, ANIM_SM_STATE_NAME_MAX - 1);
     st->clip_index = clip_index;
     st->looping = looping;
     st->count = 0;
-    return sm->state_count++;
+    if (out_index) *out_index = sm->state_count;
+    sm->state_count++;
+    ERRV_RETURN_OK();
 }
 
-static int anim_sm_add_rule(anim_sm *sm, int from_state, int to_state,
-                            anim_condition_type cond, float threshold,
-                            float blend_duration) {
+static error_value anim_sm_add_rule(anim_sm *sm, int from_state, int to_state,
+                                     anim_condition_type cond, float threshold,
+                                     float blend_duration, int *out_index) {
     anim_transition_rule *r;
-    if (sm->rule_count >= ANIM_SM_MAX_RULES) return -1;
+    if (sm->rule_count >= ANIM_SM_MAX_RULES)
+        ERRV_RETURN_ERR(1, "anim rule overflow");
     r = &sm->rules[sm->rule_count];
     r->from_state = from_state;
     r->to_state = to_state;
     r->condition = cond;
     r->threshold = threshold;
     r->blend_duration = blend_duration;
-    return sm->rule_count++;
+    if (out_index) *out_index = sm->rule_count;
+    sm->rule_count++;
+    ERRV_RETURN_OK();
 }
 
 static void anim_sm_insert_entity_into_state(anim_sm *sm, int state_index,
@@ -1653,6 +1778,7 @@ EXPORT void init_engine(game_state *gs) {
     register_system(gs, "input",                (system_fn)update_input,                    1);
     register_system(gs, "character_controller",  (system_fn)run_character_controller_system, 1);
     register_system(gs, "animation_sm",         (system_fn)system_animation_sm,             1);
+    register_system(gs, "bone_attachments",     (system_fn)update_bone_attachments,         0);
     register_system(gs, "movement",             (system_fn)apply_movement,                  1);
     register_system(gs, "collision",            (system_fn)collision,                       1);
     register_system(gs, "triggers",             (system_fn)update_triggers,                 1);
@@ -1670,11 +1796,19 @@ EXPORT void init_engine(game_state *gs) {
         if (target_entities < 8) target_entities = 8;
     }
 
-    if (!ensure_scene_storage(gs, target_entities)) return;
+    {
+        error_value err = ensure_scene_storage(gs, target_entities);
+        if (!ERRV_IS_OK(err)) { errv_log("ensure_scene_storage", err); return; }
+    }
+    fprintf(stderr, "[init_engine] scene storage OK (%d entities)\n", target_entities);
+    fflush(stderr);
 
     /* Init anim SM pool (arena pointers don't survive hot-reload) */
     if (!gs->anim.pool_initialized && gs->gameplay) {
         anim_sm_init_pool(&gs->anim, gs->gameplay);
+        fprintf(stderr, "[init_engine] anim pool init: %s\n",
+                gs->anim.pool_initialized ? "OK" : "FAILED");
+        fflush(stderr);
     }
 
     /* Reset SM states/instances so they get rebuilt with fresh entities */
@@ -1687,7 +1821,10 @@ EXPORT void init_engine(game_state *gs) {
     clear_scene_storage(gs);
 
     if (gs->project_loaded) {
+        fprintf(stderr, "[init_engine] building scene from project...\n"); fflush(stderr);
         build_scene_from_project(gs);
+        fprintf(stderr, "[init_engine] scene built: %d entities, %d anim comps\n",
+                gs->scene_entity_count, gs->animation_component_count); fflush(stderr);
     } else {
         build_fallback_scene(gs);
     }
@@ -1697,7 +1834,10 @@ EXPORT void init_engine(game_state *gs) {
     if (gs->mesh3d.camera_near <= 0.0f) gs->mesh3d.camera_near = 0.1f;
     if (gs->mesh3d.camera_far <= gs->mesh3d.camera_near) gs->mesh3d.camera_far = 100.0f;
 
+    fprintf(stderr, "[init_engine] loading model assets...\n"); fflush(stderr);
     load_scene_model_assets(gs);
+    fprintf(stderr, "[init_engine] model assets loaded, %d assets\n",
+            gs->scene_model_asset_count); fflush(stderr);
     sync_primary_mesh3d_asset(gs);
     sync_mesh_camera_from_components(gs);
 
@@ -1734,30 +1874,44 @@ EXPORT void init_engine(game_state *gs) {
 
         printf("Anim SM: idle=clip %d, run=clip %d, attack=clip %d (of %u)\n",
                idle_clip, run_clip, attack_clip, gs->mesh3d.clip_count);
+        fflush(stdout);
 
         {
-            int idle_state = anim_sm_add_state(&gs->anim, "idle", idle_clip, 1);
-            int run_state = -1;
+            int idle_state = -1, run_state = -1, attack_state = -1;
+            error_value err;
+
+            err = anim_sm_add_state(&gs->anim, "idle", idle_clip, 1, &idle_state);
+            if (!ERRV_IS_OK(err)) { errv_log("add_state(idle)", err); return; }
+
             if (run_clip >= 0) {
-                run_state = anim_sm_add_state(&gs->anim, "run", run_clip, 1);
+                err = anim_sm_add_state(&gs->anim, "run", run_clip, 1, &run_state);
+                if (!ERRV_IS_OK(err)) { errv_log("add_state(run)", err); return; }
                 anim_sm_add_rule(&gs->anim, idle_state, run_state,
-                                 ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.18f);
+                                 ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.18f, NULL);
                 anim_sm_add_rule(&gs->anim, run_state, idle_state,
-                                 ANIM_COND_VELOCITY_BELOW, 0.1f, 0.18f);
+                                 ANIM_COND_VELOCITY_BELOW, 0.1f, 0.18f, NULL);
             }
             if (attack_clip >= 0) {
-                int attack_state = anim_sm_add_state(&gs->anim, "attack", attack_clip, 0);
+                err = anim_sm_add_state(&gs->anim, "attack", attack_clip, 0, &attack_state);
+                if (!ERRV_IS_OK(err)) { errv_log("add_state(attack)", err); return; }
                 anim_sm_add_rule(&gs->anim, idle_state, attack_state,
-                                 ANIM_COND_INPUT_BUTTON, (float)INPUT_B, 0.08f);
+                                 ANIM_COND_INPUT_BUTTON, (float)INPUT_B, 0.08f, NULL);
                 if (run_state >= 0)
                     anim_sm_add_rule(&gs->anim, run_state, attack_state,
-                                     ANIM_COND_INPUT_BUTTON, (float)INPUT_B, 0.08f);
+                                     ANIM_COND_INPUT_BUTTON, (float)INPUT_B, 0.08f, NULL);
                 anim_sm_add_rule(&gs->anim, attack_state, idle_state,
-                                 ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f);
+                                 ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f, NULL);
             }
         }
+        fprintf(stderr, "[init_engine] anim SM states/rules OK, registering %d anim entities...\n",
+                gs->animation_component_count);
+        fflush(stderr);
         anim_sm_register_scene_entities(gs);
+        fprintf(stderr, "[init_engine] anim SM registered %d instances\n", gs->anim.instance_count);
+        fflush(stderr);
     }
+    fprintf(stderr, "[init_engine] complete\n");
+    fflush(stderr);
 }
 
 static void update_mesh3d_from_animation_component(game_state *gs, animation_component *ac) {
@@ -2146,6 +2300,7 @@ static void swap_and_pop_trigger(game_state *gs, int index) {
 }
 
 static void update_triggers(game_state *gs) {
+    static int trigger_log_frames = 0;
     int i, player_entity;
     Vec3 player_pos;
     if (!gs || gs->trigger_component_count <= 0) return;
@@ -2155,6 +2310,21 @@ static void update_triggers(game_state *gs) {
     player_entity = gs->character_controller_components[0].entity_index;
     player_pos = resolve_world_position(gs, player_entity);
 
+    if (trigger_log_frames < 3) {
+        fprintf(stderr, "[triggers] frame %d: %d triggers, player at (%.2f, %.2f, %.2f)\n",
+                trigger_log_frames, gs->trigger_component_count,
+                player_pos.x, player_pos.y, player_pos.z);
+        for (i = 0; i < gs->trigger_component_count; i++) {
+            trigger_component *t = &gs->trigger_components[i];
+            Vec3 tp = resolve_world_position(gs, t->entity_index);
+            fprintf(stderr, "  [%d] entity=%d type=%d radius=%.1f pos=(%.2f,%.2f,%.2f) joint='%s'\n",
+                    i, t->entity_index, (int)t->type, t->radius,
+                    tp.x, tp.y, tp.z, t->joint_name);
+        }
+        fflush(stderr);
+        trigger_log_frames++;
+    }
+
     for (i = 0; i < gs->trigger_component_count; ) {
         trigger_component *trig = &gs->trigger_components[i];
         Vec3 trig_pos;
@@ -2163,6 +2333,41 @@ static void update_triggers(game_state *gs) {
         int door_trig_idx;
         mesh_component *door_mc;
         box_collider_component *door_bc;
+
+        if (trig->type == TRIGGER_WEAPON_PICKUP) {
+            mesh_component *target_mc;
+            scene_model_asset *target_asset;
+            int joint_idx;
+            Vec3 wp;
+            float wdx, wdz, wdist_sq, wr_sq;
+
+            wp = resolve_world_position(gs, trig->entity_index);
+            wdx = player_pos.x - wp.x;
+            wdz = player_pos.z - wp.z;
+            wdist_sq = wdx * wdx + wdz * wdz;
+            wr_sq = trig->radius * trig->radius;
+            if (wdist_sq >= wr_sq) { i++; continue; }
+
+            target_mc = find_mesh_component(gs, trig->target_entity);
+            target_asset = target_mc ? find_scene_model_asset(gs, target_mc->model_asset_index) : NULL;
+            joint_idx = -1;
+            if (target_asset && target_asset->has_skeleton) {
+                joint_idx = find_joint_by_name(&target_asset->model.skeleton, trig->joint_name);
+            }
+
+            if (joint_idx >= 0) {
+                push_bone_attach_component(gs, trig->entity_index, trig->target_entity,
+                    joint_idx, VEC3(0,0,0), QUAT(0,0,0,1));
+                fprintf(stderr, "Weapon pickup: entity %d attached to joint %d (%s) of entity %d\n",
+                        trig->entity_index, joint_idx, trig->joint_name, trig->target_entity);
+            } else {
+                fprintf(stderr, "Weapon pickup: could not find joint '%s' on entity %d\n",
+                        trig->joint_name, trig->target_entity);
+            }
+
+            swap_and_pop_trigger(gs, i);
+            continue;
+        }
 
         if (trig->type != TRIGGER_PICKUP) { i++; continue; }
 
@@ -2292,8 +2497,15 @@ static void register_system(game_state *gs, const char *name,
 }
 
 EXPORT void update_engine(game_state *gs) {
+    static int update_count = 0;
     int i;
     if (!gs) return;
+
+    if (update_count < 3) {
+        fprintf(stderr, "[update_engine] frame %d, %d systems, play_mode=%d\n",
+                update_count, gs->system_count, gs->editor_play_mode);
+        fflush(stderr);
+    }
 
     ENGINE_CPU_ZONE_BEGIN("update_engine");
     ENGINE_CACHE_ZONE_BEGIN("update_engine");
@@ -2301,10 +2513,15 @@ EXPORT void update_engine(game_state *gs) {
     for (i = 0; i < gs->system_count; i++) {
         engine_system *sys = &gs->systems[i];
         if (sys->play_mode_only && !gs->editor_play_mode) continue;
+        if (update_count < 3) {
+            fprintf(stderr, "[update_engine]   running system '%s'\n", sys->name);
+            fflush(stderr);
+        }
         ENGINE_CPU_ZONE_BEGIN(sys->name);
         sys->fn(gs);
         ENGINE_CPU_ZONE_END();
     }
+    update_count++;
 
     ENGINE_CACHE_ZONE_END();
     ENGINE_CPU_ZONE_END();

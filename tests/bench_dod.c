@@ -390,7 +390,7 @@ static void bench_trigger_update(void) {
         /* Add pickup triggers on odd entities near player */
         for (i = 1; i < 32; i += 2) {
             gs->transform_components[gs->transform_index[i]].position = VEC3(0.0f, 0.0f, 0.0f);
-            push_trigger_component(gs, i, TRIGGER_PICKUP, -1, 2.0f);
+            push_trigger_component(gs, i, TRIGGER_PICKUP, -1, 2.0f, NULL);
         }
         triggers_processed += gs->trigger_component_count;
         update_triggers(gs);

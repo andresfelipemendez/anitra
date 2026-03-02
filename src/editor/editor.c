@@ -910,18 +910,7 @@ static int editor_find_tabs_leaf_with_room(const dock_state *d, int node_idx) {
 }
 
 static void editor_log_error_value(const char *context, error_value err) {
-    if (!context) context = "editor";
-    if (ERRV_IS_OK(err)) {
-        fprintf(stderr, "%s failed with an unspecified error\n", context);
-        return;
-    }
-    fprintf(stderr,
-            "%s failed (%d): %s [%s:%d]\n",
-            context,
-            err.code,
-            err.message ? err.message : "(no message)",
-            err.file ? err.file : "(unknown)",
-            err.line);
+    errv_log(context ? context : "editor", err);
 }
 
 static void editor_ensure_required_panels(dock_state *d) {

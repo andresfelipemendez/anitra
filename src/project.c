@@ -644,6 +644,8 @@ static void parse_trigger_table(const toml_table_t *tbl, project_data *out) {
 
         vd = toml_table_double(entry, "radius");
         if (vd.ok) tr->radius = (float)vd.u.d;
+
+        copy_toml_string(entry, "joint", tr->joint, sizeof(tr->joint));
     }
 }
 

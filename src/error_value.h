@@ -2,6 +2,7 @@
 #define ERROR_VALUE_H
 
 #include <stddef.h>
+#include <stdio.h>
 
 /*
  * Go-style "error as value" helper.
@@ -43,5 +44,18 @@ typedef struct error_value {
         if ((out_error) != NULL) *(out_error) = ERRV_MAKE((code_value), (message_value)); \
         return (return_code); \
     } while (0)
+
+static inline void errv_log(const char *context, error_value err) {
+    if (ERRV_IS_OK(err)) {
+        fprintf(stderr, "%s: failed (no error detail)\n", context ? context : "?");
+        return;
+    }
+    fprintf(stderr, "%s: %s (code %d) [%s:%d]\n",
+            context ? context : "?",
+            err.message ? err.message : "(no message)",
+            err.code,
+            err.file ? err.file : "?",
+            err.line);
+}
 
 #endif /* ERROR_VALUE_H */

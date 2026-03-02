@@ -215,4 +215,35 @@ static inline Mat4 mat4_from_floats(const float *f) {
     return m;
 }
 
+static inline Mat4 mat4_affine_inverse(Mat4 m) {
+    Mat4 r = {0};
+    float det, inv_det;
+    float a00 = m.m[0], a01 = m.m[4], a02 = m.m[8];
+    float a10 = m.m[1], a11 = m.m[5], a12 = m.m[9];
+    float a20 = m.m[2], a21 = m.m[6], a22 = m.m[10];
+    float tx  = m.m[12], ty = m.m[13], tz = m.m[14];
+
+    float c00 = a11*a22 - a12*a21;
+    float c01 = a12*a20 - a10*a22;
+    float c02 = a10*a21 - a11*a20;
+    float c10 = a02*a21 - a01*a22;
+    float c11 = a00*a22 - a02*a20;
+    float c12 = a01*a20 - a00*a21;
+    float c20 = a01*a12 - a02*a11;
+    float c21 = a02*a10 - a00*a12;
+    float c22 = a00*a11 - a01*a10;
+
+    det = a00*c00 + a01*c01 + a02*c02;
+    inv_det = (det != 0.0f) ? 1.0f / det : 0.0f;
+
+    r.m[0]  = c00 * inv_det; r.m[1]  = c01 * inv_det; r.m[2]  = c02 * inv_det;
+    r.m[4]  = c10 * inv_det; r.m[5]  = c11 * inv_det; r.m[6]  = c12 * inv_det;
+    r.m[8]  = c20 * inv_det; r.m[9]  = c21 * inv_det; r.m[10] = c22 * inv_det;
+    r.m[12] = -(r.m[0]*tx + r.m[4]*ty + r.m[8]*tz);
+    r.m[13] = -(r.m[1]*tx + r.m[5]*ty + r.m[9]*tz);
+    r.m[14] = -(r.m[2]*tx + r.m[6]*ty + r.m[10]*tz);
+    r.m[15] = 1.0f;
+    return r;
+}
+
 #endif /* MATH3D_H */

@@ -247,6 +247,7 @@ static scene_model_asset *setup_test_model_asset(game_state *gs) {
     asset->model.skeleton.joint_count = 2;
     asset->model.clips = g_clips;
     asset->model.clip_count = sizeof(g_clips) / sizeof(g_clips[0]);
+    asset->model.armature_transform = mat4_identity();
     asset->model.mesh.primitive_count = 1;
     gs->scene_model_asset_count = 1;
     return asset;
@@ -319,6 +320,9 @@ static game_state *setup_game_state(void) {
     gs->trigger_components = (trigger_component *)arena_alloc(gs->gameplay,
         (uint32_t)(8 * sizeof(trigger_component)), 8, "trig_comps");
     gs->trigger_component_capacity = 8;
+    gs->bone_attach_components = (bone_attach_component *)arena_alloc(gs->gameplay,
+        (uint32_t)(8 * sizeof(bone_attach_component)), 8, "bone_attach_comps");
+    gs->bone_attach_component_capacity = 8;
 
     /* Init entity->component index lookup arrays */
     memset(gs->parent_index, 0xFF, sizeof(gs->parent_index));
@@ -338,6 +342,7 @@ static game_state *setup_game_state(void) {
     memset(gs->animation_transition_index, 0xFF, sizeof(gs->animation_transition_index));
     memset(gs->camera_index, 0xFF, sizeof(gs->camera_index));
     memset(gs->trigger_index, 0xFF, sizeof(gs->trigger_index));
+    memset(gs->bone_attach_index, 0xFF, sizeof(gs->bone_attach_index));
 
     /* Draw list */
     gs->dl.meshes = (mesh_draw_command *)arena_alloc(gs->gameplay,
@@ -412,14 +417,57 @@ TEST(pool_init_fails_on_tiny_arena) {
     ASSERT(gs->anim.pool.skin_mats == NULL);
 }
 
+/* ── Tests: Error propagation ────────────────────────────────────────── */
+
+TEST(reserve_array_returns_error_on_full_arena) {
+    /* arena struct is ~3KB (128 records), so buffer must hold header + tiny payload */
+    static uint8_t tiny_buf[4096];
+    arena *tiny;
+    void *ptr = NULL;
+    int capacity = 0;
+    error_value err;
+
+    memset(tiny_buf, 0, sizeof(tiny_buf));
+    tiny = (arena *)tiny_buf;
+    tiny->base = tiny_buf + sizeof(arena);
+    tiny->capacity = (uint32_t)(sizeof(tiny_buf) - sizeof(arena));
+
+    /* Request far more than the ~1KB remaining payload */
+    err = reserve_array(tiny, &ptr, &capacity, 10000, sizeof(int), "test_alloc");
+    ASSERT(!ERRV_IS_OK(err));
+    ASSERT(err.code != 0);
+    ASSERT(err.file != NULL);
+    ASSERT(err.line > 0);
+    ASSERT(ptr == NULL);
+    ASSERT_EQ(capacity, 0);
+}
+
+TEST(anim_sm_add_state_returns_error_on_overflow) {
+    anim_sm *sm = setup_bare_sm();
+    int i;
+    int out_index = -1;
+    error_value err;
+    for (i = 0; i < ANIM_SM_MAX_STATES; i++)
+        anim_sm_add_state(sm, "s", i, 1, NULL);
+    ASSERT_EQ(sm->state_count, ANIM_SM_MAX_STATES);
+
+    err = anim_sm_add_state(sm, "overflow", 99, 1, &out_index);
+    ASSERT(!ERRV_IS_OK(err));
+    ASSERT(err.message != NULL);
+    ASSERT(err.file != NULL);
+    ASSERT(err.line > 0);
+    ASSERT_EQ(out_index, -1); /* untouched */
+    ASSERT_EQ(sm->state_count, ANIM_SM_MAX_STATES); /* no growth */
+}
+
 /* ── Tests: State management ─────────────────────────────────────────── */
 
 TEST(add_state_returns_sequential_indices) {
     anim_sm *sm = setup_bare_sm();
-    int s0, s1, s2;
-    s0 = anim_sm_add_state(sm, "idle", 0, 1);
-    s1 = anim_sm_add_state(sm, "walk", 1, 1);
-    s2 = anim_sm_add_state(sm, "run", 2, 1);
+    int s0 = -1, s1 = -1, s2 = -1;
+    ASSERT(ERRV_IS_OK(anim_sm_add_state(sm, "idle", 0, 1, &s0)));
+    ASSERT(ERRV_IS_OK(anim_sm_add_state(sm, "walk", 1, 1, &s1)));
+    ASSERT(ERRV_IS_OK(anim_sm_add_state(sm, "run", 2, 1, &s2)));
     ASSERT_EQ(s0, 0);
     ASSERT_EQ(s1, 1);
     ASSERT_EQ(s2, 2);
@@ -428,19 +476,23 @@ TEST(add_state_returns_sequential_indices) {
 
 TEST(add_state_stores_clip_and_name) {
     anim_sm *sm = setup_bare_sm();
-    anim_sm_add_state(sm, "walk", 5, 0);
+    anim_sm_add_state(sm, "walk", 5, 0, NULL);
     ASSERT_EQ(sm->states[0].clip_index, 5);
     ASSERT_EQ(sm->states[0].looping, 0);
     ASSERT(strcmp(sm->states[0].name, "walk") == 0);
 }
 
-TEST(add_state_overflow_returns_minus_one) {
+TEST(add_state_overflow_returns_error) {
     anim_sm *sm = setup_bare_sm();
-    int i, result;
+    int i;
+    error_value err;
     for (i = 0; i < ANIM_SM_MAX_STATES; i++)
-        anim_sm_add_state(sm, "s", i, 1);
-    result = anim_sm_add_state(sm, "overflow", 99, 1);
-    ASSERT_EQ(result, -1);
+        anim_sm_add_state(sm, "s", i, 1, NULL);
+    err = anim_sm_add_state(sm, "overflow", 99, 1, NULL);
+    ASSERT(!ERRV_IS_OK(err));
+    ASSERT(err.message != NULL);
+    ASSERT(err.file != NULL);
+    ASSERT(err.line > 0);
 }
 
 /* ── Tests: Entity registration ──────────────────────────────────────── */
@@ -449,7 +501,7 @@ TEST(register_entity_assigns_skin_mats_offset) {
     game_state *gs = setup_game_state();
     anim_sm *sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
 
     anim_sm_register_entity(sm, 0, 0, 0, 50);
     anim_sm_register_entity(sm, 1, 0, 0, 30);
@@ -464,8 +516,8 @@ TEST(register_entity_inserts_into_state_table) {
     game_state *gs = setup_game_state();
     anim_sm *sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "walk", 1, 1);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "walk", 1, 1, NULL);
 
     anim_sm_register_entity(sm, 5, 0, 0, 10);
     anim_sm_register_entity(sm, 7, 0, 1, 10);
@@ -480,7 +532,7 @@ TEST(register_entity_inserts_into_state_table) {
 
 TEST(insert_and_remove_entity_from_state) {
     anim_sm *sm = setup_bare_sm();
-    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
 
     anim_sm_insert_entity_into_state(sm, 0, 10);
     anim_sm_insert_entity_into_state(sm, 0, 20);
@@ -498,7 +550,7 @@ TEST(insert_and_remove_entity_from_state) {
 
 TEST(remove_nonexistent_entity_is_noop) {
     anim_sm *sm = setup_bare_sm();
-    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
     anim_sm_insert_entity_into_state(sm, 0, 10);
     anim_sm_remove_entity_from_state(sm, 0, 99);
     ASSERT_EQ(sm->states[0].count, 1);
@@ -530,7 +582,7 @@ TEST(find_instance_returns_null_for_missing) {
 
 TEST(add_rule_stores_correctly) {
     anim_sm *sm = setup_bare_sm();
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.5f, 0.2f);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.5f, 0.2f, NULL);
     ASSERT_EQ(sm->rule_count, 1);
     ASSERT_EQ(sm->rules[0].from_state, 0);
     ASSERT_EQ(sm->rules[0].to_state, 1);
@@ -548,7 +600,7 @@ TEST(phase1_advances_anim_times) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
 
     ASSERT_FLOAT_NEAR(sm->states[0].anim_times[0], 0.0f, 0.001f);
@@ -572,9 +624,9 @@ TEST(velocity_above_triggers_transition_to_blend) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "walk", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "walk", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -607,9 +659,9 @@ TEST(velocity_below_threshold_no_transition) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "walk", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.5f, 0.2f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "walk", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.5f, 0.2f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -638,9 +690,9 @@ TEST(blend_completes_and_entity_moves_to_dest_state) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "walk", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.18f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "walk", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.18f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -679,7 +731,7 @@ TEST(phase4_writes_skin_mats_for_state_entities) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -709,9 +761,9 @@ TEST(phase5_writes_blended_skin_mats) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "walk", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.5f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "walk", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.5f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -749,8 +801,8 @@ TEST(multiple_entities_have_independent_poses) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "walk", 1, 1);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "walk", 1, 1, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     add_animated_entity(gs, 1, 0, 1, 1.0f);
@@ -778,7 +830,7 @@ TEST(build_mesh_draw_commands_sets_bone_offset) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     add_animated_entity(gs, 1, 0, 0, 1.0f);
@@ -804,10 +856,10 @@ TEST(bidirectional_transition_idle_to_walk_and_back) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "walk", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.1f);
-    anim_sm_add_rule(sm, 1, 0, ANIM_COND_VELOCITY_BELOW, 0.1f, 0.1f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "walk", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.1f, NULL);
+    anim_sm_add_rule(sm, 1, 0, ANIM_COND_VELOCITY_BELOW, 0.1f, 0.1f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -847,9 +899,9 @@ TEST(velocity_on_same_entity_triggers_transition) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "run", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "run", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -875,9 +927,9 @@ TEST(zero_velocity_stays_idle) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "run", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "run", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -1052,9 +1104,9 @@ TEST(parent_child_velocity_triggers_transition) {
     setup_project_scene(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "run", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "run", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f, NULL);
     anim_sm_register_entity(sm, 19, 0, 0, 2);
 
     /* CC writes velocity along forward (z-axis) on entity 0 */
@@ -1076,9 +1128,9 @@ TEST(parent_child_no_velocity_stays_idle) {
     setup_project_scene(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "run", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "run", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.2f, NULL);
     anim_sm_register_entity(sm, 19, 0, 0, 2);
 
     /* velocity = 0 (not moving) */
@@ -1097,10 +1149,10 @@ TEST(full_scene_bidirectional_transition) {
     setup_project_scene(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "run", 1, 1);
-    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.1f);
-    anim_sm_add_rule(sm, 1, 0, ANIM_COND_VELOCITY_BELOW, 0.1f, 0.1f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "run", 1, 1, NULL);
+    anim_sm_add_rule(sm, 0, 1, ANIM_COND_VELOCITY_ABOVE, 0.1f, 0.1f, NULL);
+    anim_sm_add_rule(sm, 1, 0, ANIM_COND_VELOCITY_BELOW, 0.1f, 0.1f, NULL);
     anim_sm_register_entity(sm, 19, 0, 0, 2);
 
     /* Start moving — idle → run */
@@ -1189,7 +1241,7 @@ TEST(anim_time_wraps_for_looping_clips) {
     setup_test_model_asset(gs);
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
-    anim_sm_add_state(sm, "idle", 0, 1); /* clip 0 duration = 1.0s */
+    anim_sm_add_state(sm, "idle", 0, 1, NULL); /* clip 0 duration = 1.0s */
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -1502,18 +1554,18 @@ TEST(trigger_swap_and_pop_on_activation) {
     /* Entity 1: key pickup trigger (target = entity 2) */
     push_transform_component(gs, 1, VEC3(0.0f, 0.0f, 0.0f));
     push_mesh_component(gs, 1, 0);
-    push_trigger_component(gs, 1, TRIGGER_PICKUP, 2, 1.0f);
+    push_trigger_component(gs, 1, TRIGGER_PICKUP, 2, 1.0f, NULL);
 
     /* Entity 2: door trigger */
     push_transform_component(gs, 2, VEC3(0.0f, 0.0f, 0.0f));
     push_mesh_component(gs, 2, 0);
     push_box_collider_component(gs, 2, (rect){0.0f, 0.0f, 1.0f, 1.0f}, 0.5f);
-    push_trigger_component(gs, 2, TRIGGER_DOOR, -1, 1.0f);
+    push_trigger_component(gs, 2, TRIGGER_DOOR, -1, 1.0f, NULL);
 
     /* Entity 3: another trigger (should survive swap-and-pop) */
     push_transform_component(gs, 3, VEC3(10.0f, 0.0f, 0.0f));
     push_mesh_component(gs, 3, 0);
-    push_trigger_component(gs, 3, TRIGGER_PICKUP, -1, 1.0f);
+    push_trigger_component(gs, 3, TRIGGER_PICKUP, -1, 1.0f, NULL);
 
     ASSERT_EQ(gs->trigger_component_count, 3);
     ASSERT_EQ(gs->trigger_index[1], 0);
@@ -1768,11 +1820,11 @@ TEST(input_button_triggers_attack_transition) {
     anim_sm_init_pool(sm, gs->gameplay);
 
     /* idle=0(clip0), run=1(clip1), attack=2(clip2, non-looping) */
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "run", 1, 1);
-    anim_sm_add_state(sm, "attack", 2, 0);
-    anim_sm_add_rule(sm, 0, 2, ANIM_COND_INPUT_BUTTON, 2.0f, 0.08f);
-    anim_sm_add_rule(sm, 2, 0, ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "run", 1, 1, NULL);
+    anim_sm_add_state(sm, "attack", 2, 0, NULL);
+    anim_sm_add_rule(sm, 0, 2, ANIM_COND_INPUT_BUTTON, 2.0f, 0.08f, NULL);
+    anim_sm_add_rule(sm, 2, 0, ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -1813,11 +1865,11 @@ TEST(attack_does_not_retrigger_during_blend) {
     sm = &gs->anim;
     anim_sm_init_pool(sm, gs->gameplay);
 
-    anim_sm_add_state(sm, "idle", 0, 1);
-    anim_sm_add_state(sm, "run", 1, 1);
-    anim_sm_add_state(sm, "attack", 2, 0);
-    anim_sm_add_rule(sm, 0, 2, ANIM_COND_INPUT_BUTTON, 2.0f, 0.08f);
-    anim_sm_add_rule(sm, 2, 0, ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    anim_sm_add_state(sm, "run", 1, 1, NULL);
+    anim_sm_add_state(sm, "attack", 2, 0, NULL);
+    anim_sm_add_rule(sm, 0, 2, ANIM_COND_INPUT_BUTTON, 2.0f, 0.08f, NULL);
+    anim_sm_add_rule(sm, 2, 0, ANIM_COND_CLIP_FINISHED, 0.0f, 0.15f, NULL);
 
     add_animated_entity(gs, 0, 0, 0, 1.0f);
     anim_sm_register_entity(sm, 0, 0, 0, 2);
@@ -1832,6 +1884,63 @@ TEST(attack_does_not_retrigger_during_blend) {
     ASSERT_EQ(sm->blend_count, 1);
 }
 
+/* ── Bone attachment tests ─────────────────────────────────────────────── */
+
+TEST(bone_attach_updates_transform_from_joint) {
+    game_state *gs = setup_game_state();
+    anim_sm *sm = &gs->anim;
+    scene_model_asset *asset;
+    static const char *joint_names[2] = {"Root", "RightHand"};
+
+    init_test_clips();
+    asset = setup_test_model_asset(gs);
+    asset->model.skeleton.joint_names = joint_names;
+
+    anim_sm_init_pool(sm, gs->gameplay);
+    anim_sm_add_state(sm, "idle", 0, 1, NULL);
+    add_animated_entity(gs, 0, 0, 0, 1.0f);
+    anim_sm_register_entity(sm, 0, 0, 0, 2);
+
+    /* Add a sword entity with transform */
+    gs->scene_entity_count = 2;
+    {
+        int ti = gs->transform_component_count++;
+        gs->transform_components[ti].entity_index = 1;
+        gs->transform_components[ti].position = VEC3(5, 0, 5);
+        gs->transform_index[1] = ti;
+    }
+
+    /* Attach sword (entity 1) to entity 0's joint 1 (RightHand) */
+    push_bone_attach_component(gs, 1, 0, 1, VEC3(0,0,0), QUAT(0,0,0,1));
+    ASSERT_EQ(gs->bone_attach_component_count, 1);
+
+    /* Run anim SM to compute skin_mats */
+    anim_sm_update(sm, gs, 1.0f/60.0f);
+
+    /* Run bone attachment system */
+    update_bone_attachments(gs);
+
+    /* Sword transform should have changed from (5,0,5) */
+    {
+        transform_component *tc = find_transform_component(gs, 1);
+        ASSERT(tc != NULL);
+        ASSERT(tc->position.x != 5.0f || tc->position.y != 0.0f || tc->position.z != 5.0f);
+    }
+}
+
+TEST(find_joint_by_name_returns_correct_index) {
+    static const char *names[3] = {"Root", "Spine", "RightHand"};
+    Skeleton skel = {0};
+    skel.joint_names = names;
+    skel.joint_count = 3;
+
+    ASSERT_EQ(find_joint_by_name(&skel, "Root"), 0);
+    ASSERT_EQ(find_joint_by_name(&skel, "RightHand"), 2);
+    ASSERT_EQ(find_joint_by_name(&skel, "LeftHand"), -1);
+    ASSERT_EQ(find_joint_by_name(NULL, "Root"), -1);
+    ASSERT_EQ(find_joint_by_name(&skel, NULL), -1);
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1843,10 +1952,14 @@ int main(void) {
     run_pool_init_succeeds();
     run_pool_init_fails_on_tiny_arena();
 
+    /* Error propagation */
+    run_reserve_array_returns_error_on_full_arena();
+    run_anim_sm_add_state_returns_error_on_overflow();
+
     /* State management */
     run_add_state_returns_sequential_indices();
     run_add_state_stores_clip_and_name();
-    run_add_state_overflow_returns_minus_one();
+    run_add_state_overflow_returns_error();
 
     /* Entity registration */
     run_register_entity_assigns_skin_mats_offset();
@@ -1921,6 +2034,10 @@ int main(void) {
     run_implicit_visibility_propagation();
     run_visibility_cache_cleared_per_frame();
     run_entity_without_mesh_is_passthrough();
+
+    /* Bone attachment */
+    run_bone_attach_updates_transform_from_joint();
+    run_find_joint_by_name_returns_correct_index();
 
     printf("\n  ── Results: %d passed, %d failed, %d total ──\n\n",
            tests_passed, tests_failed, tests_run);

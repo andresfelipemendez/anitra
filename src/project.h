@@ -64,7 +64,7 @@ typedef struct { int entity; float current; float max; } project_health;
 typedef struct { int entity; float half_extents[3]; } project_box_collider;
 typedef struct { int entity; float radius; float half_height; } project_capsule_collider;
 typedef struct { int entity; float fov; float near_plane; float far_plane; float target[3]; float up[3]; } project_cam;
-typedef struct { int entity; char type_str[16]; int target; float radius; } project_trigger;
+typedef struct { int entity; char type_str[16]; int target; float radius; char joint[64]; } project_trigger;
 
 typedef enum { ASSET_MODEL, ASSET_ANIMATION, ASSET_DUNGEON_PIECE, ASSET_SPRITE } project_asset_type;
 

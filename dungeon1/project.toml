@@ -44,6 +44,7 @@ barrel_small = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/barrel
 column       = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/column.gltf"
 pillar       = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/pillar.gltf"
 key          = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/key.gltf"
+sword        = "game_assets/KayKit_FantasyWeaponsBits_1.0_FREE/Assets/gltf/sword_A.gltf"
 
 [assets.sprites]
 player_sheet = "assets/char_spritesheet.png"
@@ -148,7 +149,8 @@ list = [
   "room2_wall_s1",
   "room2_corner_sw",
   "room2_corner_se",
-  "room2_torch"
+  "room2_torch",
+  "sword"
 ]
 
 [transforms]
@@ -215,6 +217,7 @@ list = [
 "60" = { position = [-6.0000, 0.0000, -16.0000] }
 "61" = { position = [2.0000, 0.0000, -16.0000] }
 "62" = { position = [-5.5000, 2.0000, -12.0000] }
+"63" = { position = [2.0000, 0.2000, -2.0000] }
 
 [rotations]
 "0" = { y = -180.0000 }
@@ -315,6 +318,7 @@ list = [
 "60" = { parent = 2 }
 "61" = { parent = 2 }
 "62" = { parent = 2 }
+"63" = { parent = 2 }
 
 [meshes]
 "3" = { model = "floor_tile_large", visible = true }
@@ -376,6 +380,7 @@ list = [
 "60" = { model = "wall_corner", visible = true }
 "61" = { model = "wall_corner", visible = true }
 "62" = { model = "torch_mounted", visible = true }
+"63" = { model = "sword", visible = true }
 
 [animations]
 "19" = { asset = "general", playing = true, clip = 6, speed = 1.0000 }
@@ -459,4 +464,5 @@ list = [
 [triggers]
 "47" = { type = "pickup", target = 21, radius = 1.0 }
 "21" = { type = "door" }
+"63" = { type = "weapon_pickup", target = 19, radius = 1.0, joint = "mixamorig:RightHand" }
 

@@ -184,7 +184,7 @@ typedef struct camera_component {
     Vec3 up;
 } camera_component;
 
-typedef enum { TRIGGER_PICKUP, TRIGGER_DOOR } trigger_type;
+typedef enum { TRIGGER_PICKUP, TRIGGER_DOOR, TRIGGER_WEAPON_PICKUP } trigger_type;
 
 typedef struct trigger_component {
     int entity_index;
@@ -192,7 +192,16 @@ typedef struct trigger_component {
     int target_entity;
     float radius;
     int activated;
+    char joint_name[64];
 } trigger_component;
+
+typedef struct bone_attach_component {
+    int entity_index;
+    int target_entity;
+    int joint_index;
+    Vec3 offset_pos;
+    Quat offset_rot;
+} bone_attach_component;
 
 typedef enum InputButton {
     INPUT_A = 1 << 0,
@@ -369,6 +378,9 @@ typedef struct game_state {
   trigger_component *trigger_components;
   int trigger_component_count;
   int trigger_component_capacity;
+  bone_attach_component *bone_attach_components;
+  int bone_attach_component_count;
+  int bone_attach_component_capacity;
 
   /* Entity -> component index lookup (-1 = no component) */
   int parent_index[PROJECT_COMP_MAX];
@@ -388,6 +400,7 @@ typedef struct game_state {
   int animation_transition_index[PROJECT_COMP_MAX];
   int camera_index[PROJECT_COMP_MAX];
   int trigger_index[PROJECT_COMP_MAX];
+  int bone_attach_index[PROJECT_COMP_MAX];
 
   /* Per-frame visibility cache: 0=unknown, 1=visible, -1=hidden */
   int entity_visible[PROJECT_COMP_MAX];
