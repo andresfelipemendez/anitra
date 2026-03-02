@@ -5210,19 +5210,19 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
                     Clay_String h = CLAY_STRING("Zone");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
-                CLAY(CLAY_IDI("CPHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                CLAY(CLAY_IDI("CPHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("L1D Miss");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
-                CLAY(CLAY_IDI("CPHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                CLAY(CLAY_IDI("CPHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("Branch Miss");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
-                CLAY(CLAY_IDI("CPHCol", 3), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                CLAY(CLAY_IDI("CPHCol", 3), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("Instructions");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
-                CLAY(CLAY_IDI("CPHCol", 4), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                CLAY(CLAY_IDI("CPHCol", 4), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("Cycles");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
@@ -5258,7 +5258,7 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
                             CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14}));
                         }
                         /* L1D miss */
-                        CLAY(CLAY_IDI("CPL1D", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                        CLAY(CLAY_IDI("CPL1D", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                             snprintf(bufs[i][0], sizeof(bufs[i][0]), "%llu", (unsigned long long)frame->l1d_miss[i]);
                             {
                                 Clay_String vs = {false, (int32_t)strlen(bufs[i][0]), bufs[i][0]};
@@ -5266,7 +5266,7 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
                             }
                         }
                         /* Branch miss */
-                        CLAY(CLAY_IDI("CPBr", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                        CLAY(CLAY_IDI("CPBr", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                             snprintf(bufs[i][1], sizeof(bufs[i][1]), "%llu", (unsigned long long)frame->branch_miss[i]);
                             {
                                 Clay_String vs = {false, (int32_t)strlen(bufs[i][1]), bufs[i][1]};
@@ -5274,7 +5274,7 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
                             }
                         }
                         /* Instructions */
-                        CLAY(CLAY_IDI("CPIns", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                        CLAY(CLAY_IDI("CPIns", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                             if (frame->instructions[i] > 1000000)
                                 snprintf(bufs[i][2], sizeof(bufs[i][2]), "%.1fM", (double)frame->instructions[i] / 1000000.0);
                             else if (frame->instructions[i] > 1000)
@@ -5287,7 +5287,7 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
                             }
                         }
                         /* Cycles */
-                        CLAY(CLAY_IDI("CPCyc", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) } } }) {
+                        CLAY(CLAY_IDI("CPCyc", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                             if (frame->cycles[i] > 1000000)
                                 snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fM", (double)frame->cycles[i] / 1000000.0);
                             else if (frame->cycles[i] > 1000)
@@ -5975,11 +5975,11 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                     Clay_String h = CLAY_STRING("Name (nested)");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
-                CLAY(CLAY_IDI("CUHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                CLAY(CLAY_IDI("CUHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("Duration");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
-                CLAY(CLAY_IDI("CUHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) } } }) {
+                CLAY(CLAY_IDI("CUHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("Depth");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
@@ -6106,7 +6106,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                                 }
                             }
 
-                            CLAY(CLAY_IDI("CUDur", row_count), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
+                            CLAY(CLAY_IDI("CUDur", row_count), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                                 uint64_t duration_ns = frame->duration_ns[idx];
                                 if (duration_ns > 1000000ULL)
                                     snprintf(bufs[row_count][0], sizeof(bufs[row_count][0]), "%.2f ms", (double)duration_ns / 1000000.0);
@@ -6117,7 +6117,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                                     CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 200, 120, 255}, .fontSize = 14}));
                                 }
                             }
-                            CLAY(CLAY_IDI("CUDep", row_count), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) } } }) {
+                            CLAY(CLAY_IDI("CUDep", row_count), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                                 snprintf(bufs[row_count][1], sizeof(bufs[row_count][1]), "%u", (unsigned)frame->depth[idx]);
                                 {
                                     Clay_String vs = {false, (int32_t)strlen(bufs[row_count][1]), bufs[row_count][1]};

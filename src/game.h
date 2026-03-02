@@ -227,6 +227,18 @@ typedef struct lighting_state {
     int light_count;
 } lighting_state;
 
+/* ── System table types ── */
+
+typedef void (*system_fn)(struct game_state *gs);
+
+#define ENGINE_MAX_SYSTEMS 16
+
+typedef struct engine_system {
+    const char *name;
+    system_fn fn;
+    int play_mode_only;  /* skip when editor_play_mode == 0 */
+} engine_system;
+
 /* ── 3D mesh state (populated by externals, animated by engine) ── */
 
 typedef struct mesh3d_state {
@@ -297,6 +309,10 @@ typedef struct game_state {
   int width;
   int height;
   float dt;
+
+  /* ── System table (data-driven update pipeline) ── */
+  engine_system systems[ENGINE_MAX_SYSTEMS];
+  int system_count;
 
   /* Scene entity/component views (owned by engine's scene storage) */
   entity *scene_entities;
@@ -372,6 +388,9 @@ typedef struct game_state {
   int animation_transition_index[PROJECT_COMP_MAX];
   int camera_index[PROJECT_COMP_MAX];
   int trigger_index[PROJECT_COMP_MAX];
+
+  /* Per-frame visibility cache: 0=unknown, 1=visible, -1=hidden */
+  int entity_visible[PROJECT_COMP_MAX];
 
   mesh3d_state mesh3d;
   anim_sm anim;

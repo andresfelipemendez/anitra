@@ -383,6 +383,14 @@ engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine")
           if (assign_pfns) assign_pfns(ext_cache_zone_begin, ext_cache_zone_end, ext_cpu_zone_begin, ext_cpu_zone_end);
       }
 
+      /* Reload project.toml from disk so TOML edits take effect on hot-reload */
+      if (g->game.project_loaded && g->game.project_path[0]) {
+          project_data reloaded;
+          if (project_load(g->game.project_path, &reloaded) == 0) {
+              g->game.project = reloaded;
+          }
+      }
+
       init_engine(g);
     }
 

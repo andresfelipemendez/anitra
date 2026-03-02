@@ -34,6 +34,16 @@ void gltf_set_gpu_device(void *dev);
 static anim_instance *anim_sm_find_instance(anim_sm *sm, int entity_index);
 static scene_model_asset *find_scene_model_asset(game_state *gs, int asset_index);
 
+/* Forward declarations for system table (defined after update_engine) */
+static void system_clear_draw_lists(game_state *gs);
+static void system_animation_sm(game_state *gs);
+static void system_mesh_sync(game_state *gs);
+static void system_animation_legacy(game_state *gs);
+static void system_flush_debug_lines(game_state *gs);
+static void register_system(game_state *gs, const char *name,
+                            system_fn fn, int play_mode_only);
+static void update_triggers(game_state *gs);
+
 typedef struct camera_query_result {
     int entity_index;
     transform_component *transform;
@@ -78,6 +88,30 @@ static parent_transform_component *find_parent_transform_component(game_state *g
     if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
     idx = gs->parent_transform_index[entity_index];
     return idx >= 0 ? &gs->parent_transform_components[idx] : NULL;
+}
+
+/* Hierarchical visibility: walks parent chain, caches per-frame */
+static int is_entity_visible(game_state *gs, int entity_index) {
+    int own_visible, mi;
+    parent_transform_component *pt;
+    if (entity_index < 0 || entity_index >= gs->scene_entity_count) return 1;
+    if (gs->entity_visible[entity_index]) return gs->entity_visible[entity_index] > 0;
+
+    /* Entities without mesh are visible by default (passthrough nodes) */
+    own_visible = 1;
+    mi = gs->mesh_index[entity_index];
+    if (mi >= 0) own_visible = gs->mesh_components[mi].visible;
+
+    /* AND with parent visibility (recursive, cached) */
+    if (own_visible) {
+        pt = find_parent_transform_component(gs, entity_index);
+        if (pt && pt->parent_entity_index != entity_index) {
+            own_visible = is_entity_visible(gs, pt->parent_entity_index);
+        }
+    }
+
+    gs->entity_visible[entity_index] = own_visible ? 1 : -1;
+    return own_visible;
 }
 
 static mesh_component *find_mesh_component(game_state *gs, int entity_index) {
@@ -1325,7 +1359,7 @@ static void sync_primary_mesh3d_asset(game_state *gs) {
 
     entity_world = resolve_world_transform(gs, primary->entity_index);
     gs->mesh3d.model_transform = mat4_mul(entity_world, asset->model.armature_transform);
-    gs->mesh3d.visible = primary->visible ? 1 : 0;
+    gs->mesh3d.visible = is_entity_visible(gs, primary->entity_index) ? 1 : 0;
 
     if (!asset->has_skeleton || asset->model.skeleton.joint_count == 0) {
         gs->mesh3d.primitive_count = 0;
@@ -1366,8 +1400,8 @@ static void build_mesh_draw_commands(game_state *gs) {
         Mat4 model;
         mesh_draw_command *cmd;
 
-        if (!mc->visible) continue;
         if (mc->entity_index < 0 || mc->entity_index >= gs->scene_entity_count) continue;
+        if (!is_entity_visible(gs, mc->entity_index)) continue;
         asset = find_scene_model_asset(gs, mc->model_asset_index);
         if (!asset || !asset->loaded || asset->model.mesh.primitive_count == 0) continue;
         if (gs->dl.mesh_count >= gs->dl.mesh_capacity) break;
@@ -1621,6 +1655,19 @@ EXPORT void init_engine(game_state *gs) {
             mig_compute_hash(mig_game_state_fields, MIG_game_state_COUNT),
             "mig_game_state");
     }
+
+    /* ── Register system table (re-register every init for hot-reload) ── */
+    gs->system_count = 0;
+    register_system(gs, "clear_draw_lists",     (system_fn)system_clear_draw_lists,         0);
+    register_system(gs, "input",                (system_fn)update_input,                    1);
+    register_system(gs, "character_controller",  (system_fn)run_character_controller_system, 1);
+    register_system(gs, "animation_sm",         (system_fn)system_animation_sm,             1);
+    register_system(gs, "movement",             (system_fn)apply_movement,                  1);
+    register_system(gs, "collision",            (system_fn)collision,                       1);
+    register_system(gs, "triggers",             (system_fn)update_triggers,                 1);
+    register_system(gs, "mesh_sync",            (system_fn)system_mesh_sync,                0);
+    register_system(gs, "animation_legacy",     (system_fn)system_animation_legacy,         0);
+    register_system(gs, "debug_lines",          (system_fn)system_flush_debug_lines,        0);
 
     target_entities = 8;
     if (gs->project_loaded) {
@@ -2160,49 +2207,32 @@ static void update_triggers(game_state *gs) {
 #define ENGINE_CPU_ZONE_BEGIN(name)  do { if (pfn_cpu_zone_begin) pfn_cpu_zone_begin(name); } while(0)
 #define ENGINE_CPU_ZONE_END()        do { if (pfn_cpu_zone_end) pfn_cpu_zone_end(); } while(0)
 
-EXPORT void update_engine(game_state *gs) {
-    int i;
-    int anim_updated = 0;
-    if (!gs) return;
+/* ── System functions (extracted from update_engine) ──────────────────── */
 
-    ENGINE_CPU_ZONE_BEGIN("update_engine");
-    ENGINE_CACHE_ZONE_BEGIN("update_engine");
-
+static void system_clear_draw_lists(game_state *gs) {
     gs->dl.sprite_count = 0;
     gs->dl.line_count = 0;
     gs->dl.mesh_count = 0;
     gs->dbg.current_line_count = 0;
+    memset(gs->entity_visible, 0, sizeof(gs->entity_visible));
+}
 
-    if (gs->editor_play_mode) {
-        ENGINE_CPU_ZONE_BEGIN("input");
-        update_input(gs);
-        ENGINE_CPU_ZONE_END();
-
-        ENGINE_CPU_ZONE_BEGIN("physics");
-        ENGINE_CACHE_ZONE_BEGIN("physics");
-        run_character_controller_system(gs);
-        /* SM reads velocity BEFORE apply_movement zeros it */
-        if (gs->anim.instance_count > 0) {
-            anim_sm_update(&gs->anim, gs, gs->dt);
-        }
-        apply_movement(gs);
-        collision(gs);
-        update_triggers(gs);
-        ENGINE_CACHE_ZONE_END();
-        ENGINE_CPU_ZONE_END();
+static void system_animation_sm(game_state *gs) {
+    if (gs->anim.instance_count > 0) {
+        anim_sm_update(&gs->anim, gs, gs->dt);
     }
+}
 
-    ENGINE_CPU_ZONE_BEGIN("mesh_sync");
+static void system_mesh_sync(game_state *gs) {
     sync_primary_mesh3d_asset(gs);
     sync_mesh_camera_from_components(gs);
     build_mesh_draw_commands(gs);
-    ENGINE_CPU_ZONE_END();
+}
 
+static void system_animation_legacy(game_state *gs) {
     if (gs->editor_play_mode) {
-        ENGINE_CPU_ZONE_BEGIN("animation");
-        ENGINE_CACHE_ZONE_BEGIN("animation");
         if (gs->anim.instance_count == 0) {
-            /* Legacy single-entity fallback */
+            int anim_updated = 0;
             if (gs->animation_components) {
                 animation_component *ac = query_primary_animation_component_for_mesh(gs);
                 if (ac) {
@@ -2215,12 +2245,13 @@ EXPORT void update_engine(game_state *gs) {
                 update_mesh3d_from_animation_component(gs, &fallback);
             }
         }
-        ENGINE_CACHE_ZONE_END();
-        ENGINE_CPU_ZONE_END();
     } else {
         gs->animation_transition_count = 0;
     }
+}
 
+static void system_flush_debug_lines(game_state *gs) {
+    int i;
     for (i = 0; i < gs->dbg.current_line_count; i++) {
         int idx;
         debug_line_command* line;
@@ -2234,6 +2265,32 @@ EXPORT void update_engine(game_state *gs) {
         line->b = gs->dbg.vertex_buffer[idx+4];
         line->x2 = gs->dbg.vertex_buffer[idx+5];
         line->y2 = gs->dbg.vertex_buffer[idx+6];
+    }
+}
+
+static void register_system(game_state *gs, const char *name,
+                            system_fn fn, int play_mode_only) {
+    engine_system *sys;
+    if (gs->system_count >= ENGINE_MAX_SYSTEMS) return;
+    sys = &gs->systems[gs->system_count++];
+    sys->name = name;
+    sys->fn = fn;
+    sys->play_mode_only = play_mode_only;
+}
+
+EXPORT void update_engine(game_state *gs) {
+    int i;
+    if (!gs) return;
+
+    ENGINE_CPU_ZONE_BEGIN("update_engine");
+    ENGINE_CACHE_ZONE_BEGIN("update_engine");
+
+    for (i = 0; i < gs->system_count; i++) {
+        engine_system *sys = &gs->systems[i];
+        if (sys->play_mode_only && !gs->editor_play_mode) continue;
+        ENGINE_CPU_ZONE_BEGIN(sys->name);
+        sys->fn(gs);
+        ENGINE_CPU_ZONE_END();
     }
 
     ENGINE_CACHE_ZONE_END();

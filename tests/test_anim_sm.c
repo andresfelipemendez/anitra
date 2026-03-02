@@ -1514,6 +1514,168 @@ TEST(trigger_swap_and_pop_on_activation) {
     ASSERT_EQ(gs->trigger_index[2], -1);
 }
 
+/* ── System table tests ───────────────────────────────────────────────── */
+
+static int g_sys_order[8];
+static int g_sys_order_idx;
+
+static void test_sys_a(game_state *gs) { (void)gs; g_sys_order[g_sys_order_idx++] = 0; }
+static void test_sys_b(game_state *gs) { (void)gs; g_sys_order[g_sys_order_idx++] = 1; }
+static void test_sys_c(game_state *gs) { (void)gs; g_sys_order[g_sys_order_idx++] = 2; }
+
+TEST(system_table_registers_and_runs) {
+    game_state gs;
+    memset(&gs, 0, sizeof(gs));
+
+    /* Register 3 systems: A (always), B (play only), C (always) */
+    gs.system_count = 0;
+    register_system(&gs, "a", test_sys_a, 0);
+    register_system(&gs, "b", test_sys_b, 1);
+    register_system(&gs, "c", test_sys_c, 0);
+
+    ASSERT_EQ(gs.system_count, 3);
+    ASSERT(gs.systems[0].fn == test_sys_a);
+    ASSERT(gs.systems[1].fn == test_sys_b);
+    ASSERT(gs.systems[2].fn == test_sys_c);
+
+    /* Play mode: all 3 run in order */
+    g_sys_order_idx = 0;
+    gs.editor_play_mode = 1;
+    update_engine(&gs);
+    ASSERT_EQ(g_sys_order_idx, 3);
+    ASSERT_EQ(g_sys_order[0], 0);
+    ASSERT_EQ(g_sys_order[1], 1);
+    ASSERT_EQ(g_sys_order[2], 2);
+
+    /* Edit mode: B skipped */
+    g_sys_order_idx = 0;
+    gs.editor_play_mode = 0;
+    update_engine(&gs);
+    ASSERT_EQ(g_sys_order_idx, 2);
+    ASSERT_EQ(g_sys_order[0], 0);
+    ASSERT_EQ(g_sys_order[1], 2);
+}
+
+/* ── Implicit visibility propagation ──────────────────────────────────── */
+
+TEST(implicit_visibility_propagation) {
+    game_state *gs = setup_game_state();
+    int mi, pi;
+
+    /* 3 entities: grandparent(0) -> parent(1) -> child(2), all with mesh visible=1 */
+    gs->scene_entity_count = 3;
+
+    /* Mesh components */
+    mi = gs->mesh_component_count++;
+    gs->mesh_components[mi].entity_index = 0;
+    gs->mesh_components[mi].visible = 1;
+    gs->mesh_components[mi].model_asset_index = 0;
+    gs->mesh_index[0] = mi;
+
+    mi = gs->mesh_component_count++;
+    gs->mesh_components[mi].entity_index = 1;
+    gs->mesh_components[mi].visible = 1;
+    gs->mesh_components[mi].model_asset_index = 0;
+    gs->mesh_index[1] = mi;
+
+    mi = gs->mesh_component_count++;
+    gs->mesh_components[mi].entity_index = 2;
+    gs->mesh_components[mi].visible = 1;
+    gs->mesh_components[mi].model_asset_index = 0;
+    gs->mesh_index[2] = mi;
+
+    /* Parent transform: 1->0, 2->1 */
+    pi = gs->parent_transform_component_count++;
+    gs->parent_transform_components[pi].entity_index = 1;
+    gs->parent_transform_components[pi].parent_entity_index = 0;
+    gs->parent_transform_index[1] = pi;
+
+    pi = gs->parent_transform_component_count++;
+    gs->parent_transform_components[pi].entity_index = 2;
+    gs->parent_transform_components[pi].parent_entity_index = 1;
+    gs->parent_transform_index[2] = pi;
+
+    /* All visible */
+    ASSERT(is_entity_visible(gs, 0));
+    ASSERT(is_entity_visible(gs, 1));
+    ASSERT(is_entity_visible(gs, 2));
+
+    /* Hide grandparent -> child should be hidden (propagated) */
+    memset(gs->entity_visible, 0, sizeof(gs->entity_visible));
+    gs->mesh_components[gs->mesh_index[0]].visible = 0;
+    ASSERT(!is_entity_visible(gs, 0));
+    ASSERT(!is_entity_visible(gs, 1));
+    ASSERT(!is_entity_visible(gs, 2));
+
+    /* Clear cache, show grandparent, hide parent -> child hidden, grandparent visible */
+    memset(gs->entity_visible, 0, sizeof(gs->entity_visible));
+    gs->mesh_components[gs->mesh_index[0]].visible = 1;
+    gs->mesh_components[gs->mesh_index[1]].visible = 0;
+    ASSERT(is_entity_visible(gs, 0));
+    ASSERT(!is_entity_visible(gs, 1));
+    ASSERT(!is_entity_visible(gs, 2));
+}
+
+TEST(visibility_cache_cleared_per_frame) {
+    game_state *gs = setup_game_state();
+    int mi;
+
+    gs->scene_entity_count = 1;
+
+    mi = gs->mesh_component_count++;
+    gs->mesh_components[mi].entity_index = 0;
+    gs->mesh_components[mi].visible = 1;
+    gs->mesh_components[mi].model_asset_index = 0;
+    gs->mesh_index[0] = mi;
+
+    /* Evaluate and cache */
+    ASSERT(is_entity_visible(gs, 0));
+    ASSERT_EQ(gs->entity_visible[0], 1);
+
+    /* system_clear_draw_lists resets cache */
+    system_clear_draw_lists(gs);
+    ASSERT_EQ(gs->entity_visible[0], 0);
+
+    /* Change visibility, verify new result */
+    gs->mesh_components[mi].visible = 0;
+    ASSERT(!is_entity_visible(gs, 0));
+    ASSERT_EQ(gs->entity_visible[0], -1);
+}
+
+TEST(entity_without_mesh_is_passthrough) {
+    game_state *gs = setup_game_state();
+    int mi, pi;
+
+    /* Parent(0) with no mesh, child(1) with visible mesh */
+    gs->scene_entity_count = 2;
+
+    mi = gs->mesh_component_count++;
+    gs->mesh_components[mi].entity_index = 1;
+    gs->mesh_components[mi].visible = 1;
+    gs->mesh_components[mi].model_asset_index = 0;
+    gs->mesh_index[1] = mi;
+
+    pi = gs->parent_transform_component_count++;
+    gs->parent_transform_components[pi].entity_index = 1;
+    gs->parent_transform_components[pi].parent_entity_index = 0;
+    gs->parent_transform_index[1] = pi;
+
+    /* Child visible — parent is passthrough (no mesh) */
+    ASSERT(is_entity_visible(gs, 0));
+    ASSERT(is_entity_visible(gs, 1));
+
+    /* Give parent a mesh with visible=0 -> child now hidden */
+    memset(gs->entity_visible, 0, sizeof(gs->entity_visible));
+    mi = gs->mesh_component_count++;
+    gs->mesh_components[mi].entity_index = 0;
+    gs->mesh_components[mi].visible = 0;
+    gs->mesh_components[mi].model_asset_index = 0;
+    gs->mesh_index[0] = mi;
+
+    ASSERT(!is_entity_visible(gs, 0));
+    ASSERT(!is_entity_visible(gs, 1));
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1588,6 +1750,14 @@ int main(void) {
     /* Scene building from project */
     run_build_scene_from_project_creates_runtime_components();
     run_build_scene_fallback_camera_when_no_project_camera();
+
+    /* System table */
+    run_system_table_registers_and_runs();
+
+    /* Implicit visibility propagation */
+    run_implicit_visibility_propagation();
+    run_visibility_cache_cleared_per_frame();
+    run_entity_without_mesh_is_passthrough();
 
     printf("\n  ── Results: %d passed, %d failed, %d total ──\n\n",
            tests_passed, tests_failed, tests_run);

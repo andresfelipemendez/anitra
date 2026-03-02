@@ -11,10 +11,12 @@ mage         = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Mage.glb
 rogue        = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Rogue.glb"
 rogue_hood   = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Rogue_Hooded.glb"
 ranger       = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Ranger.glb"
+skeleton     = "game_assets/KayKit_Skeletons_1.1_FREE/characters/gltf/Skeleton_Warrior.glb"
 
 [assets.animations]
 general      = "game_assets/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb"
 movement     = "game_assets/KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_MovementBasic.glb"
+skeleton_general = "game_assets/KayKit_Skeletons_1.1_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb"
 
 [assets.dungeon_pieces]
 wall         = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/wall.gltf"
@@ -75,6 +77,12 @@ color     = [0.6000, 0.8000, 1.0000]
 intensity = 4.0000
 radius    = 6.0000
 
+[[lighting.point_lights]]
+position  = [-2.0000, 3.0000, -12.0000]
+color     = [1.0000, 0.5000, 0.2000]
+intensity = 6.0000
+radius    = 10.0000
+
 [entities]
 list = [
   "player",
@@ -124,7 +132,22 @@ list = [
   "chest_0",
   "column_0",
   "column_1",
-  "key"
+  "key",
+  "enemy",
+  "enemy_mesh",
+  "room2_floor_0",
+  "room2_floor_1",
+  "room2_floor_2",
+  "room2_floor_3",
+  "room2_wall_w0",
+  "room2_wall_w1",
+  "room2_wall_e0",
+  "room2_wall_e1",
+  "room2_wall_s0",
+  "room2_wall_s1",
+  "room2_corner_sw",
+  "room2_corner_se",
+  "room2_torch"
 ]
 
 [transforms]
@@ -176,6 +199,21 @@ list = [
 "45" = { position = [-2.0000, 0.0000, 0.0000] }
 "46" = { position = [2.0000, 0.0000, 0.0000] }
 "47" = { position = [-4.5198, 1.3252, -4.7692] }
+"48" = { position = [-2.0000, -0.0974, -13.0000] }
+"49" = { position = [0.0000, -0.8563, 0.0000] }
+"50" = { position = [-4.0000, 0.0000, -10.0000] }
+"51" = { position = [0.0000, 0.0000, -10.0000] }
+"52" = { position = [-4.0000, 0.0000, -14.0000] }
+"53" = { position = [0.0000, 0.0000, -14.0000] }
+"54" = { position = [-6.0000, 0.0000, -10.0000] }
+"55" = { position = [-6.0000, 0.0000, -14.0000] }
+"56" = { position = [2.0000, 0.0000, -10.0000] }
+"57" = { position = [2.0000, 0.0000, -14.0000] }
+"58" = { position = [-4.0000, 0.0000, -16.0000] }
+"59" = { position = [0.0000, 0.0000, -16.0000] }
+"60" = { position = [-6.0000, 0.0000, -16.0000] }
+"61" = { position = [2.0000, 0.0000, -16.0000] }
+"62" = { position = [-5.5000, 2.0000, -12.0000] }
 
 [rotations]
 "0" = { y = -180.0000 }
@@ -204,6 +242,16 @@ list = [
 "40" = { y = 90.0000 }
 "41" = { y = -90.0000 }
 "44" = { y = 180.0000 }
+"48" = { y = 0.0000 }
+"54" = { y = 90.0000 }
+"55" = { y = 90.0000 }
+"56" = { y = -90.0000 }
+"57" = { y = -90.0000 }
+"58" = { y = 180.0000 }
+"59" = { y = 180.0000 }
+"60" = { y = 180.0000 }
+"61" = { y = 270.0000 }
+"62" = { y = 90.0000 }
 
 [parent_transform]
 "1" = { parent = 0 }
@@ -252,6 +300,20 @@ list = [
 "45" = { parent = 2 }
 "46" = { parent = 2 }
 "47" = { parent = 2 }
+"49" = { parent = 48 }
+"50" = { parent = 2 }
+"51" = { parent = 2 }
+"52" = { parent = 2 }
+"53" = { parent = 2 }
+"54" = { parent = 2 }
+"55" = { parent = 2 }
+"56" = { parent = 2 }
+"57" = { parent = 2 }
+"58" = { parent = 2 }
+"59" = { parent = 2 }
+"60" = { parent = 2 }
+"61" = { parent = 2 }
+"62" = { parent = 2 }
 
 [meshes]
 "3" = { model = "floor_tile_large", visible = true }
@@ -299,9 +361,24 @@ list = [
 "45" = { model = "column", visible = true }
 "46" = { model = "column", visible = true }
 "47" = { model = "key", visible = true }
+"49" = { model = "skeleton", visible = true }
+"50" = { model = "floor_tile_large", visible = true }
+"51" = { model = "floor_tile_large", visible = true }
+"52" = { model = "floor_tile_large", visible = true }
+"53" = { model = "floor_tile_large", visible = true }
+"54" = { model = "wall", visible = true }
+"55" = { model = "wall_cracked", visible = true }
+"56" = { model = "wall", visible = true }
+"57" = { model = "wall_broken", visible = true }
+"58" = { model = "wall", visible = true }
+"59" = { model = "wall", visible = true }
+"60" = { model = "wall_corner", visible = true }
+"61" = { model = "wall_corner", visible = true }
+"62" = { model = "torch_mounted", visible = true }
 
 [animations]
 "19" = { asset = "general", playing = true, clip = 6, speed = 1.0000 }
+"49" = { asset = "skeleton_general", playing = true, clip = 6, speed = 1.0000 }
 
 [velocities]
 "0" = { value = [0.0000, 0.0000] }
@@ -314,6 +391,7 @@ list = [
 
 [health]
 "0" = { current = 100.0000, max = 100.0000 }
+"48" = { current = 50.0000, max = 50.0000 }
 
 [box_colliders]
 "3" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
@@ -357,9 +435,22 @@ list = [
 "44" = { type = "box", half_extents = [0.5000, 0.4000, 0.4000] }
 "45" = { type = "box", half_extents = [0.3000, 2.0000, 0.3000] }
 "46" = { type = "box", half_extents = [0.3000, 2.0000, 0.3000] }
+"50" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
+"51" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
+"52" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
+"53" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
+"54" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"55" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"56" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"57" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"58" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"59" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"60" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
+"61" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
 
 [capsule_colliders]
 "0" = { radius = 0.3800, half_height = 0.4600 }
+"48" = { radius = 0.3800, half_height = 0.4600 }
 
 [cameras]
 "1" = { fov = 45.0000, near = 0.1000, far = 100.0000, target = [0.0000, 0.0000, 0.0000], up = [0.0000, 1.0000, 0.0000] }
