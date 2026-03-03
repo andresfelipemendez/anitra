@@ -19,31 +19,31 @@
 #define TCC_COMPILE_CMD \
     ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/engine.dll" \
-    " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf" \
+    " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf -Ilib/toml-c" \
     " src/engine/engine.c" \
     " src/engine/physics.c" \
     " src/engine/debug_render.c" \
     " src/engine/anim.c" \
     " src/engine/gltf_loader.c" \
+    " src/project.c" \
     " build/Debug/SDL3.def"
 #define TCC_EDITOR_CMD \
     ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/editor.dll" \
-    " -DCLAY_DISABLE_SIMD" \
-    " -Isrc -Isrc/editor -Isrc/engine" \
-    " -Ilib/SDL3/include -Ilib/clay" \
+    " -DCLAY_DISABLE_SIMD -DCPU_PROF_IMPL -DCACHE_PROF_IMPL" \
+    " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals" \
+    " -Ilib/SDL3/include -Ilib/clay -Ilib/toml-c -Ilib/sqlite" \
     " src/editor/editor.c" \
+    " src/project.c" \
+    " lib/sqlite/sqlite3.c" \
     " build/Debug/SDL3.def"
 
 #define TCC_CORE_CMD \
     ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/core.dll" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include -Ilib/toml-c" \
+    " -Isrc -Isrc/core -Isrc/externals" \
     " src/core/core.c" \
     " src/core/loadlibrary_windows.c" \
-    " src/project.c" \
-    " build/Debug/SDL3.def" \
     " build/Debug/externals.def"
 
 #define TCC_EXE_CMD \

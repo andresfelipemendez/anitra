@@ -4,7 +4,8 @@
  * Compile:  tcc -Blib/tcc-windows -o builder.exe build.c             (Windows)
  *           ./tcc -Blib/tcc-linux -o builder build.c                (Linux)
  *           lib/tcc/macos/tcc -Blib/tcc/macos -o builder build.c    (macOS)
- * Usage:    builder
+ * Usage:    builder          (build only)
+ *           builder watch    (build, launch engine, and watch for changes)
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes the platform's native toolchain directly via system().
@@ -755,9 +756,9 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite"
+        " -Ilib/sqlite -Ilib/toml-c"
         " src/externals/externals_runtime.c src/externals/externals.c"
-        " lib/sqlite/sqlite3.c"
+        " src/project.c lib/sqlite/sqlite3.c"
         " " DEBUG_DIR "/SDL3.def"
         " " DEBUG_DIR "/SDL3_shadercross.def"
         " " DEBUG_DIR "/tracy.def"
@@ -772,9 +773,9 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite"
+        " -Ilib/sqlite -Ilib/toml-c"
         " src/externals/externals_runtime.c src/externals/externals.c"
-        " lib/sqlite/sqlite3.c"
+        " src/project.c lib/sqlite/sqlite3.c"
         " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -ltracy -lharfbuzz"
         " -lpthread -lm");
 #else
@@ -785,9 +786,9 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite"
+        " -Ilib/sqlite -Ilib/toml-c"
         " src/externals/externals_runtime.c src/externals/externals.c"
-        " lib/sqlite/sqlite3.c"
+        " src/project.c lib/sqlite/sqlite3.c"
         " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -ltracy -lharfbuzz"
         " -lpthread -ldl -lm");
 #endif
@@ -2100,8 +2101,13 @@ static int build_and_run(void)
 /* main                                                                       */
 /* ========================================================================= */
 
-int main(void)
+int main(int argc, char **argv)
 {
     if (find_tools() != 0) return 1;
-    return build_and_run();
+
+    if (argc > 1 && strcmp(argv[1], "watch") == 0) {
+        return build_and_run();
+    }
+
+    return build_all();
 }

@@ -1,10 +1,7 @@
 #include "core.h"
 #include "loadlibrary.h"
 #include <externals.h>
-#include <project.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -79,6 +76,7 @@ static DWORD WINAPI waitforeditorreloadsignal(LPVOID param) {
 #endif
 
 EXPORT int init_core(const char *project_path) {
+  int reload;
   printf("Core initialized\n");
 
 #ifdef _WIN32
@@ -98,243 +96,114 @@ EXPORT int init_core(const char *project_path) {
   clear_reload_signal_files();
 #endif
 
+  /* Load engine DLL (copy first so engine.dll stays unlocked) */
+  copylibrary("engine", "engine_copy");
+  engine_lib = loadlibrary("engine_copy");
+  if (!engine_lib) {
+    fprintf(stderr, "Failed to load engine_copy.dll\n");
+    return 1;
+  }
+
   {
-    memory g = {0};
-    int reload;
-
-    /* Set default asset paths */
-    g.game.default_model_path = "assets/models/Knight.glb";
-    g.game.default_animation_path = "assets/animations/Rig_Medium_General.glb";
-    g.game.default_floor_model_path = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/floor_tile_large.gltf";
-    g.game.texture_player = "assets/char_spritesheet.png";
-    g.game.texture_tiles = "assets/Dungeon_Tileset.png";
-    g.game.texture_slime = "assets/pinkslime_spritesheet.png";
-    g.game.texture_health_bar = "assets/health_bar_hud.png";
-    g.game.texture_health_fill = "assets/health_hud.png";
-    g.game.font_editor = "assets/fonts/SourceCodePro-Regular.ttf";
-    g.game.shader_sprite_vs = "assets/shaders/compiled/sprite_vs.spv";
-    g.game.shader_sprite_fs = "assets/shaders/compiled/sprite_fs.spv";
-    g.game.shader_debug_lines_vs = "assets/shaders/compiled/debug_lines_vs.spv";
-    g.game.shader_debug_lines_fs = "assets/shaders/compiled/debug_lines_fs.spv";
-    g.game.shader_ui_rect_vs = "assets/shaders/compiled/ui_rect_vs.spv";
-    g.game.shader_ui_rect_fs = "assets/shaders/compiled/ui_rect_fs.spv";
-    g.game.shader_font_vs = "assets/shaders/compiled/font_vs.spv";
-    g.game.shader_font_fs = "assets/shaders/compiled/font_fs.spv";
-    g.game.shader_mesh_vs = "assets/shaders/compiled/mesh_vs.spv";
-    g.game.shader_mesh_fs = "assets/shaders/compiled/mesh_fs.spv";
-    g.game.shader_composite_vs = "assets/shaders/compiled/composite_vs.spv";
-    g.game.shader_composite_fs = "assets/shaders/compiled/composite_fs.spv";
-
-    g.game.project_loaded = 0;
-    g.game.project_path[0] = '\0';
-    g.game.editor_play_mode = 0;
-    if (project_path && project_path[0]) {
-        snprintf(g.game.project_path, sizeof(g.game.project_path), "%s", project_path);
-    }
-
-    /* Load project file if provided */
-    if (project_path) {
-        project_data loaded_project;
-        if (project_load(project_path, &loaded_project) == 0) {
-            g.game.project = loaded_project;
-            g.game.project_loaded = 1;
-
-            /* Override camera from project */
-            if (g.game.project.has_camera) {
-                g.game.mesh3d.camera_eye = VEC3(g.game.project.camera.eye[0],
-                    g.game.project.camera.eye[1], g.game.project.camera.eye[2]);
-                g.game.mesh3d.camera_target = VEC3(g.game.project.camera.target[0],
-                    g.game.project.camera.target[1], g.game.project.camera.target[2]);
-                g.game.mesh3d.camera_up = VEC3(g.game.project.camera.up[0],
-                    g.game.project.camera.up[1], g.game.project.camera.up[2]);
-                g.game.mesh3d.camera_fov_deg = g.game.project.camera.fov;
-                g.game.mesh3d.camera_set_by_project = 1;
-            }
-
-            /* Resolve default model paths from ECS scene mesh components */
-            if (g.game.project.scene_entity_count > 0) {
-                int mi;
-                int resolved_animated_model = 0;
-                int resolved_static_model = 0;
-                for (mi = 0; mi < g.game.project.mesh_count; mi++) {
-                    const project_mesh *pm = &g.game.project.meshes[mi];
-                    const char *model_path;
-                    const project_anim *pa;
-                    if (!pm->model[0]) continue;
-
-                    model_path = project_find_asset(&g.game.project, pm->model, ASSET_MODEL);
-                    if (!model_path)
-                        model_path = project_find_asset(&g.game.project, pm->model, ASSET_DUNGEON_PIECE);
-                    if (!model_path) continue;
-
-                    if (strstr(pm->model, "floor") != NULL) {
-                        g.game.default_floor_model_path = model_path;
-                    }
-
-                    pa = project_find_anim(&g.game.project, pm->entity);
-                    if (pa && !resolved_animated_model) {
-                        g.game.default_model_path = model_path;
-                        resolved_animated_model = 1;
-                    }
-                    if (!resolved_animated_model &&
-                        !resolved_static_model &&
-                        strstr(pm->model, "floor") == NULL) {
-                        g.game.default_model_path = model_path;
-                        resolved_static_model = 1;
-                    }
-
-                    if (pa && pa->asset[0]) {
-                        const char *anim_path = project_find_asset(&g.game.project, pa->asset, ASSET_ANIMATION);
-                        if (anim_path)
-                            g.game.default_animation_path = anim_path;
-                    }
-                }
-            }
-
-            /* Override sprite/texture paths from project assets */
-            {
-                int si;
-                for (si = 0; si < g.game.project.asset_count; si++) {
-                    const project_asset *a = &g.game.project.assets[si];
-                    if (a->type != ASSET_SPRITE) continue;
-                    if (strcmp(a->key, "player_sheet") == 0)
-                        g.game.texture_player = a->path;
-                    else if (strcmp(a->key, "slime_sheet") == 0)
-                        g.game.texture_slime = a->path;
-                    else if (strcmp(a->key, "health_bar") == 0)
-                        g.game.texture_health_bar = a->path;
-                    else if (strcmp(a->key, "health_fill") == 0)
-                        g.game.texture_health_fill = a->path;
-                }
-            }
-
-            /* Populate lighting from project */
-            if (g.game.project.has_lighting) {
-                int li;
-                g.game.lighting.ambient = VEC3(
-                    g.game.project.lighting.ambient[0],
-                    g.game.project.lighting.ambient[1],
-                    g.game.project.lighting.ambient[2]);
-                g.game.lighting.light_count = g.game.project.lighting.point_light_count;
-                for (li = 0; li < g.game.project.lighting.point_light_count; li++) {
-                    project_point_light *src = &g.game.project.lighting.point_lights[li];
-                    g.game.lighting.lights[li].position = VEC3(
-                        src->position[0], src->position[1], src->position[2]);
-                    g.game.lighting.lights[li].color = VEC3(
-                        src->color[0], src->color[1], src->color[2]);
-                    g.game.lighting.lights[li].intensity = src->intensity;
-                    g.game.lighting.lights[li].radius = src->radius;
-                }
-            }
-        }
-    }
-
-/* Load engine DLL (copy first so engine.dll stays unlocked) */
-    copylibrary("engine", "engine_copy");
-    engine_lib = loadlibrary("engine_copy");
-    if (!engine_lib) {
-      fprintf(stderr, "Failed to load engine_copy.dll\n");
-      return 1;
-    }
-    
     engine_init_fn init_e = (engine_init_fn)getfunction(engine_lib, "init_engine");
     engine_destroy_fn destroy_e = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
     engine_update_fn update_e = (engine_update_fn)getfunction(engine_lib, "update_engine");
-    
+
     if (!init_e || !destroy_e || !update_e) {
       fprintf(stderr, "Failed to get engine functions\n");
       unloadlibrary(engine_lib);
       return 1;
     }
-    
+
     assign_init(init_e);
     assign_destroy(destroy_e);
     assign_update(update_e);
-
-    /* Wire profiler zone functions: externals -> engine */
-    {
-        typedef void (*assign_profiler_fns_t)(void(*)(const char*), void(*)(void), void(*)(const char*), void(*)(void));
-        assign_profiler_fns_t assign_pfns = (assign_profiler_fns_t)getfunction(engine_lib, "assign_profiler_fns");
-        if (assign_pfns) assign_pfns(ext_cache_zone_begin, ext_cache_zone_end, ext_cpu_zone_begin, ext_cpu_zone_end);
-    }
-
-    /* Load editor DLL (copy first so editor.dll stays unlocked) */
-    copylibrary("editor", "editor_copy");
-    editor_lib = loadlibrary("editor_copy");
-    if (editor_lib) {
-      editor_init_fn init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
-      editor_destroy_fn destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
-      editor_update_fn update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
-      editor_handle_event_fn handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
-
-      if (!init_ed || !destroy_ed || !update_ed) {
-        fprintf(stderr, "Warning: Editor functions not found - editor disabled\n");
-        unloadlibrary(editor_lib);
-        editor_lib = NULL;
-      } else {
-        assign_editor_init(init_ed);
-        assign_editor_destroy(destroy_ed);
-        assign_editor_update(update_ed);
-        assign_editor_handle_event(handle_ev);
-      }
-    }
-    init_externals(&g);
-    init_engine(&g);
-    init_editor(&g);
-
-    /* Reset state for fresh load */
-    shutdownRequested = 0;
-    reloadFlag = 0;
-    editorReloadFlag = 0;
-
-#ifdef _WIN32
-    hEngineThread = CreateThread(NULL, 0, waitforreloadsignal, hEngineEvent, 0, NULL);
-    hEditorThread = CreateThread(NULL, 0, waitforeditorreloadsignal, hEditorEvent, 0, NULL);
-#endif
-
-    reload = begin_game_loop(&g);
-
-#ifdef _WIN32
-    /* Stop reload threads FIRST — they run code from this DLL,
-       so they must exit before we unload anything. */
-    shutdownRequested = 1;
-    if (hEngineThread) {
-      WaitForSingleObject(hEngineThread, 500);
-      CloseHandle(hEngineThread);
-      hEngineThread = NULL;
-    }
-    if (hEditorThread) {
-      WaitForSingleObject(hEditorThread, 500);
-      CloseHandle(hEditorThread);
-      hEditorThread = NULL;
-    }
-
-    /* Close named events */
-    if (hEngineEvent) CloseHandle(hEngineEvent);
-    if (hEditorEvent) CloseHandle(hEditorEvent);
-#endif
-
-    /* Teardown */
-    destroy_editor(&g);
-    destroy_engine(&g);
-    end_externals(&g);
-
-    unloadlibrary(engine_lib);
-    unloadlibrary(editor_lib);
-    engine_lib = NULL;
-    editor_lib = NULL;
-
-    return reload;
   }
+
+  /* Wire profiler zone functions: externals -> engine */
+  {
+      typedef void (*assign_profiler_fns_t)(void(*)(const char*), void(*)(void), void(*)(const char*), void(*)(void));
+      assign_profiler_fns_t assign_pfns = (assign_profiler_fns_t)getfunction(engine_lib, "assign_profiler_fns");
+      if (assign_pfns) assign_pfns(ext_cache_zone_begin, ext_cache_zone_end, ext_cpu_zone_begin, ext_cpu_zone_end);
+  }
+
+  /* Load editor DLL (copy first so editor.dll stays unlocked) */
+  copylibrary("editor", "editor_copy");
+  editor_lib = loadlibrary("editor_copy");
+  if (editor_lib) {
+    editor_init_fn init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
+    editor_destroy_fn destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
+    editor_update_fn update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
+    editor_handle_event_fn handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
+
+    if (!init_ed || !destroy_ed || !update_ed) {
+      fprintf(stderr, "Warning: Editor functions not found - editor disabled\n");
+      unloadlibrary(editor_lib);
+      editor_lib = NULL;
+    } else {
+      assign_editor_init(init_ed);
+      assign_editor_destroy(destroy_ed);
+      assign_editor_update(update_ed);
+      assign_editor_handle_event(handle_ev);
+    }
+  }
+
+  init_externals(project_path);
+  init_engine();
+  init_editor();
+
+  /* Reset state for fresh load */
+  shutdownRequested = 0;
+  reloadFlag = 0;
+  editorReloadFlag = 0;
+
+#ifdef _WIN32
+  hEngineThread = CreateThread(NULL, 0, waitforreloadsignal, hEngineEvent, 0, NULL);
+  hEditorThread = CreateThread(NULL, 0, waitforeditorreloadsignal, hEditorEvent, 0, NULL);
+#endif
+
+  reload = begin_game_loop();
+
+#ifdef _WIN32
+  /* Stop reload threads FIRST — they run code from this DLL,
+     so they must exit before we unload anything. */
+  shutdownRequested = 1;
+  if (hEngineThread) {
+    WaitForSingleObject(hEngineThread, 500);
+    CloseHandle(hEngineThread);
+    hEngineThread = NULL;
+  }
+  if (hEditorThread) {
+    WaitForSingleObject(hEditorThread, 500);
+    CloseHandle(hEditorThread);
+    hEditorThread = NULL;
+  }
+
+  /* Close named events */
+  if (hEngineEvent) CloseHandle(hEngineEvent);
+  if (hEditorEvent) CloseHandle(hEditorEvent);
+#endif
+
+  /* Teardown */
+  destroy_editor();
+  destroy_engine();
+  end_externals();
+
+  unloadlibrary(engine_lib);
+  unloadlibrary(editor_lib);
+  engine_lib = NULL;
+  editor_lib = NULL;
+
+  return reload;
 }
 
-int begin_game_loop(memory *g) {
+int begin_game_loop(void) {
 #ifdef _WIN32
   HANDLE hCoreEvent = OpenEvent(EVENT_MODIFY_STATE | SYNCHRONIZE,
                                 FALSE, HOTRELOAD_CORE_EVENT_NAME);
 #endif
 
-  while (g->game.play) {
+  while (1) {
 #ifndef _WIN32
     if (consume_reload_signal_file(ENGINE_RELOAD_SIGNAL_FILE))
       reloadFlag = 1;
@@ -344,14 +213,14 @@ int begin_game_loop(memory *g) {
 
     if (reloadFlag) {
       reloadFlag = 0;
-      
+
       /* Verify new DLL was loaded */
       if (!engine_lib) {
         fprintf(stderr, "Engine library is NULL - cannot reload\n");
         continue;
       }
-      
-      destroy_engine(g);
+
+      destroy_engine();
       printf("Reloading engine...\n");
 
       unloadlibrary(engine_lib);
@@ -361,20 +230,22 @@ int begin_game_loop(memory *g) {
         fprintf(stderr, "Failed to reload engine_copy.dll\n");
         continue;
       }
-      
-engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine");
-      engine_destroy_fn new_destroy = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
-      engine_update_fn new_update = (engine_update_fn)getfunction(engine_lib, "update_engine");
 
-      if (!new_init || !new_destroy || !new_update) {
-        fprintf(stderr, "Failed to get engine functions after reload\n");
-        unloadlibrary(engine_lib);
-        continue;
+      {
+        engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine");
+        engine_destroy_fn new_destroy = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
+        engine_update_fn new_update = (engine_update_fn)getfunction(engine_lib, "update_engine");
+
+        if (!new_init || !new_destroy || !new_update) {
+          fprintf(stderr, "Failed to get engine functions after reload\n");
+          unloadlibrary(engine_lib);
+          continue;
+        }
+
+        assign_init(new_init);
+        assign_destroy(new_destroy);
+        assign_update(new_update);
       }
-
-      assign_init(new_init);
-      assign_destroy(new_destroy);
-      assign_update(new_update);
 
       /* Re-wire profiler zone functions after engine reload */
       {
@@ -384,26 +255,21 @@ engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine")
       }
 
       /* Reload project.toml from disk so TOML edits take effect on hot-reload */
-      if (g->game.project_loaded && g->game.project_path[0]) {
-          project_data reloaded;
-          if (project_load(g->game.project_path, &reloaded) == 0) {
-              g->game.project = reloaded;
-          }
-      }
+      reload_project();
 
-      init_engine(g);
+      init_engine();
     }
 
     if (editorReloadFlag) {
       editorReloadFlag = 0;
-      
+
       /* Verify new DLL was loaded */
       if (!editor_lib) {
         fprintf(stderr, "Editor library is NULL - cannot reload\n");
         continue;
       }
-      
-      destroy_editor(g);
+
+      destroy_editor();
       printf("Reloading editor...\n");
 
       unloadlibrary(editor_lib);
@@ -414,23 +280,25 @@ engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine")
         continue;
       }
 
-      editor_init_fn new_init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
-      editor_destroy_fn new_destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
-      editor_update_fn new_update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
-      editor_handle_event_fn new_handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
+      {
+        editor_init_fn new_init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
+        editor_destroy_fn new_destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
+        editor_update_fn new_update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
+        editor_handle_event_fn new_handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
 
-      if (!new_init_ed || !new_destroy_ed || !new_update_ed) {
-        fprintf(stderr, "Failed to get editor functions after reload\n");
-        unloadlibrary(editor_lib);
-        editor_lib = NULL;
-        continue;
+        if (!new_init_ed || !new_destroy_ed || !new_update_ed) {
+          fprintf(stderr, "Failed to get editor functions after reload\n");
+          unloadlibrary(editor_lib);
+          editor_lib = NULL;
+          continue;
+        }
+
+        assign_editor_init(new_init_ed);
+        assign_editor_destroy(new_destroy_ed);
+        assign_editor_update(new_update_ed);
+        assign_editor_handle_event(new_handle_ev);
       }
-
-      assign_editor_init(new_init_ed);
-      assign_editor_destroy(new_destroy_ed);
-      assign_editor_update(new_update_ed);
-      assign_editor_handle_event(new_handle_ev);
-      init_editor(g);
+      init_editor();
     }
 
     /* Core reload: poll with 0ms timeout (non-blocking) */
@@ -448,7 +316,7 @@ engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine")
     }
 #endif
 
-    update_externals(g);
+    if (!update_externals()) break;
   }
 
 #ifdef _WIN32

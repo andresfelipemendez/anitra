@@ -1,7 +1,9 @@
 #include <externals.h>
 #include <game.h>
+#include <project.h>
 #include "draw_processor.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -37,6 +39,7 @@
 // Static globals (replace GL state)
 // ---------------------------------------------------------------------------
 
+static memory *g_mem = NULL;
 static SDL_Window *window = NULL;
 static SDL_GPUDevice *gpu_device = NULL;
 
@@ -333,13 +336,12 @@ static scene_model_asset *scene_asset_for_index(game_state *gs, int asset_index)
     return &gs->scene_model_assets[asset_index];
 }
 
-static void draw_scene_meshes(memory *m,
-                              SDL_GPURenderPass *render_pass,
+static void draw_scene_meshes(SDL_GPURenderPass *render_pass,
                               SDL_GPUCommandBuffer *cmd_buf,
                               Mat4 projection,
                               Mat4 view) {
     int i;
-    game_state *gs = &m->game;
+    game_state *gs = &g_mem->game;
     if (!mesh_pipeline || !render_pass || !cmd_buf) return;
     if (!gs->dl.meshes || gs->dl.mesh_count <= 0) return;
     if (!bone_identity_buffer) return;
@@ -1972,8 +1974,140 @@ static void ensure_panel_textures(dock_state *d);
 // init_externals
 // ---------------------------------------------------------------------------
 
-EXPORT int init_externals(struct memory *m) {
+EXPORT int init_externals(const char *project_path) {
     dock_state *dock = NULL;
+
+    /* Allocate and zero the memory struct */
+    g_mem = (memory *)malloc(sizeof(memory));
+    if (!g_mem) { fprintf(stderr, "Failed to allocate memory\n"); return -1; }
+    memset(g_mem, 0, sizeof(*g_mem));
+
+    /* Set default asset paths */
+    g_mem->game.default_model_path = "assets/models/Knight.glb";
+    g_mem->game.default_animation_path = "assets/animations/Rig_Medium_General.glb";
+    g_mem->game.default_floor_model_path = "game_assets/KayKit_DungeonRemastered_1.1_FREE/Assets/gltf/floor_tile_large.gltf";
+    g_mem->game.texture_player = "assets/char_spritesheet.png";
+    g_mem->game.texture_tiles = "assets/Dungeon_Tileset.png";
+    g_mem->game.texture_slime = "assets/pinkslime_spritesheet.png";
+    g_mem->game.texture_health_bar = "assets/health_bar_hud.png";
+    g_mem->game.texture_health_fill = "assets/health_hud.png";
+    g_mem->game.font_editor = "assets/fonts/SourceCodePro-Regular.ttf";
+    g_mem->game.shader_sprite_vs = "assets/shaders/compiled/sprite_vs.spv";
+    g_mem->game.shader_sprite_fs = "assets/shaders/compiled/sprite_fs.spv";
+    g_mem->game.shader_debug_lines_vs = "assets/shaders/compiled/debug_lines_vs.spv";
+    g_mem->game.shader_debug_lines_fs = "assets/shaders/compiled/debug_lines_fs.spv";
+    g_mem->game.shader_ui_rect_vs = "assets/shaders/compiled/ui_rect_vs.spv";
+    g_mem->game.shader_ui_rect_fs = "assets/shaders/compiled/ui_rect_fs.spv";
+    g_mem->game.shader_font_vs = "assets/shaders/compiled/font_vs.spv";
+    g_mem->game.shader_font_fs = "assets/shaders/compiled/font_fs.spv";
+    g_mem->game.shader_mesh_vs = "assets/shaders/compiled/mesh_vs.spv";
+    g_mem->game.shader_mesh_fs = "assets/shaders/compiled/mesh_fs.spv";
+    g_mem->game.shader_composite_vs = "assets/shaders/compiled/composite_vs.spv";
+    g_mem->game.shader_composite_fs = "assets/shaders/compiled/composite_fs.spv";
+
+    g_mem->game.project_loaded = 0;
+    g_mem->game.project_path[0] = '\0';
+    g_mem->game.editor_play_mode = 0;
+    if (project_path && project_path[0]) {
+        snprintf(g_mem->game.project_path, sizeof(g_mem->game.project_path), "%s", project_path);
+    }
+
+    /* Load project file if provided */
+    if (project_path) {
+        project_data loaded_project;
+        if (project_load(project_path, &loaded_project) == 0) {
+            g_mem->game.project = loaded_project;
+            g_mem->game.project_loaded = 1;
+
+            /* Override camera from project */
+            if (g_mem->game.project.has_camera) {
+                g_mem->game.mesh3d.camera_eye = VEC3(g_mem->game.project.camera.eye[0],
+                    g_mem->game.project.camera.eye[1], g_mem->game.project.camera.eye[2]);
+                g_mem->game.mesh3d.camera_target = VEC3(g_mem->game.project.camera.target[0],
+                    g_mem->game.project.camera.target[1], g_mem->game.project.camera.target[2]);
+                g_mem->game.mesh3d.camera_up = VEC3(g_mem->game.project.camera.up[0],
+                    g_mem->game.project.camera.up[1], g_mem->game.project.camera.up[2]);
+                g_mem->game.mesh3d.camera_fov_deg = g_mem->game.project.camera.fov;
+                g_mem->game.mesh3d.camera_set_by_project = 1;
+            }
+
+            /* Resolve default model paths from ECS scene mesh components */
+            if (g_mem->game.project.scene_entity_count > 0) {
+                int mi;
+                int resolved_animated_model = 0;
+                int resolved_static_model = 0;
+                for (mi = 0; mi < g_mem->game.project.mesh_count; mi++) {
+                    const project_mesh *pm = &g_mem->game.project.meshes[mi];
+                    const char *model_path;
+                    const project_anim *pa;
+                    if (!pm->model[0]) continue;
+
+                    model_path = project_find_asset(&g_mem->game.project, pm->model, ASSET_MODEL);
+                    if (!model_path)
+                        model_path = project_find_asset(&g_mem->game.project, pm->model, ASSET_DUNGEON_PIECE);
+                    if (!model_path) continue;
+
+                    if (strstr(pm->model, "floor") != NULL) {
+                        g_mem->game.default_floor_model_path = model_path;
+                    }
+
+                    pa = project_find_anim(&g_mem->game.project, pm->entity);
+                    if (pa && !resolved_animated_model) {
+                        g_mem->game.default_model_path = model_path;
+                        resolved_animated_model = 1;
+                    }
+                    if (!resolved_animated_model &&
+                        !resolved_static_model &&
+                        strstr(pm->model, "floor") == NULL) {
+                        g_mem->game.default_model_path = model_path;
+                        resolved_static_model = 1;
+                    }
+
+                    if (pa && pa->asset[0]) {
+                        const char *anim_path = project_find_asset(&g_mem->game.project, pa->asset, ASSET_ANIMATION);
+                        if (anim_path)
+                            g_mem->game.default_animation_path = anim_path;
+                    }
+                }
+            }
+
+            /* Override sprite/texture paths from project assets */
+            {
+                int si;
+                for (si = 0; si < g_mem->game.project.asset_count; si++) {
+                    const project_asset *a = &g_mem->game.project.assets[si];
+                    if (a->type != ASSET_SPRITE) continue;
+                    if (strcmp(a->key, "player_sheet") == 0)
+                        g_mem->game.texture_player = a->path;
+                    else if (strcmp(a->key, "slime_sheet") == 0)
+                        g_mem->game.texture_slime = a->path;
+                    else if (strcmp(a->key, "health_bar") == 0)
+                        g_mem->game.texture_health_bar = a->path;
+                    else if (strcmp(a->key, "health_fill") == 0)
+                        g_mem->game.texture_health_fill = a->path;
+                }
+            }
+
+            /* Populate lighting from project */
+            if (g_mem->game.project.has_lighting) {
+                int li;
+                g_mem->game.lighting.ambient = VEC3(
+                    g_mem->game.project.lighting.ambient[0],
+                    g_mem->game.project.lighting.ambient[1],
+                    g_mem->game.project.lighting.ambient[2]);
+                g_mem->game.lighting.light_count = g_mem->game.project.lighting.point_light_count;
+                for (li = 0; li < g_mem->game.project.lighting.point_light_count; li++) {
+                    project_point_light *src = &g_mem->game.project.lighting.point_lights[li];
+                    g_mem->game.lighting.lights[li].position = VEC3(
+                        src->position[0], src->position[1], src->position[2]);
+                    g_mem->game.lighting.lights[li].color = VEC3(
+                        src->color[0], src->color[1], src->color[2]);
+                    g_mem->game.lighting.lights[li].intensity = src->intensity;
+                    g_mem->game.lighting.lights[li].radius = src->radius;
+                }
+            }
+        }
+    }
 
     // 1. Init SDL
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -2008,7 +2142,7 @@ EXPORT int init_externals(struct memory *m) {
     }
 
     /* Expose GPU device to engine for asset loading */
-    m->game.gpu_device = gpu_device;
+    g_mem->game.gpu_device = gpu_device;
 
     /* Initialize profilers */
     cache_prof_init();
@@ -2028,9 +2162,9 @@ EXPORT int init_externals(struct memory *m) {
     // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
 // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
     SDL_GPUShader* sprite_vs = load_shader_from_spirv(
-        m->game.shader_sprite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        g_mem->game.shader_sprite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* sprite_fs = load_shader_from_spirv(
-        m->game.shader_sprite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        g_mem->game.shader_sprite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!sprite_vs || !sprite_fs) {
         fprintf(stderr, "Failed to compile sprite shaders\n");
         return -1;
@@ -2117,9 +2251,9 @@ EXPORT int init_externals(struct memory *m) {
 
 // 8. Compile debug line shaders (split files)
     SDL_GPUShader* line_vs = load_shader_from_spirv(
-        m->game.shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+        g_mem->game.shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* line_fs = load_shader_from_spirv(
-        m->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+        g_mem->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
     if (!line_vs || !line_fs) {
         fprintf(stderr, "Failed to compile debug line shaders\n");
         return -1;
@@ -2193,7 +2327,7 @@ EXPORT int init_externals(struct memory *m) {
         SDL_GPUShader *ed_vs = load_shader_from_spirv(
             editor_line_vs_path, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *ed_fs = load_shader_from_spirv(
-            m->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g_mem->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!ed_vs || !ed_fs) {
             fprintf(stderr, "Failed to compile editor line shaders (vs=%s)\n", editor_line_vs_path);
             return -1;
@@ -2254,9 +2388,9 @@ EXPORT int init_externals(struct memory *m) {
     // 10. Compile and create UI rect pipeline
     {
         SDL_GPUShader *ui_vs = load_shader_from_spirv(
-            m->game.shader_ui_rect_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g_mem->game.shader_ui_rect_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *ui_fs = load_shader_from_spirv(
-            m->game.shader_ui_rect_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g_mem->game.shader_ui_rect_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!ui_vs || !ui_fs) {
             fprintf(stderr, "Failed to compile UI rect shaders\n");
             return -1;
@@ -2323,9 +2457,9 @@ EXPORT int init_externals(struct memory *m) {
     // 11. Compile and create font pipeline
     {
         SDL_GPUShader *font_vs = load_shader_from_spirv(
-            m->game.shader_font_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g_mem->game.shader_font_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *font_fs = load_shader_from_spirv(
-            m->game.shader_font_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g_mem->game.shader_font_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!font_vs || !font_fs) {
             fprintf(stderr, "Failed to compile font shaders\n");
             return -1;
@@ -2399,9 +2533,9 @@ EXPORT int init_externals(struct memory *m) {
     // 12. Compile and create mesh (3D skinned) pipeline
     {
         SDL_GPUShader *mesh_vs = load_shader_from_spirv(
-            m->game.shader_mesh_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g_mem->game.shader_mesh_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *mesh_fs = load_shader_from_spirv(
-            m->game.shader_mesh_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g_mem->game.shader_mesh_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!mesh_vs || !mesh_fs) {
             fprintf(stderr, "Failed to compile mesh shaders\n");
             return -1;
@@ -2614,15 +2748,15 @@ EXPORT int init_externals(struct memory *m) {
     }
 
 // 11. Load textures from config paths
-    gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture(m->game.texture_player);
-    gpu_textures[TEXTURE_TILES]       = load_gpu_texture(m->game.texture_tiles);
-    gpu_textures[TEXTURE_SLIME]       = load_gpu_texture(m->game.texture_slime);
-    gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture(m->game.texture_health_bar);
-    gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture(m->game.texture_health_fill);
+    gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture(g_mem->game.texture_player);
+    gpu_textures[TEXTURE_TILES]       = load_gpu_texture(g_mem->game.texture_tiles);
+    gpu_textures[TEXTURE_SLIME]       = load_gpu_texture(g_mem->game.texture_slime);
+    gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture(g_mem->game.texture_health_bar);
+    gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture(g_mem->game.texture_health_fill);
 
     // Load editor font (MSDF atlas) and upload to GPU
-    if (font_load_msdf(m->game.font_editor) != 0) {
-        fprintf(stderr, "Failed to load editor font from: %s\n", m->game.font_editor);
+    if (font_load_msdf(g_mem->game.font_editor) != 0) {
+        fprintf(stderr, "Failed to load editor font from: %s\n", g_mem->game.font_editor);
         return -1;
     }
     if (harfbuzz_init() != 0) {
@@ -2644,32 +2778,32 @@ EXPORT int init_externals(struct memory *m) {
         for (ch = 0; ch < 128; ch++) {
             int advance, lsb;
             stbtt_GetCodepointHMetrics(&font_stb_info, ch, &advance, &lsb);
-            m->editor.font_advances[ch] = (float)advance * scale1;
+            g_mem->editor.font_advances[ch] = (float)advance * scale1;
         }
-        m->editor.font_line_height = font_ascent - font_descent + font_line_gap;
+        g_mem->editor.font_line_height = font_ascent - font_descent + font_line_gap;
     }
 
     // Initialize arena (single allocation for all engine memory)
     {
         uint32_t arena_size = 500 * 1024 * 1024; // 500 MB
         void *arena_mem = malloc(arena_size);
-        arena_init(&m->arena, arena_mem, arena_size);
+        arena_init(&g_mem->arena, arena_mem, arena_size);
         printf("Arena initialized (%u bytes)\n", arena_size);
     }
 
     // Set cross-references so game_state and editor_state can reach root arena
-    m->game.root_arena = &m->arena;
-    m->editor.root_arena = &m->arena;
+    g_mem->game.root_arena = &g_mem->arena;
+    g_mem->editor.root_arena = &g_mem->arena;
 
     // Allocate editor sub-arena (dock state, editor-specific allocations)
-    m->editor.editor_arena = arena_alloc_subarena(&m->arena, 50 * 1024 * 1024, 16, "editor");
-    m->editor.dock = arena_alloc(m->editor.editor_arena, sizeof(dock_state), 16, "dock_state");
-    dock = (dock_state *)m->editor.dock;
+    g_mem->editor.editor_arena = arena_alloc_subarena(&g_mem->arena, 50 * 1024 * 1024, 16, "editor");
+    g_mem->editor.dock = arena_alloc(g_mem->editor.editor_arena, sizeof(dock_state), 16, "dock_state");
+    dock = (dock_state *)g_mem->editor.dock;
 
     // Initialize Clay UI — game context (from main arena, for in-game UI: pause menu, HUD)
     {
         uint64_t clay_mem_size = Clay_MinMemorySize();
-        clay_arena_game = arena_alloc_subarena(&m->arena, (uint32_t)clay_mem_size, 16, "clay_game");
+        clay_arena_game = arena_alloc_subarena(&g_mem->arena, (uint32_t)clay_mem_size, 16, "clay_game");
 
         Clay_Arena clay_arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem_size, clay_arena_game->base);
 
@@ -2683,22 +2817,22 @@ EXPORT int init_externals(struct memory *m) {
     }
 
     // Clay editor context is now created by editor.dll (init_editor) — we just publish the game context
-    m->game.clay_game = clay_context;
+    g_mem->game.clay_game = clay_context;
 
     // Initialize dock system (single window, three-column layout)
     if (!dock->initialized) {
         dock_init_default(dock);
     }
     dock->windows[0].sdl_window = window;
-    m->editor.open = 1;
-    m->editor.window = window;  /* editor gets the main window handle for focus/mouse checks */
+    g_mem->editor.open = 1;
+    g_mem->editor.window = window;  /* editor gets the main window handle for focus/mouse checks */
 
     // Create composite pipeline (draws panel textures into window)
     {
         SDL_GPUShader *comp_vs = load_shader_from_spirv(
-            m->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g_mem->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *comp_fs = load_shader_from_spirv(
-            m->game.shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g_mem->game.shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
         if (!comp_vs || !comp_fs) {
             fprintf(stderr, "Failed to compile composite shaders\n");
             return -1;
@@ -2772,9 +2906,9 @@ EXPORT int init_externals(struct memory *m) {
     // so it can draw inside the profiler render pass which has a depth target)
     {
         SDL_GPUShader *grid_vs = load_shader_from_spirv(
-            m->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+            g_mem->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
         SDL_GPUShader *grid_fs = load_shader_from_spirv(
-            m->game.shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+            g_mem->game.shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
 
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -2846,26 +2980,26 @@ EXPORT int init_externals(struct memory *m) {
 
     // Allocate rendering sub-arena (draw_commands, mesh_commands, debug_lines, debug_vertices)
     {
-        arena *rendering = arena_alloc_subarena(&m->arena, 256 * 1024, 16, "rendering");
+        arena *rendering = arena_alloc_subarena(&g_mem->arena, 256 * 1024, 16, "rendering");
 
-        m->game.dl.sprite_capacity = MAX_DRAW_COMMANDS;
-        m->game.dl.sprites = (draw_command*)arena_alloc(rendering,
+        g_mem->game.dl.sprite_capacity = MAX_DRAW_COMMANDS;
+        g_mem->game.dl.sprites = (draw_command*)arena_alloc(rendering,
             (uint32_t)(MAX_DRAW_COMMANDS * sizeof(draw_command)), 16, "draw_commands");
-        m->game.dl.mesh_capacity = DRAW_LIST_MAX_MESH_COMMANDS;
-        m->game.dl.meshes = (mesh_draw_command*)arena_alloc(rendering,
+        g_mem->game.dl.mesh_capacity = DRAW_LIST_MAX_MESH_COMMANDS;
+        g_mem->game.dl.meshes = (mesh_draw_command*)arena_alloc(rendering,
             (uint32_t)(DRAW_LIST_MAX_MESH_COMMANDS * sizeof(mesh_draw_command)), 16, "mesh_commands");
-        m->game.dl.line_capacity = DRAW_LIST_MAX_DEBUG_LINES;
-        m->game.dl.lines = (debug_line_command*)arena_alloc(rendering,
+        g_mem->game.dl.line_capacity = DRAW_LIST_MAX_DEBUG_LINES;
+        g_mem->game.dl.lines = (debug_line_command*)arena_alloc(rendering,
             (uint32_t)(DRAW_LIST_MAX_DEBUG_LINES * sizeof(debug_line_command)), 16, "debug_lines");
 
-        m->game.dbg.max_lines = 1000;
-        m->game.dbg.current_line_count = 0;
-        m->game.dbg.vertex_buffer = (float*)arena_alloc(rendering,
+        g_mem->game.dbg.max_lines = 1000;
+        g_mem->game.dbg.current_line_count = 0;
+        g_mem->game.dbg.vertex_buffer = (float*)arena_alloc(rendering,
             (uint32_t)(1000 * 10 * sizeof(float)), 16, "debug_vertices");
     }
 
     // Allocate gameplay sub-arena (entities, etc.)
-    m->game.gameplay = arena_alloc_subarena(&m->arena, 4 * 1024 * 1024, 16, "gameplay");
+    g_mem->game.gameplay = arena_alloc_subarena(&g_mem->arena, 4 * 1024 * 1024, 16, "gameplay");
 
     // Create initial panel textures (dock layout → panel rects → offscreen textures)
     {
@@ -2876,9 +3010,9 @@ EXPORT int init_externals(struct memory *m) {
     }
 
     // Init game timing
-    m->game._t_prev = (double)SDL_GetTicks() / 1000.0;
-    m->game.dt = 0.0f;
-    m->game.play = true;
+    g_mem->game._t_prev = (double)SDL_GetTicks() / 1000.0;
+    g_mem->game.dt = 0.0f;
+    g_mem->game.play = true;
 
     printf("Externals initialized (SDL3 GPU, docked panels)\n");
     return 1;
@@ -2889,12 +3023,12 @@ EXPORT int init_externals(struct memory *m) {
 // Input handling
 // ---------------------------------------------------------------------------
 
-static void update_input(memory *m) {
-    m->game.input.horizontal = 0.0f;
-    m->game.input.vertical = 0.0f;
-    m->game.input.input_mask = 0;
+static void update_input(void) {
+    g_mem->game.input.horizontal = 0.0f;
+    g_mem->game.input.vertical = 0.0f;
+    g_mem->game.input.input_mask = 0;
 
-    if (!m->game.editor_play_mode) {
+    if (!g_mem->game.editor_play_mode) {
         return;
     }
 
@@ -2902,7 +3036,7 @@ static void update_input(memory *m) {
     SDL_Window *focused = SDL_GetKeyboardFocus();
     bool game_has_focus = (focused == window) || (focused == NULL);
     if (!game_has_focus) {
-        dock_state *dock = (dock_state *)m->editor.dock;
+        dock_state *dock = (dock_state *)g_mem->editor.dock;
         if (dock) {
             int wi;
             for (wi = 0; wi < MAX_DOCK_WINDOWS; wi++) {
@@ -2934,13 +3068,13 @@ static void update_input(memory *m) {
         }
 
         if (keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_J])
-            m->game.input.input_mask |= INPUT_A;
+            g_mem->game.input.input_mask |= INPUT_A;
         if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT] || keys[SDL_SCANCODE_K])
-            m->game.input.input_mask |= INPUT_B;
+            g_mem->game.input.input_mask |= INPUT_B;
         if (keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_L])
-            m->game.input.input_mask |= INPUT_X;
+            g_mem->game.input.input_mask |= INPUT_X;
         if (keys[SDL_SCANCODE_Q] || keys[SDL_SCANCODE_I] || keys[SDL_SCANCODE_TAB])
-            m->game.input.input_mask |= INPUT_Y;
+            g_mem->game.input.input_mask |= INPUT_Y;
     }
 
     // Gamepad input
@@ -2968,13 +3102,13 @@ static void update_input(memory *m) {
             }
 
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH))
-                m->game.input.input_mask |= INPUT_A;
+                g_mem->game.input.input_mask |= INPUT_A;
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_EAST))
-                m->game.input.input_mask |= INPUT_B;
+                g_mem->game.input.input_mask |= INPUT_B;
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_WEST))
-                m->game.input.input_mask |= INPUT_X;
+                g_mem->game.input.input_mask |= INPUT_X;
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH))
-                m->game.input.input_mask |= INPUT_Y;
+                g_mem->game.input.input_mask |= INPUT_Y;
 
             SDL_CloseGamepad(pad);
         }
@@ -2982,8 +3116,8 @@ static void update_input(memory *m) {
     SDL_free(gamepads);
 
     // Combine keyboard and gamepad (take stronger input)
-    m->game.input.horizontal = (fabsf(kb_horizontal) > fabsf(gp_horizontal)) ? kb_horizontal : gp_horizontal;
-    m->game.input.vertical   = (fabsf(kb_vertical)   > fabsf(gp_vertical))   ? kb_vertical   : gp_vertical;
+    g_mem->game.input.horizontal = (fabsf(kb_horizontal) > fabsf(gp_horizontal)) ? kb_horizontal : gp_horizontal;
+    g_mem->game.input.vertical   = (fabsf(kb_vertical)   > fabsf(gp_vertical))   ? kb_vertical   : gp_vertical;
 }
 
 /* Refresh in-memory project data from disk so play-stop reset uses latest saved scene. */
@@ -3112,17 +3246,17 @@ static void ensure_panel_textures(dock_state *d)
 // update_externals
 // ---------------------------------------------------------------------------
 
-EXPORT void update_externals(struct memory *m) {
-    dock_state *dock = (dock_state *)m->editor.dock;
+EXPORT int update_externals(void) {
+    dock_state *dock = (dock_state *)g_mem->editor.dock;
     static int previous_editor_play_mode = -1;
     TracyCZoneN(ctx_update, "update_externals", 1);
     // --- Timing ---
     double now = (double)SDL_GetTicks() / 1000.0;
-    double dtd = now - m->game._t_prev;
-    m->game._t_prev = now;
+    double dtd = now - g_mem->game._t_prev;
+    g_mem->game._t_prev = now;
     if (dtd < 0.0) dtd = 0.0;
     if (dtd > 0.1) dtd = 0.1;
-    m->game.dt = (float)dtd;
+    g_mem->game.dt = (float)dtd;
 
     // --- Events ---
     {
@@ -3130,10 +3264,10 @@ EXPORT void update_externals(struct memory *m) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
-                m->game.play = false;
+                g_mem->game.play = 0;
                 TracyCZoneEnd(ctx_poll);
                 TracyCZoneEnd(ctx_update);
-                return;
+                return 0;
             }
 
             /* Window close: main window = quit, tear-off = return panel */
@@ -3186,17 +3320,17 @@ EXPORT void update_externals(struct memory *m) {
                     }
                 }
                 if (is_main) {
-                    m->game.play = false;
+                    g_mem->game.play = 0;
                     TracyCZoneEnd(ctx_poll);
                     TracyCZoneEnd(ctx_update);
-                    return;
+                    return 0;
                 }
                 continue; /* don't forward close events to editor */
             }
 
             /* Dispatch all events to editor.dll (dock interaction + camera + gizmo) */
             if (g_editor_handle_event) {
-                if (g_editor_handle_event(&m->game, &m->editor, &event))
+                if (g_editor_handle_event(&g_mem->game, &g_mem->editor, &event))
                     continue; /* editor consumed the event */
             }
         }
@@ -3205,24 +3339,24 @@ EXPORT void update_externals(struct memory *m) {
 
     /* Leaving Play mode: rebuild scene from project so runtime mutations are discarded. */
     if (previous_editor_play_mode < 0) {
-        previous_editor_play_mode = m->game.editor_play_mode ? 1 : 0;
+        previous_editor_play_mode = g_mem->game.editor_play_mode ? 1 : 0;
     }
-    if (previous_editor_play_mode == 1 && !m->game.editor_play_mode) {
-        int can_rebuild_scene = reload_project_state_from_disk(&m->game);
+    if (previous_editor_play_mode == 1 && !g_mem->game.editor_play_mode) {
+        int can_rebuild_scene = reload_project_state_from_disk(&g_mem->game);
         if (g_init && can_rebuild_scene) {
-            g_init(&m->game);
-            m->game.editor_play_mode = 0;
-            m->game.input.horizontal = 0.0f;
-            m->game.input.vertical = 0.0f;
-            m->game.input.input_mask = 0;
+            g_init(&g_mem->game);
+            g_mem->game.editor_play_mode = 0;
+            g_mem->game.input.horizontal = 0.0f;
+            g_mem->game.input.vertical = 0.0f;
+            g_mem->game.input.input_mask = 0;
         }
     }
-    previous_editor_play_mode = m->game.editor_play_mode ? 1 : 0;
+    previous_editor_play_mode = g_mem->game.editor_play_mode ? 1 : 0;
 
     // --- Input ---
     FRAME_CPU_ZONE_BEGIN("ext_input_update");
     FRAME_CACHE_ZONE_BEGIN("ext_input_update");
-    update_input(m);
+    update_input();
     FRAME_CACHE_ZONE_END();
     FRAME_CPU_ZONE_END();
 
@@ -3430,11 +3564,11 @@ EXPORT void update_externals(struct memory *m) {
     FRAME_CACHE_ZONE_BEGIN("editor_update");
     if (clay_arena_game && clay_context)
         clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
-    if (m->editor.open && g_editor_update) g_editor_update(&m->game, &m->editor);
+    if (g_mem->editor.open && g_editor_update) g_editor_update(&g_mem->game, &g_mem->editor);
     FRAME_CACHE_ZONE_END();
     FRAME_CPU_ZONE_END();
 
-    cpu_prof_capture_paused = (m->editor.cpu_prof_timeline_paused != 0);
+    cpu_prof_capture_paused = (g_mem->editor.cpu_prof_timeline_paused != 0);
     cpu_prof_set_capture_enabled(!cpu_prof_capture_paused);
     if (!cpu_prof_capture_paused) {
         if (cpu_prof_capture_was_paused) {
@@ -3454,30 +3588,30 @@ EXPORT void update_externals(struct memory *m) {
     // --- Ortho projection (based on game panel size, set by editor.dll) ---
     FRAME_CPU_ZONE_BEGIN("ortho_projection");
     {
-        float w = (float)m->game.width;
-        float h = (float)m->game.height;
+        float w = (float)g_mem->game.width;
+        float h = (float)g_mem->game.height;
         float ortho[16] = {
             2.0f/w, 0,      0,     0,
             0,      2.0f/h, 0,     0,
             0,      0,     -1.0f,  0,
             0,      0,      0,     1.0f
         };
-        memcpy(m->game.dl.ortho_projection, ortho, sizeof(ortho));
+        memcpy(g_mem->game.dl.ortho_projection, ortho, sizeof(ortho));
     }
     FRAME_CPU_ZONE_END();
 
     // --- Reset draw list ---
     FRAME_CPU_ZONE_BEGIN("reset_draw_list");
-    m->game.dl.sprite_count = 0;
-    m->game.dl.line_count = 0;
-    m->game.dl.mesh_count = 0;
+    g_mem->game.dl.sprite_count = 0;
+    g_mem->game.dl.line_count = 0;
+    g_mem->game.dl.mesh_count = 0;
     FRAME_CPU_ZONE_END();
 
     // --- Call engine update (fills draw_list + updates mesh3d animation) ---
     FRAME_CPU_ZONE_BEGIN("engine_update_call");
     FRAME_CACHE_ZONE_BEGIN("engine_update_call");
     cache_prof_frame_reset();
-    g_update(&m->game);
+    g_update(&g_mem->game);
     FRAME_CACHE_ZONE_END();
     FRAME_CPU_ZONE_END();
 
@@ -3488,7 +3622,7 @@ EXPORT void update_externals(struct memory *m) {
     if (!cmd_buf) {
         fprintf(stderr, "Failed to acquire command buffer: %s\n", SDL_GetError());
         TracyCZoneEnd(ctx_update);
-        return;
+        return g_mem->game.play;
     }
 
     // ================================================================
@@ -3505,7 +3639,7 @@ EXPORT void update_externals(struct memory *m) {
 
     FRAME_CPU_ZONE_BEGIN("draw_upload_build");
     FRAME_CACHE_ZONE_BEGIN("draw_upload_build");
-    draw_upload_build(gpu_device, cmd_buf, &m->game.dl, &draw_upload);
+    draw_upload_build(gpu_device, cmd_buf, &g_mem->game.dl, &draw_upload);
     FRAME_CACHE_ZONE_END();
     FRAME_CPU_ZONE_END();
     sprite_count = draw_upload.sprite_count;
@@ -3519,14 +3653,14 @@ EXPORT void update_externals(struct memory *m) {
         void *bone_src = NULL;
         Uint32 bone_size = 0;
 
-        if (m->game.anim.pool_initialized && m->game.anim.pool.skin_mats &&
-            m->game.anim.pool.skin_mats_count > 0) {
-            bone_src = m->game.anim.pool.skin_mats;
-            bone_size = (Uint32)(m->game.anim.pool.skin_mats_count * sizeof(Mat4));
-        } else if (m->game.mesh3d.visible && m->game.mesh3d.skeleton.joint_count > 0 &&
-                   m->game.mesh3d.skin_mats) {
-            bone_src = m->game.mesh3d.skin_mats;
-            bone_size = m->game.mesh3d.skeleton.joint_count * sizeof(Mat4);
+        if (g_mem->game.anim.pool_initialized && g_mem->game.anim.pool.skin_mats &&
+            g_mem->game.anim.pool.skin_mats_count > 0) {
+            bone_src = g_mem->game.anim.pool.skin_mats;
+            bone_size = (Uint32)(g_mem->game.anim.pool.skin_mats_count * sizeof(Mat4));
+        } else if (g_mem->game.mesh3d.visible && g_mem->game.mesh3d.skeleton.joint_count > 0 &&
+                   g_mem->game.mesh3d.skin_mats) {
+            bone_src = g_mem->game.mesh3d.skin_mats;
+            bone_size = g_mem->game.mesh3d.skeleton.joint_count * sizeof(Mat4);
         }
 
         if (bone_src && bone_size > 0) {
@@ -3560,67 +3694,67 @@ EXPORT void update_externals(struct memory *m) {
 
     // --- Prepare Clay UI: game window (layout + upload) ---
     FRAME_CPU_ZONE_BEGIN("ui_prepare_game");
-    ui_prepare_game(cmd_buf, m);
+    ui_prepare_game(cmd_buf, g_mem);
     FRAME_CPU_ZONE_END();
 
     // --- Prepare Clay UI: menu bar (main window overlay) ---
     FRAME_CPU_ZONE_BEGIN("ui_prepare_menu_bar");
-    menu_bar_prepare(cmd_buf, m);
+    menu_bar_prepare(cmd_buf, g_mem);
     FRAME_CPU_ZONE_END();
 
     // --- Prepare Clay UI: profiler window (layout + upload) ---
     if (panel_color[PANEL_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_profiler");
-        profiler_prepare(cmd_buf, m);
+        profiler_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: scene tree window (layout + upload) ---
     if (panel_color[PANEL_SCENE_TREE]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_scene_tree");
-        scene_tree_prepare(cmd_buf, m);
+        scene_tree_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: project browser window (layout + upload) ---
     if (panel_color[PANEL_ASSETS]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_project_browser");
-        project_browser_prepare(cmd_buf, m);
+        project_browser_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: inspector window (layout + upload) ---
     if (panel_color[PANEL_INSPECTOR]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_inspector");
-        inspector_prepare(cmd_buf, m);
+        inspector_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: cache profiler (layout + upload) ---
     if (panel_color[PANEL_CACHE_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_cache_profiler");
-        cache_profiler_prepare(cmd_buf, m);
+        cache_profiler_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: cpu profiler (layout + upload) ---
     if (panel_color[PANEL_CPU_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_cpu_profiler");
-        cpu_profiler_prepare(cmd_buf, m);
+        cpu_profiler_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: editor viewport toolbar (layout + upload) ---
     if (panel_color[PANEL_EDITOR]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_editor_toolbar");
-        editor_toolbar_prepare(cmd_buf, m);
+        editor_toolbar_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Upload editor 3D lines (populated by editor.dll) ---
     SDL_GPUBuffer *editor_line_gpu_buf = NULL;
-    int editor_vert_count = m->editor.line_count * 2;
-    if (m->editor.open && editor_vert_count > 0) {
+    int editor_vert_count = g_mem->editor.line_count * 2;
+    if (g_mem->editor.open && editor_vert_count > 0) {
         FRAME_CPU_ZONE_BEGIN("upload_editor_lines");
         Uint32 ed_buf_size = (Uint32)(editor_vert_count * sizeof(editor_line_vert));
 
@@ -3630,7 +3764,7 @@ EXPORT void update_externals(struct memory *m) {
 
         SDL_GPUTransferBuffer *ed_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &ed_tbuf_info);
         void *ed_mapped = SDL_MapGPUTransferBuffer(gpu_device, ed_transfer, false);
-        memcpy(ed_mapped, m->editor.lines, ed_buf_size);
+        memcpy(ed_mapped, g_mem->editor.lines, ed_buf_size);
         SDL_UnmapGPUTransferBuffer(gpu_device, ed_transfer);
 
         SDL_GPUBufferCreateInfo ed_gpu_info = {0};
@@ -3772,19 +3906,19 @@ EXPORT void update_externals(struct memory *m) {
         // 3D meshes from ECS scene (all model assets from project TOML)
         {
             float aspect = (float)gw / (float)gh;
-            float fov_deg = m->game.mesh3d.camera_fov_deg > 0.0f ? m->game.mesh3d.camera_fov_deg : 60.0f;
-            float near_plane = m->game.mesh3d.camera_near > 0.0f ? m->game.mesh3d.camera_near : 0.1f;
-            float far_plane = m->game.mesh3d.camera_far > near_plane ? m->game.mesh3d.camera_far : 100.0f;
+            float fov_deg = g_mem->game.mesh3d.camera_fov_deg > 0.0f ? g_mem->game.mesh3d.camera_fov_deg : 60.0f;
+            float near_plane = g_mem->game.mesh3d.camera_near > 0.0f ? g_mem->game.mesh3d.camera_near : 0.1f;
+            float far_plane = g_mem->game.mesh3d.camera_far > near_plane ? g_mem->game.mesh3d.camera_far : 100.0f;
             Mat4 proj = mat4_perspective(fov_deg * 3.14159265f / 180.0f, aspect, near_plane, far_plane);
-            Mat4 view = mat4_look_at(m->game.mesh3d.camera_eye, m->game.mesh3d.camera_target, m->game.mesh3d.camera_up);
-            draw_scene_meshes(m, render_pass, cmd_buf, proj, view);
+            Mat4 view = mat4_look_at(g_mem->game.mesh3d.camera_eye, g_mem->game.mesh3d.camera_target, g_mem->game.mesh3d.camera_up);
+            draw_scene_meshes(render_pass, cmd_buf, proj, view);
         }
 
         // 2D sprites + lines
         {
             uniform_data uniforms;
-            memcpy(uniforms.projection, m->game.dl.ortho_projection, sizeof(float) * 16);
-            memcpy(uniforms.view, m->game.dl.view_matrix, sizeof(float) * 16);
+            memcpy(uniforms.projection, g_mem->game.dl.ortho_projection, sizeof(float) * 16);
+            memcpy(uniforms.view, g_mem->game.dl.view_matrix, sizeof(float) * 16);
 
             if (sprite_count > 0 && sprite_gpu_buf) {
                 SDL_BindGPUGraphicsPipeline(render_pass, sprite_pipeline);
@@ -3798,7 +3932,7 @@ EXPORT void update_externals(struct memory *m) {
                     if (!gpu_textures[tex_id]) continue;
                     bool bound = false;
                     for (int i = 0; i < sprite_count; i++) {
-                        if (m->game.dl.sprites[i].texture_id == tex_id) {
+                        if (g_mem->game.dl.sprites[i].texture_id == tex_id) {
                             if (!bound) {
                                 SDL_GPUTextureSamplerBinding tex_binding = {0};
                                 tex_binding.texture = gpu_textures[tex_id];
@@ -3969,7 +4103,7 @@ EXPORT void update_externals(struct memory *m) {
         SDL_EndGPURenderPass(pb_pass);
 
         /* Thumbnail 3D preview pass over project-browser swatches. */
-        if (m->editor.pb_thumbnail_count > 0 && mesh_pipeline && bone_identity_buffer) {
+        if (g_mem->editor.pb_thumbnail_count > 0 && mesh_pipeline && bone_identity_buffer) {
             FRAME_CPU_ZONE_BEGIN("render_project_thumbnails");
             SDL_GPUColorTargetInfo tb_ct = {0};
             SDL_GPUDepthStencilTargetInfo tb_dt = {0};
@@ -3992,8 +4126,8 @@ EXPORT void update_externals(struct memory *m) {
             SDL_BindGPUGraphicsPipeline(tb_pass, mesh_pipeline);
             SDL_BindGPUVertexStorageBuffers(tb_pass, 0, &identity_bones, 1);
 
-            for (ti = 0; ti < m->editor.pb_thumbnail_count; ti++) {
-                pb_thumbnail_request *req = &m->editor.pb_thumbnails[ti];
+            for (ti = 0; ti < g_mem->editor.pb_thumbnail_count; ti++) {
+                pb_thumbnail_request *req = &g_mem->editor.pb_thumbnails[ti];
                 scene_model_asset *asset = NULL;
                 GltfMesh *mesh;
                 float radius;
@@ -4023,12 +4157,12 @@ EXPORT void update_externals(struct memory *m) {
                     /* Find a scene mesh explicitly paired with this animation asset. */
                     {
                         int ai2;
-                        for (ai2 = 0; ai2 < m->game.project.anim_count; ai2++) {
-                            const project_anim *pa = &m->game.project.anims[ai2];
+                        for (ai2 = 0; ai2 < g_mem->game.project.anim_count; ai2++) {
+                            const project_anim *pa = &g_mem->game.project.anims[ai2];
                             const project_mesh *pm;
                             if (!pa->asset[0]) continue;
                             if (strcmp(pa->asset, req->key) != 0) continue;
-                            pm = project_find_mesh(&m->game.project, pa->entity);
+                            pm = project_find_mesh(&g_mem->game.project, pa->entity);
                             if (pm && pm->model[0]) {
                                 mesh_key = pm->model;
                                 break;
@@ -4038,8 +4172,8 @@ EXPORT void update_externals(struct memory *m) {
 
                     /* Prefer the paired mesh (same rig relationship as scene setup). */
                     if (mesh_key) {
-                        for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
-                            scene_model_asset *cand = &m->game.scene_model_assets[ai];
+                        for (ai = 0; ai < g_mem->game.scene_model_asset_count; ai++) {
+                            scene_model_asset *cand = &g_mem->game.scene_model_assets[ai];
                             if (strcmp(cand->key, mesh_key) != 0) continue;
                             if (!cand->loaded || cand->model.mesh.primitive_count == 0) continue;
                             if (!cand->has_skeleton) continue;
@@ -4047,8 +4181,8 @@ EXPORT void update_externals(struct memory *m) {
                             break;
                         }
                         if (!asset) {
-                            for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
-                                scene_model_asset *cand = &m->game.scene_model_assets[ai];
+                            for (ai = 0; ai < g_mem->game.scene_model_asset_count; ai++) {
+                                scene_model_asset *cand = &g_mem->game.scene_model_assets[ai];
                                 if (strcmp(cand->key, mesh_key) != 0) continue;
                                 if (!cand->loaded || cand->model.mesh.primitive_count == 0) continue;
                                 asset = cand;
@@ -4059,8 +4193,8 @@ EXPORT void update_externals(struct memory *m) {
 
                     /* Fallback: first loaded skinned mesh, then any loaded mesh. */
                     if (!asset) {
-                        for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
-                            scene_model_asset *cand = &m->game.scene_model_assets[ai];
+                        for (ai = 0; ai < g_mem->game.scene_model_asset_count; ai++) {
+                            scene_model_asset *cand = &g_mem->game.scene_model_assets[ai];
                             if (!cand->loaded || cand->model.mesh.primitive_count == 0) continue;
                             if (!cand->has_skeleton) continue;
                             asset = cand;
@@ -4068,17 +4202,17 @@ EXPORT void update_externals(struct memory *m) {
                         }
                     }
                     if (!asset) {
-                        for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
-                            scene_model_asset *cand = &m->game.scene_model_assets[ai];
+                        for (ai = 0; ai < g_mem->game.scene_model_asset_count; ai++) {
+                            scene_model_asset *cand = &g_mem->game.scene_model_assets[ai];
                             if (!cand->loaded || cand->model.mesh.primitive_count == 0) continue;
                             asset = cand;
                             break;
                         }
                     }
                 } else {
-                    for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
-                        if (strcmp(m->game.scene_model_assets[ai].key, req->key) == 0) {
-                            asset = &m->game.scene_model_assets[ai];
+                    for (ai = 0; ai < g_mem->game.scene_model_asset_count; ai++) {
+                        if (strcmp(g_mem->game.scene_model_assets[ai].key, req->key) == 0) {
+                            asset = &g_mem->game.scene_model_assets[ai];
                             break;
                         }
                     }
@@ -4289,7 +4423,7 @@ EXPORT void update_externals(struct memory *m) {
     }
 
     // --- EDITOR PANEL RENDER PASS (offscreen) ---
-    if (m->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
+    if (g_mem->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
         FRAME_CPU_ZONE_BEGIN("render_editor_panel");
         Uint32 ew = (Uint32)panel_tex_w[PANEL_EDITOR];
         Uint32 eh = (Uint32)panel_tex_h[PANEL_EDITOR];
@@ -4329,15 +4463,15 @@ EXPORT void update_externals(struct memory *m) {
         /* Editor camera matrices */
         float ed_aspect = (float)ew / (float)eh;
         Mat4 ed_proj;
-        float ed_cp = cosf(m->editor.cam_pitch);
-        Vec3 ed_fwd = VEC3(ed_cp * sinf(m->editor.cam_yaw),
-                           sinf(m->editor.cam_pitch),
-                           ed_cp * cosf(m->editor.cam_yaw));
-        Mat4 ed_view = mat4_look_at(m->editor.cam_pos,
-                                     vec3_add(m->editor.cam_pos, ed_fwd),
+        float ed_cp = cosf(g_mem->editor.cam_pitch);
+        Vec3 ed_fwd = VEC3(ed_cp * sinf(g_mem->editor.cam_yaw),
+                           sinf(g_mem->editor.cam_pitch),
+                           ed_cp * cosf(g_mem->editor.cam_yaw));
+        Mat4 ed_view = mat4_look_at(g_mem->editor.cam_pos,
+                                     vec3_add(g_mem->editor.cam_pos, ed_fwd),
                                      VEC3(0, 1, 0));
-        if (m->editor.cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
-            float ortho_size = m->editor.cam_ortho_size > 0.05f ? m->editor.cam_ortho_size : 12.0f;
+        if (g_mem->editor.cam_projection_mode == EDITOR_CAMERA_ORTHOGRAPHIC) {
+            float ortho_size = g_mem->editor.cam_ortho_size > 0.05f ? g_mem->editor.cam_ortho_size : 12.0f;
             float half_h = ortho_size * 0.5f;
             float half_w = half_h * ed_aspect;
             ed_proj = mat4_orthographic(-half_w, half_w, -half_h, half_h, 0.1f, 200.0f);
@@ -4346,7 +4480,7 @@ EXPORT void update_externals(struct memory *m) {
         }
 
         /* 1. 3D meshes (editor camera) */
-        draw_scene_meshes(m, ed_pass, cmd_buf, ed_proj, ed_view);
+        draw_scene_meshes(ed_pass, cmd_buf, ed_proj, ed_view);
 
         /* 2. Editor 3D lines (grid + gizmo) */
         if (editor_vert_count > 0 && editor_line_gpu_buf) {
@@ -4497,14 +4631,15 @@ EXPORT void update_externals(struct memory *m) {
 
     TracyCZoneEnd(ctx_update);
     TracyCFrameMark;
+    return g_mem->game.play;
 }
 
 // ---------------------------------------------------------------------------
 // end_externals
 // ---------------------------------------------------------------------------
 
-EXPORT void end_externals(struct memory *m) {
-    dock_state *dock = (dock_state *)m->editor.dock;
+EXPORT void end_externals(void) {
+    dock_state *dock = (dock_state *)g_mem->editor.dock;
     // Release textures
     for (int i = 0; i < TEXTURE_COUNT; i++) {
         if (gpu_textures[i]) {
@@ -4523,9 +4658,9 @@ EXPORT void end_externals(struct memory *m) {
     clay_arena_game = NULL;
 
     // Release editor mouse look if active
-    if (m->editor.cam_mouse_look && window) {
+    if (g_mem->editor.cam_mouse_look && window) {
         SDL_SetWindowRelativeMouseMode(window, false);
-        m->editor.cam_mouse_look = 0;
+        g_mem->editor.cam_mouse_look = 0;
     }
 
     // Panel offscreen textures
@@ -4605,8 +4740,8 @@ EXPORT void end_externals(struct memory *m) {
     // Release glTF model GPU resources (all scene model assets)
     {
         int ai;
-        for (ai = 0; ai < m->game.scene_model_asset_count; ai++) {
-            scene_model_asset *asset = &m->game.scene_model_assets[ai];
+        for (ai = 0; ai < g_mem->game.scene_model_asset_count; ai++) {
+            scene_model_asset *asset = &g_mem->game.scene_model_assets[ai];
             uint32_t p;
             if (!asset->loaded) continue;
             for (p = 0; p < asset->model.mesh.primitive_count; p++) {
@@ -4652,10 +4787,13 @@ EXPORT void end_externals(struct memory *m) {
     }
 
     // Free arena (single free for all engine memory)
-    if (m->arena.base) {
-        free(m->arena.base);
-        m->arena.base = NULL;
+    if (g_mem->arena.base) {
+        free(g_mem->arena.base);
+        g_mem->arena.base = NULL;
     }
+
+    free(g_mem);
+    g_mem = NULL;
 
     SDL_Quit();
 }
@@ -4664,12 +4802,12 @@ EXPORT void end_externals(struct memory *m) {
 // Engine callbacks
 // ---------------------------------------------------------------------------
 
-EXPORT void init_engine(struct memory *m) {
-    g_init(&m->game);
+EXPORT void init_engine(void) {
+    g_init(&g_mem->game);
 }
 
-EXPORT void destroy_engine(struct memory *m) {
-    g_destroy(&m->game);
+EXPORT void destroy_engine(void) {
+    g_destroy(&g_mem->game);
 }
 
 EXPORT void assign_init(engine_init_fn func) {
@@ -4688,12 +4826,12 @@ EXPORT void assign_update(engine_update_fn func) {
 // Editor callbacks
 // ---------------------------------------------------------------------------
 
-EXPORT void init_editor(struct memory *m) {
-    if (g_editor_init) g_editor_init(&m->game, &m->editor);
+EXPORT void init_editor(void) {
+    if (g_editor_init) g_editor_init(&g_mem->game, &g_mem->editor);
 }
 
-EXPORT void destroy_editor(struct memory *m) {
-    if (g_editor_destroy) g_editor_destroy(&m->game, &m->editor);
+EXPORT void destroy_editor(void) {
+    if (g_editor_destroy) g_editor_destroy(&g_mem->game, &g_mem->editor);
 }
 
 EXPORT void assign_editor_init(editor_init_fn func) {
@@ -4712,6 +4850,18 @@ EXPORT void assign_editor_handle_event(editor_handle_event_fn func) {
     g_editor_handle_event = func;
 }
 
+// ---------------------------------------------------------------------------
+// Project reload (called by core on engine hot-reload)
+// ---------------------------------------------------------------------------
+
+EXPORT void reload_project(void) {
+    if (g_mem->game.project_loaded && g_mem->game.project_path[0]) {
+        project_data reloaded;
+        if (project_load(g_mem->game.project_path, &reloaded) == 0)
+            g_mem->game.project = reloaded;
+    }
+}
+
 /* Profiler zone wrappers — called by core.dll, forwarded to engine.dll via function pointers */
 EXPORT void ext_cache_zone_begin(const char *name) { cache_zone_begin(name); }
 EXPORT void ext_cache_zone_end(void) { cache_zone_end(); }
@@ -4725,3 +4875,4 @@ EXPORT void ext_cache_prof_frame_reset(void) { cache_prof_frame_reset(); }
 EXPORT void ext_cpu_prof_frame_end(void) {
     if (!cpu_prof_capture_paused) cpu_prof_frame_end();
 }
+
