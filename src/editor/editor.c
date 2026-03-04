@@ -1760,6 +1760,8 @@ static void editor_scene_selection_set_single(editor_state *e, int entity_index)
     e->scene_selection_mask[entity_index] = 1;
     e->scene_selection_count = 1;
     e->scene_selected_entity = entity_index;
+    e->pb_selected_asset_key[0] = '\0';
+    e->pb_selected_asset_type = -1;
     if (e->collab.connected)
         collab_send_cursor(&e->collab, entity_index);
 }

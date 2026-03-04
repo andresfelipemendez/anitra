@@ -1179,13 +1179,21 @@ static int build_editor(void)
 
 static int build_test(void)
 {
+    int failed = 0;
     printf("\n=== Building tests ===\n");
     if (ensure_dirs() != 0) return 1;
 
     printf(">> " TCC_TEST_CMD "\n");
     fflush(stdout);
     if (system(TCC_TEST_CMD) != 0) {
-        printf("!! test build failed.\n");
+        printf("!! test_dock build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_INSPECTOR_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_INSPECTOR_CMD) != 0) {
+        printf("!! test_inspector build failed.\n");
         return 1;
     }
 
@@ -1196,10 +1204,22 @@ static int build_test(void)
 #else
     if (system("build/Debug/test_dock") != 0) {
 #endif
-        printf("!! tests failed.\n");
-        return 1;
+        printf("!! test_dock failed.\n");
+        failed = 1;
+    }
+#ifdef _WIN32
+    if (system("build\\Debug\\test_inspector.exe") != 0) {
+#else
+    if (system("build/Debug/test_inspector") != 0) {
+#endif
+        printf("!! test_inspector failed.\n");
+        failed = 1;
     }
 
+    if (failed) {
+        printf("!! some tests failed.\n");
+        return 1;
+    }
     return 0;
 }
 
@@ -2070,6 +2090,9 @@ int main(int argc, char **argv)
     }
     if (argc > 1 && strcmp(argv[1], "server") == 0) {
         return build_server();
+    }
+    if (argc > 1 && strcmp(argv[1], "test") == 0) {
+        return build_test();
     }
 
     return build_all();

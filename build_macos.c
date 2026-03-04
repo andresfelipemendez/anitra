@@ -60,6 +60,12 @@
     " -Isrc/editor" \
     " tests/test_dock.c"
 
+#define TCC_TEST_INSPECTOR_CMD \
+    "lib/tcc/macos/tcc -Blib/tcc/macos" \
+    " -o build/Debug/test_inspector" \
+    " -Isrc -Isrc/editor" \
+    " tests/test_inspector.c"
+
 /* ------- SDL3 platform sources ------------------------------------------ */
 
 static const char *sdl3_sources_platform[] = {

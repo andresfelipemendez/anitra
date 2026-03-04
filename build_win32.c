@@ -60,8 +60,14 @@
 #define TCC_TEST_CMD \
     ".\\tcc.exe -Blib/tcc-windows" \
     " -o build/Debug/test_dock.exe" \
-    " -Isrc/editor" \
+    " -Isrc -Isrc/editor" \
     " tests/test_dock.c"
+
+#define TCC_TEST_INSPECTOR_CMD \
+    ".\\tcc.exe -Blib/tcc-windows" \
+    " -o build/Debug/test_inspector.exe" \
+    " -Isrc -Isrc/editor" \
+    " tests/test_inspector.c"
 
 /* ------- SDL3 platform sources ------------------------------------------ */
 
