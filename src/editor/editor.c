@@ -68,6 +68,58 @@ enum {
     SCENE_TREE_DROP_SIBLING_AFTER
 };
 
+/* Inspector editable field IDs */
+enum {
+    INSP_FIELD_NONE = -1,
+    INSP_FIELD_TRANSFORM_X = 0,
+    INSP_FIELD_TRANSFORM_Y,
+    INSP_FIELD_TRANSFORM_Z,
+    INSP_FIELD_ROTATION_Y,
+    INSP_FIELD_SCALE_X,
+    INSP_FIELD_SCALE_Y,
+    INSP_FIELD_SCALE_Z,
+    INSP_FIELD_VELOCITY_X,
+    INSP_FIELD_VELOCITY_Y,
+    INSP_FIELD_VELOCITY_Z,
+    INSP_FIELD_CC_MOVE_SPEED,
+    INSP_FIELD_CC_JUMP_SPEED,
+    INSP_FIELD_HEALTH_CUR,
+    INSP_FIELD_HEALTH_MAX,
+    INSP_FIELD_CAM_FOV,
+    INSP_FIELD_CAM_NEAR,
+    INSP_FIELD_CAM_FAR,
+    INSP_FIELD_CAPSULE_RADIUS,
+    INSP_FIELD_CAPSULE_HALF_HEIGHT,
+    INSP_FIELD_BOX_X,
+    INSP_FIELD_BOX_Y,
+    INSP_FIELD_BOX_W,
+    INSP_FIELD_BOX_H,
+    INSP_FIELD_ANIM_SPEED,
+    INSP_FIELD_COUNT
+};
+
+/* Component types for "Add Component" dropdown */
+enum {
+    INSP_COMP_TRANSFORM = 0,
+    INSP_COMP_ROTATION,
+    INSP_COMP_SCALE,
+    INSP_COMP_VELOCITY,
+    INSP_COMP_CHARACTER_CONTROLLER,
+    INSP_COMP_HEALTH,
+    INSP_COMP_MESH,
+    INSP_COMP_ANIMATION,
+    INSP_COMP_CAMERA,
+    INSP_COMP_BOX_COLLIDER,
+    INSP_COMP_CAPSULE_COLLIDER,
+    INSP_COMP_COUNT
+};
+
+static const char *insp_comp_names[INSP_COMP_COUNT] = {
+    "Transform", "Rotation", "Scale", "Velocity",
+    "Character Controller", "Health", "Mesh", "Animation",
+    "Camera", "Box Collider", "Capsule Collider"
+};
+
 #define EDITOR_VIEWBAR_HEIGHT          42.0f
 #define EDITOR_VIEWBAR_MARGIN_X        10.0f
 #define EDITOR_VIEWBAR_MARGIN_Y         8.0f
@@ -3283,6 +3335,10 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->cpu_prof_hover_zone_active = 0;
     e->cpu_prof_selected_zone_name[0] = '\0';
     e->cpu_prof_selected_zone_active = 0;
+    e->insp_edit_field = INSP_FIELD_NONE;
+    e->insp_edit_entity = -1;
+    e->insp_edit_buf[0] = '\0';
+    e->insp_add_comp_open = 0;
     e->editor_layout_path[0] = '\0';
     e->dock_layout_last_hash = 0;
     e->dock_layout_save_accum = 0.0f;
@@ -4474,6 +4530,303 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
     e->project_browser_click = 0;
 }
 
+/* ── Inspector: commit edit value to component ── */
+
+static void insp_stop_text_input(editor_state *e);
+
+static void insp_commit_edit(game_state *gs, editor_state *e) {
+    int entity;
+    float val;
+    int idx;
+    if (e->insp_edit_field < 0) return;
+    entity = e->insp_edit_entity;
+    if (entity < 0 || entity >= PROJECT_COMP_MAX) { e->insp_edit_field = -1; return; }
+    val = (float)atof(e->insp_edit_buf);
+
+    switch (e->insp_edit_field) {
+    case INSP_FIELD_TRANSFORM_X:
+        idx = gs->transform_index[entity];
+        if (idx >= 0) gs->transform_components[idx].position.x = val;
+        break;
+    case INSP_FIELD_TRANSFORM_Y:
+        idx = gs->transform_index[entity];
+        if (idx >= 0) gs->transform_components[idx].position.y = val;
+        break;
+    case INSP_FIELD_TRANSFORM_Z:
+        idx = gs->transform_index[entity];
+        if (idx >= 0) gs->transform_components[idx].position.z = val;
+        break;
+    case INSP_FIELD_ROTATION_Y:
+        idx = gs->rotation_index[entity];
+        if (idx >= 0) gs->rotation_components[idx].rotation_y_deg = val;
+        break;
+    case INSP_FIELD_SCALE_X:
+        idx = gs->scale_index[entity];
+        if (idx >= 0) gs->scale_components[idx].scale.x = val;
+        break;
+    case INSP_FIELD_SCALE_Y:
+        idx = gs->scale_index[entity];
+        if (idx >= 0) gs->scale_components[idx].scale.y = val;
+        break;
+    case INSP_FIELD_SCALE_Z:
+        idx = gs->scale_index[entity];
+        if (idx >= 0) gs->scale_components[idx].scale.z = val;
+        break;
+    case INSP_FIELD_VELOCITY_X:
+        idx = gs->velocity_index[entity];
+        if (idx >= 0) gs->velocity_components[idx].velocity.x = val;
+        break;
+    case INSP_FIELD_VELOCITY_Y:
+        idx = gs->velocity_index[entity];
+        if (idx >= 0) gs->velocity_components[idx].velocity.y = val;
+        break;
+    case INSP_FIELD_VELOCITY_Z:
+        idx = gs->velocity_index[entity];
+        if (idx >= 0) gs->velocity_components[idx].velocity.z = val;
+        break;
+    case INSP_FIELD_CC_MOVE_SPEED:
+        idx = gs->character_controller_index[entity];
+        if (idx >= 0) gs->character_controller_components[idx].move_speed = val;
+        break;
+    case INSP_FIELD_CC_JUMP_SPEED:
+        idx = gs->character_controller_index[entity];
+        if (idx >= 0) gs->character_controller_components[idx].jump_speed = val;
+        break;
+    case INSP_FIELD_HEALTH_CUR:
+        idx = gs->health_index[entity];
+        if (idx >= 0) gs->health_components[idx].health = val;
+        break;
+    case INSP_FIELD_HEALTH_MAX:
+        idx = gs->health_index[entity];
+        if (idx >= 0) gs->health_components[idx].max_health = val;
+        break;
+    case INSP_FIELD_CAM_FOV:
+        idx = gs->camera_index[entity];
+        if (idx >= 0) gs->camera_components[idx].fov_deg = val;
+        break;
+    case INSP_FIELD_CAM_NEAR:
+        idx = gs->camera_index[entity];
+        if (idx >= 0) gs->camera_components[idx].near_plane = val;
+        break;
+    case INSP_FIELD_CAM_FAR:
+        idx = gs->camera_index[entity];
+        if (idx >= 0) gs->camera_components[idx].far_plane = val;
+        break;
+    case INSP_FIELD_CAPSULE_RADIUS:
+        idx = gs->capsule_collider_index[entity];
+        if (idx >= 0) gs->capsule_collider_components[idx].radius = val;
+        break;
+    case INSP_FIELD_CAPSULE_HALF_HEIGHT:
+        idx = gs->capsule_collider_index[entity];
+        if (idx >= 0) gs->capsule_collider_components[idx].half_height = val;
+        break;
+    case INSP_FIELD_BOX_X:
+        idx = gs->box_collider_index[entity];
+        if (idx >= 0) gs->box_collider_components[idx].rect.x = val;
+        break;
+    case INSP_FIELD_BOX_Y:
+        idx = gs->box_collider_index[entity];
+        if (idx >= 0) gs->box_collider_components[idx].rect.y = val;
+        break;
+    case INSP_FIELD_BOX_W:
+        idx = gs->box_collider_index[entity];
+        if (idx >= 0) gs->box_collider_components[idx].rect.w = val;
+        break;
+    case INSP_FIELD_BOX_H:
+        idx = gs->box_collider_index[entity];
+        if (idx >= 0) gs->box_collider_components[idx].rect.h = val;
+        break;
+    case INSP_FIELD_ANIM_SPEED:
+        idx = gs->animation_index[entity];
+        if (idx >= 0) gs->animation_components[idx].speed = val;
+        break;
+    }
+    e->insp_edit_field = INSP_FIELD_NONE;
+    e->insp_edit_buf[0] = '\0';
+    insp_stop_text_input(e);
+}
+
+static void insp_stop_text_input(editor_state *e) {
+    dock_state *d = (dock_state *)e->dock;
+    if (d && d->windows[0].in_use && d->windows[0].sdl_window)
+        SDL_StopTextInput((SDL_Window *)d->windows[0].sdl_window);
+}
+
+static void insp_cancel_edit(editor_state *e) {
+    e->insp_edit_field = INSP_FIELD_NONE;
+    e->insp_edit_buf[0] = '\0';
+    insp_stop_text_input(e);
+}
+
+static void insp_begin_edit(editor_state *e, int field_id, int entity, float value) {
+    dock_state *d = (dock_state *)e->dock;
+    e->insp_edit_field = field_id;
+    e->insp_edit_entity = entity;
+    snprintf(e->insp_edit_buf, sizeof(e->insp_edit_buf), "%.2f", value);
+    e->insp_edit_cursor = (int)strlen(e->insp_edit_buf);
+    if (d && d->windows[0].in_use && d->windows[0].sdl_window)
+        SDL_StartTextInput((SDL_Window *)d->windows[0].sdl_window);
+}
+
+/* ── Inspector: push component helpers (mirrors engine.c push_* for editor use) ── */
+
+static void insp_push_transform(game_state *gs, int entity_index) {
+    int i;
+    if (gs->transform_index[entity_index] >= 0) return;
+    if (gs->transform_component_count >= gs->transform_component_capacity) return;
+    i = gs->transform_component_count++;
+    gs->transform_components[i].entity_index = entity_index;
+    gs->transform_components[i].position = VEC3(0.0f, 0.0f, 0.0f);
+    gs->transform_index[entity_index] = i;
+}
+
+static void insp_push_rotation(game_state *gs, int entity_index) {
+    int i;
+    if (gs->rotation_index[entity_index] >= 0) return;
+    if (gs->rotation_component_count >= gs->rotation_component_capacity) return;
+    i = gs->rotation_component_count++;
+    gs->rotation_components[i].entity_index = entity_index;
+    gs->rotation_components[i].rotation_y_deg = 0.0f;
+    gs->rotation_index[entity_index] = i;
+}
+
+static void insp_push_scale(game_state *gs, int entity_index) {
+    int i;
+    if (gs->scale_index[entity_index] >= 0) return;
+    if (gs->scale_component_count >= gs->scale_component_capacity) return;
+    i = gs->scale_component_count++;
+    gs->scale_components[i].entity_index = entity_index;
+    gs->scale_components[i].scale = VEC3(1.0f, 1.0f, 1.0f);
+    gs->scale_index[entity_index] = i;
+}
+
+static void insp_push_velocity(game_state *gs, int entity_index) {
+    int i;
+    if (gs->velocity_index[entity_index] >= 0) return;
+    if (gs->velocity_component_count >= gs->velocity_component_capacity) return;
+    i = gs->velocity_component_count++;
+    gs->velocity_components[i].entity_index = entity_index;
+    gs->velocity_components[i].velocity = VEC3(0.0f, 0.0f, 0.0f);
+    gs->velocity_index[entity_index] = i;
+}
+
+static void insp_push_character_controller(game_state *gs, int entity_index) {
+    int i;
+    if (gs->character_controller_index[entity_index] >= 0) return;
+    if (gs->character_controller_component_count >= gs->character_controller_component_capacity) return;
+    i = gs->character_controller_component_count++;
+    gs->character_controller_components[i].entity_index = entity_index;
+    gs->character_controller_components[i].move_speed = 5.0f;
+    gs->character_controller_components[i].jump_speed = 8.5f;
+    gs->character_controller_index[entity_index] = i;
+}
+
+static void insp_push_health(game_state *gs, int entity_index) {
+    int i;
+    if (gs->health_index[entity_index] >= 0) return;
+    if (gs->health_component_count >= gs->health_component_capacity) return;
+    i = gs->health_component_count++;
+    gs->health_components[i].entity_index = entity_index;
+    gs->health_components[i].health = 100.0f;
+    gs->health_components[i].max_health = 100.0f;
+    gs->health_index[entity_index] = i;
+}
+
+static void insp_push_mesh(game_state *gs, int entity_index) {
+    int i;
+    if (gs->mesh_index[entity_index] >= 0) return;
+    if (gs->mesh_component_count >= gs->mesh_component_capacity) return;
+    i = gs->mesh_component_count++;
+    gs->mesh_components[i].entity_index = entity_index;
+    gs->mesh_components[i].visible = 1;
+    gs->mesh_components[i].model_asset_index = 0;
+    gs->mesh_index[entity_index] = i;
+}
+
+static void insp_push_animation(game_state *gs, int entity_index) {
+    int i;
+    if (gs->animation_index[entity_index] >= 0) return;
+    if (gs->animation_component_count >= gs->animation_component_capacity) return;
+    i = gs->animation_component_count++;
+    gs->animation_components[i].entity_index = entity_index;
+    gs->animation_components[i].playing = 1;
+    gs->animation_components[i].active_clip = 0;
+    gs->animation_components[i].anim_time = 0.0f;
+    gs->animation_components[i].speed = 1.0f;
+    gs->animation_index[entity_index] = i;
+}
+
+static void insp_push_camera(game_state *gs, int entity_index) {
+    int i;
+    if (gs->camera_index[entity_index] >= 0) return;
+    if (gs->camera_component_count >= gs->camera_component_capacity) return;
+    i = gs->camera_component_count++;
+    gs->camera_components[i].entity_index = entity_index;
+    gs->camera_components[i].fov_deg = 60.0f;
+    gs->camera_components[i].near_plane = 0.1f;
+    gs->camera_components[i].far_plane = 100.0f;
+    gs->camera_components[i].target = VEC3(0.0f, 0.0f, 0.0f);
+    gs->camera_components[i].up = VEC3(0.0f, 1.0f, 0.0f);
+    gs->camera_index[entity_index] = i;
+}
+
+static void insp_push_box_collider(game_state *gs, int entity_index) {
+    int i;
+    if (gs->box_collider_index[entity_index] >= 0) return;
+    if (gs->box_collider_component_count >= gs->box_collider_component_capacity) return;
+    i = gs->box_collider_component_count++;
+    gs->box_collider_components[i].entity_index = entity_index;
+    gs->box_collider_components[i].rect = (rect){-0.5f, -0.5f, 1.0f, 1.0f};
+    gs->box_collider_components[i].half_height = 0.5f;
+    gs->box_collider_index[entity_index] = i;
+}
+
+static void insp_push_capsule_collider(game_state *gs, int entity_index) {
+    int i;
+    if (gs->capsule_collider_index[entity_index] >= 0) return;
+    if (gs->capsule_collider_component_count >= gs->capsule_collider_component_capacity) return;
+    i = gs->capsule_collider_component_count++;
+    gs->capsule_collider_components[i].entity_index = entity_index;
+    gs->capsule_collider_components[i].radius = 0.5f;
+    gs->capsule_collider_components[i].half_height = 0.5f;
+    gs->capsule_collider_components[i].aabb = (rect){0};
+    gs->capsule_collider_index[entity_index] = i;
+}
+
+static void insp_add_component(game_state *gs, int entity_index, int comp_type) {
+    switch (comp_type) {
+    case INSP_COMP_TRANSFORM:          insp_push_transform(gs, entity_index); break;
+    case INSP_COMP_ROTATION:           insp_push_rotation(gs, entity_index); break;
+    case INSP_COMP_SCALE:              insp_push_scale(gs, entity_index); break;
+    case INSP_COMP_VELOCITY:           insp_push_velocity(gs, entity_index); break;
+    case INSP_COMP_CHARACTER_CONTROLLER: insp_push_character_controller(gs, entity_index); break;
+    case INSP_COMP_HEALTH:             insp_push_health(gs, entity_index); break;
+    case INSP_COMP_MESH:               insp_push_mesh(gs, entity_index); break;
+    case INSP_COMP_ANIMATION:          insp_push_animation(gs, entity_index); break;
+    case INSP_COMP_CAMERA:             insp_push_camera(gs, entity_index); break;
+    case INSP_COMP_BOX_COLLIDER:       insp_push_box_collider(gs, entity_index); break;
+    case INSP_COMP_CAPSULE_COLLIDER:   insp_push_capsule_collider(gs, entity_index); break;
+    }
+}
+
+static int insp_entity_has_comp(const game_state *gs, int entity_index, int comp_type) {
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return 0;
+    switch (comp_type) {
+    case INSP_COMP_TRANSFORM:          return gs->transform_index[entity_index] >= 0;
+    case INSP_COMP_ROTATION:           return gs->rotation_index[entity_index] >= 0;
+    case INSP_COMP_SCALE:              return gs->scale_index[entity_index] >= 0;
+    case INSP_COMP_VELOCITY:           return gs->velocity_index[entity_index] >= 0;
+    case INSP_COMP_CHARACTER_CONTROLLER: return gs->character_controller_index[entity_index] >= 0;
+    case INSP_COMP_HEALTH:             return gs->health_index[entity_index] >= 0;
+    case INSP_COMP_MESH:               return gs->mesh_index[entity_index] >= 0;
+    case INSP_COMP_ANIMATION:          return gs->animation_index[entity_index] >= 0;
+    case INSP_COMP_CAMERA:             return gs->camera_index[entity_index] >= 0;
+    case INSP_COMP_BOX_COLLIDER:       return gs->box_collider_index[entity_index] >= 0;
+    case INSP_COMP_CAPSULE_COLLIDER:   return gs->capsule_collider_index[entity_index] >= 0;
+    default: return 0;
+    }
+}
+
 static void inspector_layout(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
@@ -4483,8 +4836,11 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     int win_w, win_h;
     int selected;
     int has_asset_selected;
+    int click;
+    int clicked_any_field = 0;
     static char title_buf[96];
     static char line_bufs[96][256];
+    int line_i = 0;
     Clay_RenderCommandArray commands;
 
     if (!ctx) {
@@ -4508,15 +4864,122 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     }
     Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
 
+    click = e->inspector_click;
+
+    /* Handle commit/cancel from key events before layout */
+    if (e->insp_key_enter || e->insp_key_tab) {
+        insp_commit_edit(gs, e);
+        /* Tab: advance to next field */
+        if (e->insp_key_tab && e->insp_edit_field == INSP_FIELD_NONE) {
+            /* Next field logic handled below during layout */
+        }
+    }
+    if (e->insp_key_escape) {
+        insp_cancel_edit(e);
+    }
+    e->insp_key_enter = 0;
+    e->insp_key_escape = 0;
+    e->insp_key_backspace = 0;
+    e->insp_key_tab = 0;
+
     selected = e->scene_selected_entity;
     if (!gs->scene_entities) selected = -1;
     if (selected < 0 || selected >= gs->scene_entity_count) selected = -1;
+
+    /* If selected entity changed, cancel any edit in progress */
+    if (e->insp_edit_field >= 0 && e->insp_edit_entity != selected) {
+        insp_cancel_edit(e);
+    }
+
     has_asset_selected = (e->pb_selected_asset_key[0] != '\0' &&
                           e->pb_selected_asset_type >= 0 &&
                           e->pb_selected_asset_type <= 3);
 
+    Clay_SetPointerState((Clay_Vector2){e->inspector_mouse_x, e->inspector_mouse_y},
+                         (bool)e->inspector_mouse_down);
     snprintf(title_buf, sizeof(title_buf), "Inspector");
     Clay_BeginLayout();
+
+/* ── Macros for editable field rendering ── */
+#define INSP_FIELD_BG_IDLE    ((Clay_Color){42, 50, 66, 255})
+#define INSP_FIELD_BG_HOVER   ((Clay_Color){52, 62, 82, 255})
+#define INSP_FIELD_BG_ACTIVE  ((Clay_Color){60, 70, 100, 255})
+#define INSP_LABEL_COLOR      ((Clay_Color){140, 155, 180, 255})
+#define INSP_VALUE_COLOR      ((Clay_Color){220, 225, 235, 255})
+#define INSP_VALUE_ACTIVE_CLR ((Clay_Color){255, 255, 255, 255})
+#define INSP_HEADER_BG        ((Clay_Color){44, 52, 70, 255})
+#define INSP_HEADER_COLOR     ((Clay_Color){180, 200, 230, 255})
+
+/* Render a single float field: label + editable value box.
+   fid = INSP_FIELD_*, lbl = "X"/"Y"/etc, val = current float value.
+   Uses line_bufs[line_i] for formatting. Updates clicked_any_field. */
+#define INSP_FLOAT_ROW(fid, lbl, val) do { \
+    int _fid = (fid); \
+    float _val = (val); \
+    int _active = (e->insp_edit_field == _fid); \
+    const char *_disp; \
+    CLAY(CLAY_IDI("IFRow", _fid), { \
+        .layout = { \
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) }, \
+            .padding = { .left = UI_SPACE_SM, .right = UI_SPACE_XS, .top = 1, .bottom = 1 }, \
+            .childGap = UI_SPACE_SM, \
+            .layoutDirection = CLAY_LEFT_TO_RIGHT, \
+            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER } \
+        } \
+    }) { \
+        CLAY(CLAY_IDI("IFLbl", _fid), { \
+            .layout = { .sizing = { CLAY_SIZING_FIXED(20), CLAY_SIZING_FIT({0}) } } \
+        }) { \
+            CLAY_TEXT(CLAY_STRING(lbl), CLAY_TEXT_CONFIG({ \
+                .textColor = INSP_LABEL_COLOR, .fontSize = UI_FONT_SECONDARY})); \
+        } \
+        if (_active) { \
+            _disp = e->insp_edit_buf; \
+        } else { \
+            snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "%.2f", _val); \
+            _disp = line_bufs[line_i]; \
+            line_i++; \
+        } \
+        CLAY(CLAY_IDI("IFVal", _fid), { \
+            .layout = { \
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) }, \
+                .padding = { .left = UI_SPACE_XS, .right = UI_SPACE_XS, .top = 2, .bottom = 2 } \
+            }, \
+            .backgroundColor = _active ? INSP_FIELD_BG_ACTIVE \
+                              : Clay_Hovered() ? INSP_FIELD_BG_HOVER \
+                              : INSP_FIELD_BG_IDLE, \
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM) \
+        }) { \
+            Clay_String _cs = {false, (int32_t)strlen(_disp), (char*)_disp}; \
+            CLAY_TEXT(_cs, CLAY_TEXT_CONFIG({ \
+                .textColor = _active ? INSP_VALUE_ACTIVE_CLR : INSP_VALUE_COLOR, \
+                .fontSize = UI_FONT_SECONDARY})); \
+        } \
+        if (Clay_Hovered()) { \
+            if (click) { \
+                if (e->insp_edit_field >= 0 && e->insp_edit_field != _fid) \
+                    insp_commit_edit(gs, e); \
+                if (e->insp_edit_field != _fid) \
+                    insp_begin_edit(e, _fid, selected, _val); \
+                clicked_any_field = 1; \
+            } \
+        } \
+    } \
+} while(0)
+
+/* Section header: colored bar with component name */
+#define INSP_SECTION(label_str, id_suffix) \
+    CLAY(CLAY_ID("INSec" id_suffix), { \
+        .layout = { \
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) }, \
+            .padding = { .left = UI_SPACE_SM, .right = UI_SPACE_SM, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS } \
+        }, \
+        .backgroundColor = INSP_HEADER_BG, \
+        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM) \
+    }) { \
+        CLAY_TEXT(CLAY_STRING(label_str), CLAY_TEXT_CONFIG({ \
+            .textColor = INSP_HEADER_COLOR, .fontSize = UI_FONT_BODY})); \
+    }
 
     CLAY(CLAY_ID("INRoot"), {
         .layout = {
@@ -4541,7 +5004,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
             .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
         }) {
             if (has_asset_selected) {
-                int line_i = 0;
+                /* ── Asset inspector (read-only, unchanged) ── */
                 const char *asset_file = project_browser_path_basename(e->pb_selected_asset_path);
                 const char *asset_ext = strrchr(asset_file, '.');
                 const char *type_name = pb_asset_type_name(e->pb_selected_asset_type);
@@ -4588,55 +5051,38 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                     Clay_String hs = CLAY_STRING("Selected Asset");
                     CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = {228, 236, 248, 255}, .fontSize = UI_FONT_BODY}));
 
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "Type: %s", type_name);
-                    {
-                        Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {188, 206, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Type: %s", type_name);
+                    { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {188, 206, 236, 255}, .fontSize = UI_FONT_SECONDARY})); }
                     line_i++;
 
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "Key: %s", e->pb_selected_asset_key);
-                    {
-                        Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {214, 222, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Key: %s", e->pb_selected_asset_key);
+                    { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {214, 222, 236, 255}, .fontSize = UI_FONT_SECONDARY})); }
                     line_i++;
 
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "File: %s", asset_file);
-                    {
-                        Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {184, 194, 210, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "File: %s", asset_file);
+                    { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {184, 194, 210, 255}, .fontSize = UI_FONT_SECONDARY})); }
                     line_i++;
 
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "Path: %s", e->pb_selected_asset_path);
-                    {
-                        Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Path: %s", e->pb_selected_asset_path);
+                    { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = UI_FONT_SECONDARY})); }
                     line_i++;
 
                     if (asset_ext) {
-                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                                 "Extension: %s", asset_ext);
-                        {
-                            Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = UI_FONT_SECONDARY}));
-                        }
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Extension: %s", asset_ext);
+                        { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                          CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = UI_FONT_SECONDARY})); }
                         line_i++;
                     }
 
                     if (e->pb_selected_asset_type == 1) {
                         snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
                                  "Rig Mesh: %s", bound_mesh_key ? bound_mesh_key : "(no matching scene rig)");
-                        {
-                            Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {198, 178, 146, 255}, .fontSize = UI_FONT_SECONDARY}));
-                        }
+                        { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                          CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {198, 178, 146, 255}, .fontSize = UI_FONT_SECONDARY})); }
                         line_i++;
                     }
 
@@ -4648,34 +5094,30 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                                  (unsigned int)mesh->primitive_count,
                                  asset_model->has_skeleton ? "yes" : "no",
                                  (unsigned int)asset_model->model.clip_count);
-                        {
-                            Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = UI_FONT_SECONDARY}));
-                        }
+                        { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                          CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = UI_FONT_SECONDARY})); }
                         line_i++;
 
                         snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
                                  "Bounds center=(%.2f, %.2f, %.2f) radius=%.2f",
                                  mesh->bounds_center[0], mesh->bounds_center[1],
                                  mesh->bounds_center[2], mesh->bounds_radius);
-                        {
-                            Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = UI_FONT_SECONDARY}));
-                        }
+                        { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                          CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = UI_FONT_SECONDARY})); }
                         line_i++;
                     } else if (e->pb_selected_asset_type != 3) {
-                        Clay_String ms = CLAY_STRING("Loaded mesh info unavailable.");
-                        CLAY_TEXT(ms, CLAY_TEXT_CONFIG({.textColor = {180, 152, 152, 255}, .fontSize = UI_FONT_SECONDARY}));
+                        CLAY_TEXT(CLAY_STRING("Loaded mesh info unavailable."),
+                            CLAY_TEXT_CONFIG({.textColor = {180, 152, 152, 255}, .fontSize = UI_FONT_SECONDARY}));
                     }
                 }
             }
 
             if (!has_asset_selected) {
                 if (selected < 0) {
-                    Clay_String cs = CLAY_STRING("No entity selected.");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = UI_FONT_SECONDARY}));
+                    CLAY_TEXT(CLAY_STRING("No entity selected."),
+                        CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = UI_FONT_SECONDARY}));
                 } else {
-                int line_i = 0;
+                /* ── Entity component inspector with editable fields ── */
                 int parent_idx = -1;
                 int parent_transform_idx = -1;
                 Vec3 tpos = VEC3(0.0f, 0.0f, 0.0f);
@@ -4695,199 +5137,232 @@ static void inspector_layout(game_state *gs, editor_state *es) {
                 float cam_fov = 0.0f, cam_near = 0.0f, cam_far = 0.0f;
                 Vec3 cam_target = VEC3(0.0f, 0.0f, 0.0f);
                 Vec3 cam_up = VEC3(0.0f, 1.0f, 0.0f);
-                int has_transform = has_transform_component(gs, selected, &tpos);
-                int has_rotation = has_rotation_component(gs, selected, &ry);
-                int has_scale = has_scale_component(gs, selected, &tscale);
-                int has_velocity = has_velocity_component(gs, selected, &vvel);
-                float cc_move_speed = 0.0f;
-                float cc_jump_speed = 0.0f;
-                int has_character_controller = has_character_controller_component(gs, selected,
-                                                                                 &cc_move_speed,
-                                                                                 &cc_jump_speed);
-                int has_health = has_health_component(gs, selected, &hcur, &hmax);
-                int has_collider = has_any_collider_component(gs, selected, &crect,
-                                                              &collider_is_capsule,
-                                                              &capsule_radius,
-                                                              &capsule_half_height);
-                int has_mesh = has_mesh_component(gs, selected, &mesh_visible);
-                int has_animation = has_animation_component(gs, selected,
-                                                            &anim_playing, &anim_clip, &anim_time, &anim_speed);
-                int has_camera = has_camera_component(gs, selected,
-                                                      &cam_fov, &cam_near, &cam_far,
-                                                      &cam_target, &cam_up);
-                int has_parent = find_parent_component(gs, selected, &parent_idx);
-                int has_parent_transform = has_parent_transform_component(gs, selected, &parent_transform_idx);
-                int has_parent_rotation = has_parent_rotation_component(gs, selected);
-                int has_components = has_transform || has_rotation || has_scale ||
-                                     has_velocity || has_character_controller ||
-                                     has_health || has_collider ||
-                                     has_mesh || has_animation || has_camera || has_parent ||
-                                     has_parent_transform || has_parent_rotation;
+                int ht = has_transform_component(gs, selected, &tpos);
+                int hr = has_rotation_component(gs, selected, &ry);
+                int hsc = has_scale_component(gs, selected, &tscale);
+                int hv = has_velocity_component(gs, selected, &vvel);
+                float cc_move = 0.0f, cc_jump = 0.0f;
+                int hcc = has_character_controller_component(gs, selected, &cc_move, &cc_jump);
+                int hh = has_health_component(gs, selected, &hcur, &hmax);
+                int hcol = has_any_collider_component(gs, selected, &crect,
+                                                       &collider_is_capsule, &capsule_radius, &capsule_half_height);
+                int hm = has_mesh_component(gs, selected, &mesh_visible);
+                int ha = has_animation_component(gs, selected, &anim_playing, &anim_clip, &anim_time, &anim_speed);
+                int hcam = has_camera_component(gs, selected, &cam_fov, &cam_near, &cam_far, &cam_target, &cam_up);
+                int hp = find_parent_component(gs, selected, &parent_idx);
+                int hpt = has_parent_transform_component(gs, selected, &parent_transform_idx);
+                int hpr = has_parent_rotation_component(gs, selected);
 
+                /* Entity header */
                 snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Entity %d", selected);
-                {
-                    Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = UI_FONT_BODY}));
-                }
+                { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                  CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = UI_FONT_BODY})); }
                 line_i++;
 
-                {
-                    Clay_String cs = CLAY_STRING("Components");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 200, 218, 255}, .fontSize = UI_FONT_BODY}));
-                }
-                if (!has_components) {
-                    Clay_String cs = CLAY_STRING("- (none)");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = UI_FONT_SECONDARY}));
+                /* ── Transform ── */
+                if (ht) {
+                    INSP_SECTION("Transform", "Tr");
+                    INSP_FLOAT_ROW(INSP_FIELD_TRANSFORM_X, "X", tpos.x);
+                    INSP_FLOAT_ROW(INSP_FIELD_TRANSFORM_Y, "Y", tpos.y);
+                    INSP_FLOAT_ROW(INSP_FIELD_TRANSFORM_Z, "Z", tpos.z);
                 }
 
-                if (has_transform) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Transform (position=%.2f, %.2f, %.2f)",
-                             tpos.x, tpos.y, tpos.z);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
+                /* ── Rotation ── */
+                if (hr) {
+                    INSP_SECTION("Rotation", "Rt");
+                    INSP_FLOAT_ROW(INSP_FIELD_ROTATION_Y, "Y", ry);
                 }
-                if (has_rotation) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Rotation (y=%.2f deg)", ry);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
+
+                /* ── Scale ── */
+                if (hsc) {
+                    INSP_SECTION("Scale", "Sc");
+                    INSP_FLOAT_ROW(INSP_FIELD_SCALE_X, "X", tscale.x);
+                    INSP_FLOAT_ROW(INSP_FIELD_SCALE_Y, "Y", tscale.y);
+                    INSP_FLOAT_ROW(INSP_FIELD_SCALE_Z, "Z", tscale.z);
                 }
-                if (has_scale) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Scale (%.2f, %.2f, %.2f)",
-                             tscale.x, tscale.y, tscale.z);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
+
+                /* ── Velocity ── */
+                if (hv) {
+                    INSP_SECTION("Velocity", "Vl");
+                    INSP_FLOAT_ROW(INSP_FIELD_VELOCITY_X, "X", vvel.x);
+                    INSP_FLOAT_ROW(INSP_FIELD_VELOCITY_Y, "Y", vvel.y);
+                    INSP_FLOAT_ROW(INSP_FIELD_VELOCITY_Z, "Z", vvel.z);
                 }
-                if (has_velocity) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Velocity (%.2f, %.2f)", vvel.x, vvel.y);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
+
+                /* ── Character Controller ── */
+                if (hcc) {
+                    INSP_SECTION("Character Controller", "CC");
+                    INSP_FLOAT_ROW(INSP_FIELD_CC_MOVE_SPEED, "Move", cc_move);
+                    INSP_FLOAT_ROW(INSP_FIELD_CC_JUMP_SPEED, "Jump", cc_jump);
                 }
-                if (has_character_controller) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Character Controller (move=%.2f jump=%.2f)",
-                             cc_move_speed, cc_jump_speed);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
+
+                /* ── Health ── */
+                if (hh) {
+                    INSP_SECTION("Health", "Hl");
+                    INSP_FLOAT_ROW(INSP_FIELD_HEALTH_CUR, "Cur", hcur);
+                    INSP_FLOAT_ROW(INSP_FIELD_HEALTH_MAX, "Max", hmax);
                 }
-                if (has_health) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Health (%.1f / %.1f)", hcur, hmax);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
-                }
-                if (has_collider) {
+
+                /* ── Collider ── */
+                if (hcol) {
                     if (collider_is_capsule) {
-                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                                 "- Capsule Collider (r=%.2f h=%.2f)",
-                                 capsule_radius, capsule_half_height);
+                        INSP_SECTION("Capsule Collider", "CpC");
+                        INSP_FLOAT_ROW(INSP_FIELD_CAPSULE_RADIUS, "R", capsule_radius);
+                        INSP_FLOAT_ROW(INSP_FIELD_CAPSULE_HALF_HEIGHT, "H", capsule_half_height);
                     } else {
-                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                                 "- Box Collider (%.2f, %.2f, %.2f, %.2f)",
-                                 crect.x, crect.y, crect.w, crect.h);
+                        INSP_SECTION("Box Collider", "BxC");
+                        INSP_FLOAT_ROW(INSP_FIELD_BOX_X, "X", crect.x);
+                        INSP_FLOAT_ROW(INSP_FIELD_BOX_Y, "Y", crect.y);
+                        INSP_FLOAT_ROW(INSP_FIELD_BOX_W, "W", crect.w);
+                        INSP_FLOAT_ROW(INSP_FIELD_BOX_H, "H", crect.h);
                     }
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {205, 215, 232, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
                 }
-                if (has_mesh) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Mesh (visible=%d)", mesh_visible);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
-                }
-                if (has_animation) {
-                    uint32_t total_clips = gs->mesh3d.clip_count;
-                    if (total_clips > 0) {
-                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                                 "- Animation (playing=%d clip=%d/%u time=%.2f speed=%.2f)",
-                                 anim_playing, anim_clip, (unsigned int)total_clips, anim_time, anim_speed);
-                    } else {
-                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                                 "- Animation (playing=%d clip=%d time=%.2f speed=%.2f)",
-                                 anim_playing, anim_clip, anim_time, anim_speed);
-                    }
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
-                }
-                if (has_camera) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Camera (fov=%.1f near=%.2f far=%.1f)", cam_fov, cam_near, cam_far);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
-                    line_i++;
 
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "  target=(%.2f, %.2f, %.2f) up=(%.2f, %.2f, %.2f)",
-                             cam_target.x, cam_target.y, cam_target.z,
-                             cam_up.x, cam_up.y, cam_up.z);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
+                /* ── Mesh (read-only info + visible flag) ── */
+                if (hm) {
+                    INSP_SECTION("Mesh", "Ms");
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "visible=%d", mesh_visible);
+                    { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY(CLAY_ID("INMeshInfo"), {
+                          .layout = { .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                      .padding = { .left = UI_SPACE_SM, .top = 1, .bottom = 1 } }
+                      }) {
+                          CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = UI_FONT_SECONDARY}));
+                      }
                     }
                     line_i++;
                 }
-                if (has_parent) {
+
+                /* ── Animation ── */
+                if (ha) {
+                    INSP_SECTION("Animation", "An");
                     snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Parent (entity %d)", parent_idx);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = UI_FONT_SECONDARY}));
+                             "playing=%d  clip=%d  time=%.2f", anim_playing, anim_clip, anim_time);
+                    { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY(CLAY_ID("INAnimInfo"), {
+                          .layout = { .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                      .padding = { .left = UI_SPACE_SM, .top = 1, .bottom = 1 } }
+                      }) {
+                          CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
+                      }
                     }
                     line_i++;
+                    INSP_FLOAT_ROW(INSP_FIELD_ANIM_SPEED, "Spd", anim_speed);
                 }
-                if (has_parent_transform) {
-                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
-                             "- Parent Transform (entity %d)", parent_transform_idx);
-                    {
-                        Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
-                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = UI_FONT_SECONDARY}));
-                    }
+
+                /* ── Camera ── */
+                if (hcam) {
+                    INSP_SECTION("Camera", "Cm");
+                    INSP_FLOAT_ROW(INSP_FIELD_CAM_FOV,  "FOV",  cam_fov);
+                    INSP_FLOAT_ROW(INSP_FIELD_CAM_NEAR, "Near", cam_near);
+                    INSP_FLOAT_ROW(INSP_FIELD_CAM_FAR,  "Far",  cam_far);
+                }
+
+                /* ── Parent relationships (read-only) ── */
+                if (hp) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Parent: entity %d", parent_idx);
+                    { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = UI_FONT_SECONDARY})); }
                     line_i++;
                 }
-                if (has_parent_rotation) {
-                    Clay_String cs = CLAY_STRING("- Parent Rotation");
-                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = UI_FONT_SECONDARY}));
+                if (hpt) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Parent Transform: entity %d", parent_transform_idx);
+                    { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                    line_i++;
                 }
+                if (hpr) {
+                    CLAY_TEXT(CLAY_STRING("Parent Rotation"),
+                        CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = UI_FONT_SECONDARY}));
+                }
+
+                /* ── Add Component button ── */
+                {
+                    CLAY(CLAY_ID("INAddCompBtn"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = UI_SPACE_SM, .right = UI_SPACE_SM,
+                                         .top = UI_SPACE_XS, .bottom = UI_SPACE_XS },
+                            .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = e->insp_add_comp_open
+                            ? ((Clay_Color){70, 80, 110, 255})
+                            : ((Clay_Color){50, 60, 84, 255}),
+                        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
+                    }) {
+                        CLAY_TEXT(CLAY_STRING("+ Add Component"), CLAY_TEXT_CONFIG({
+                            .textColor = {180, 200, 230, 255}, .fontSize = UI_FONT_SECONDARY}));
+                    }
+                    if (Clay_Hovered() && click) {
+                        e->insp_add_comp_open = !e->insp_add_comp_open;
+                        clicked_any_field = 1;
+                    }
+
+                    /* Dropdown list */
+                    if (e->insp_add_comp_open) {
+                        CLAY(CLAY_ID("INAddCompList"), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                .padding = CLAY_PADDING_ALL(UI_SPACE_XS),
+                                .childGap = 1,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM
+                            },
+                            .backgroundColor = {30, 36, 48, 255},
+                            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
+                        }) {
+                            int ci;
+                            for (ci = 0; ci < INSP_COMP_COUNT; ci++) {
+                                if (insp_entity_has_comp(gs, selected, ci)) continue;
+                                snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "%s", insp_comp_names[ci]);
+                                CLAY(CLAY_IDI("INAddCI", ci), {
+                                    .layout = {
+                                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                        .padding = { .left = UI_SPACE_SM, .right = UI_SPACE_SM,
+                                                     .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS }
+                                    },
+                                    .backgroundColor = {40, 48, 64, 255},
+                                    .cornerRadius = CLAY_CORNER_RADIUS(2)
+                                }) {
+                                    Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({
+                                        .textColor = {200, 210, 230, 255}, .fontSize = UI_FONT_SECONDARY}));
+                                }
+                                if (Clay_Hovered() && click) {
+                                    insp_add_component(gs, selected, ci);
+                                    e->insp_add_comp_open = 0;
+                                    clicked_any_field = 1;
+                                }
+                                line_i++;
+                            }
+                        }
+                    }
+                }
+
                 }
             }
         }
     }
 
+    /* If user clicked in the inspector but not on any field, commit the active edit */
+    if (click && !clicked_any_field && e->insp_edit_field >= 0) {
+        insp_commit_edit(gs, e);
+    }
+
+#undef INSP_FLOAT_ROW
+#undef INSP_SECTION
+#undef INSP_FIELD_BG_IDLE
+#undef INSP_FIELD_BG_HOVER
+#undef INSP_FIELD_BG_ACTIVE
+#undef INSP_LABEL_COLOR
+#undef INSP_VALUE_COLOR
+#undef INSP_VALUE_ACTIVE_CLR
+#undef INSP_HEADER_BG
+#undef INSP_HEADER_COLOR
+
     commands = Clay_EndLayout();
     e->inspector_cmd_count = commands.length;
     e->inspector_cmd_array = commands.internalArray;
+    e->inspector_click = 0;
 }
 
 static const char *file_menu_action_labels[FILE_MENU_ACTION_COUNT] = {
@@ -7171,6 +7646,13 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->cpu_prof_mouse_x = lx;
                 e->cpu_prof_mouse_y = ly;
             }
+            if (panel_event_hit(d, PANEL_INSPECTOR, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
+                e->inspector_mouse_x = lx;
+                e->inspector_mouse_y = ly;
+            } else {
+                e->inspector_mouse_x = -10000.0f;
+                e->inspector_mouse_y = -10000.0f;
+            }
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_WHEEL) {
@@ -7199,6 +7681,10 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                         consumed = 1;
                     }
                 }
+            }
+            if (panel_event_hit(d, PANEL_INSPECTOR, evwin, mx, my, NULL, NULL)) {
+                e->inspector_scroll_y += ev->wheel.y * 3.0f;
+                consumed = 1;
             }
             if (panel_event_hit(d, PANEL_PROFILER, evwin, mx, my, NULL, NULL)) {
                 e->prof_scroll_y += ev->wheel.y * 3.0f;
@@ -7290,6 +7776,14 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->cpu_prof_mouse_y = ly;
                 e->cpu_prof_click = 1;
             }
+
+            e->inspector_mouse_down = panel_event_hit(d, PANEL_INSPECTOR, evwin,
+                ev->button.x, ev->button.y, &lx, &ly);
+            if (e->inspector_mouse_down) {
+                e->inspector_mouse_x = lx;
+                e->inspector_mouse_y = ly;
+                e->inspector_click = 1;
+            }
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT) {
@@ -7300,6 +7794,46 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         e->cache_prof_mouse_down = 0;
         e->cpu_prof_mouse_down = 0;
         e->cpu_prof_minimap_dragging = 0;
+        e->inspector_mouse_down = 0;
+    }
+
+    /* Inspector text input handling (when a field is being edited) */
+    if (e->insp_edit_field >= 0) {
+        if (ev->type == SDL_EVENT_TEXT_INPUT) {
+            int len = (int)strlen(e->insp_edit_buf);
+            const char *text = ev->text.text;
+            while (*text && len < 62) {
+                char ch = *text++;
+                if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') {
+                    e->insp_edit_buf[len++] = ch;
+                }
+            }
+            e->insp_edit_buf[len] = '\0';
+            e->insp_edit_cursor = len;
+            return 1;
+        }
+        if (ev->type == SDL_EVENT_KEY_DOWN) {
+            if (ev->key.key == SDLK_RETURN || ev->key.key == SDLK_KP_ENTER) {
+                e->insp_key_enter = 1;
+                return 1;
+            }
+            if (ev->key.key == SDLK_ESCAPE) {
+                e->insp_key_escape = 1;
+                return 1;
+            }
+            if (ev->key.key == SDLK_BACKSPACE) {
+                int len = (int)strlen(e->insp_edit_buf);
+                if (len > 0) {
+                    e->insp_edit_buf[len - 1] = '\0';
+                    e->insp_edit_cursor = len - 1;
+                }
+                return 1;
+            }
+            if (ev->key.key == SDLK_TAB) {
+                e->insp_key_tab = 1;
+                return 1;
+            }
+        }
     }
 
     return 0;

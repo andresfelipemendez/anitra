@@ -1011,6 +1011,27 @@ typedef struct editor_state {
     char  cpu_prof_selected_zone_name[64];
     int   cpu_prof_selected_zone_active;
 
+    /* Inspector input state */
+    float inspector_mouse_x, inspector_mouse_y;
+    float inspector_scroll_y;
+    int   inspector_mouse_down;
+    int   inspector_click;
+
+    /* Inspector field editing state */
+    int   insp_edit_field;          /* INSP_FIELD_* or -1 for none */
+    int   insp_edit_entity;         /* entity being edited */
+    char  insp_edit_buf[64];        /* text input buffer */
+    int   insp_edit_cursor;         /* cursor position in buffer */
+
+    /* Inspector per-frame key events (consumed by inspector_layout) */
+    int   insp_key_enter;
+    int   insp_key_escape;
+    int   insp_key_backspace;
+    int   insp_key_tab;
+
+    /* Inspector add-component dropdown */
+    int   insp_add_comp_open;       /* 1 if dropdown is showing */
+
     /* Editor layout persistence (separate TOML from scene/project file). */
     char  editor_layout_path[512];
     uint64_t dock_layout_last_hash;
