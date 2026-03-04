@@ -4,6 +4,7 @@
 #include "math3d.h"
 #include "editor_types.h"
 #include "error_value.h"
+#include "collab/collab_client.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -1015,6 +1016,9 @@ typedef struct editor_state {
     uint64_t dock_layout_last_hash;
     float dock_layout_save_accum;
     int   dock_layout_hash_valid;
+
+    /* Collaborative editing state */
+    collab_state collab;
 
     /* Dock state — allocated from editor_arena. */
     dock_state *dock;

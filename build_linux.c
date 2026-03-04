@@ -22,9 +22,11 @@
     "./tcc -Blib/tcc-linux -shared" \
     " -o build/Debug/editor.so" \
     " -DCLAY_DISABLE_SIMD" \
-    " -Isrc -Isrc/editor -Isrc/engine" \
+    " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay" \
-    " src/editor/editor.c"
+    " src/editor/editor.c" \
+    " src/collab/collab_ops.c" \
+    " src/collab/collab_client.c"
 
 #define TCC_CORE_CMD \
     "./tcc -Blib/tcc-linux -shared" \

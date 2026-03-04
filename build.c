@@ -1897,6 +1897,43 @@ static int build_shaders(void)
     return 0;
 }
 
+/* ------- server (collab relay) ------------------------------------------ */
+static int build_server(void)
+{
+    char cmd[CMD_MAX];
+
+    printf("=== Building collab server ===\n\n");
+
+#ifdef _WIN32
+    /* Use MSVC (cl.exe) for the server binary */
+    ensure_msvc_tools();
+    snprintf(cmd, sizeof(cmd),
+        "cl /nologo /O2 /Fe:" DEBUG_DIR "/collab_server.exe"
+        " /Isrc /Ilib/toml-c"
+        " server/collab_server.c src/project.c"
+        " ws2_32.lib"
+        " /link /INCREMENTAL:NO");
+#else
+    snprintf(cmd, sizeof(cmd),
+        "cc -O2 -o " DEBUG_DIR "/collab_server"
+        " -Isrc -Ilib/toml-c"
+        " server/collab_server.c src/project.c");
+#endif
+    printf(">> %s\n", cmd);
+    if (system(cmd) != 0) {
+        printf("!! Server build failed.\n");
+        return 1;
+    }
+    printf("   Server built: " DEBUG_DIR "/collab_server%s\n",
+#ifdef _WIN32
+        ".exe"
+#else
+        ""
+#endif
+    );
+    return 0;
+}
+
 /* ------- all ------------------------------------------------------------ */
 static int build_all(void)
 {
@@ -2030,6 +2067,9 @@ int main(int argc, char **argv)
 
     if (argc > 1 && strcmp(argv[1], "watch") == 0) {
         return build_and_run();
+    }
+    if (argc > 1 && strcmp(argv[1], "server") == 0) {
+        return build_server();
     }
 
     return build_all();

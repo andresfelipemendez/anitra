@@ -31,12 +31,15 @@
     ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/editor.dll" \
     " -DCLAY_DISABLE_SIMD -DCPU_PROF_IMPL -DCACHE_PROF_IMPL" \
-    " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals" \
+    " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay -Ilib/toml-c -Ilib/sqlite" \
     " src/editor/editor.c" \
+    " src/collab/collab_ops.c" \
+    " src/collab/collab_client.c" \
     " src/project.c" \
     " lib/sqlite/sqlite3.c" \
-    " build/Debug/SDL3.def"
+    " build/Debug/SDL3.def" \
+    " lib/tcc-windows/lib/ws2_32.def"
 
 #define TCC_CORE_CMD \
     ".\\tcc.exe -Blib/tcc-windows -shared" \

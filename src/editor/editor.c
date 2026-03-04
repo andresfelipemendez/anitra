@@ -56,6 +56,8 @@ enum {
 enum {
     FILE_MENU_ACTION_OPEN_PROJECT = 0,
     FILE_MENU_ACTION_NEW_PROJECT,
+    FILE_MENU_ACTION_COLLAB_CONNECT,
+    FILE_MENU_ACTION_COLLAB_DISCONNECT,
     FILE_MENU_ACTION_COUNT
 };
 
@@ -1758,6 +1760,8 @@ static void editor_scene_selection_set_single(editor_state *e, int entity_index)
     e->scene_selection_mask[entity_index] = 1;
     e->scene_selection_count = 1;
     e->scene_selected_entity = entity_index;
+    if (e->collab.connected)
+        collab_send_cursor(&e->collab, entity_index);
 }
 
 static void editor_scene_selection_toggle(editor_state *e, int entity_index) {
@@ -2104,8 +2108,7 @@ static int file_menu_dropdown_contains_point(float mx, float my) {
     return point_in_rect(mx, my, dropdown_x, dropdown_y, dropdown_w, dropdown_h);
 }
 
-static void editor_dispatch_file_menu_action(game_state *gs, int action) {
-    (void)gs;
+static void editor_dispatch_file_menu_action(game_state *gs, editor_state *es, int action) {
     switch (action) {
     case FILE_MENU_ACTION_OPEN_PROJECT:
         fprintf(stderr, "Menu action: Open Project (not implemented yet)\n");
@@ -2113,9 +2116,23 @@ static void editor_dispatch_file_menu_action(game_state *gs, int action) {
     case FILE_MENU_ACTION_NEW_PROJECT:
         fprintf(stderr, "Menu action: New Project (not implemented yet)\n");
         break;
+    case FILE_MENU_ACTION_COLLAB_CONNECT:
+        if (!es->collab.connected && !es->collab.connecting) {
+            /* Default to localhost:7777 — can be configured in project TOML later */
+            if (collab_connect(&es->collab, "127.0.0.1", 7777) == 0)
+                fprintf(stderr, "Collab: connecting to 127.0.0.1:7777...\n");
+            else
+                fprintf(stderr, "Collab: connection failed\n");
+        }
+        break;
+    case FILE_MENU_ACTION_COLLAB_DISCONNECT:
+        collab_disconnect(&es->collab);
+        fprintf(stderr, "Collab: disconnected\n");
+        break;
     default:
         break;
     }
+    (void)gs;
 }
 
 static int editor_toolbar_contains_point(const editor_state *e, float lx, float ly) {
@@ -2989,6 +3006,49 @@ static void build_lines(game_state *gs, editor_state *es) {
         add_line(e, eye, vec3_add(eye, vec3_scale(up, 0.3f)), 0.2f, 1.0f, 0.2f);
 
     }
+
+    /* ── Peer selection highlights (collab) ── */
+    if (e->collab.connected) {
+        int pi;
+        for (pi = 0; pi < COLLAB_MAX_CLIENTS; pi++) {
+            int peer_sel;
+            uint32_t pc;
+            float pr, pg, pb;
+            Vec3 peer_pos;
+
+            if (!e->collab.peers[pi].active) continue;
+            peer_sel = e->collab.peers[pi].selected_entity;
+            if (peer_sel < 0 || peer_sel >= gs->scene_entity_count) continue;
+            if (!has_transform_component(gs, peer_sel, &peer_pos)) continue;
+
+            pc = e->collab.peers[pi].color;
+            pr = (float)((pc >> 16) & 0xFF) / 255.0f;
+            pg = (float)((pc >> 8) & 0xFF) / 255.0f;
+            pb = (float)(pc & 0xFF) / 255.0f;
+
+            /* Draw a wireframe box around peer-selected entity */
+            {
+                float sz = 0.6f;
+                Vec3 lo = {peer_pos.x - sz, peer_pos.y - sz, peer_pos.z - sz};
+                Vec3 hi = {peer_pos.x + sz, peer_pos.y + sz, peer_pos.z + sz};
+                /* Bottom face */
+                add_line(e, VEC3(lo.x,lo.y,lo.z), VEC3(hi.x,lo.y,lo.z), pr,pg,pb);
+                add_line(e, VEC3(hi.x,lo.y,lo.z), VEC3(hi.x,lo.y,hi.z), pr,pg,pb);
+                add_line(e, VEC3(hi.x,lo.y,hi.z), VEC3(lo.x,lo.y,hi.z), pr,pg,pb);
+                add_line(e, VEC3(lo.x,lo.y,hi.z), VEC3(lo.x,lo.y,lo.z), pr,pg,pb);
+                /* Top face */
+                add_line(e, VEC3(lo.x,hi.y,lo.z), VEC3(hi.x,hi.y,lo.z), pr,pg,pb);
+                add_line(e, VEC3(hi.x,hi.y,lo.z), VEC3(hi.x,hi.y,hi.z), pr,pg,pb);
+                add_line(e, VEC3(hi.x,hi.y,hi.z), VEC3(lo.x,hi.y,hi.z), pr,pg,pb);
+                add_line(e, VEC3(lo.x,hi.y,hi.z), VEC3(lo.x,hi.y,lo.z), pr,pg,pb);
+                /* Verticals */
+                add_line(e, VEC3(lo.x,lo.y,lo.z), VEC3(lo.x,hi.y,lo.z), pr,pg,pb);
+                add_line(e, VEC3(hi.x,lo.y,lo.z), VEC3(hi.x,hi.y,lo.z), pr,pg,pb);
+                add_line(e, VEC3(hi.x,lo.y,hi.z), VEC3(hi.x,hi.y,hi.z), pr,pg,pb);
+                add_line(e, VEC3(lo.x,lo.y,hi.z), VEC3(lo.x,hi.y,hi.z), pr,pg,pb);
+            }
+        }
+    }
 }
 
 /* ── Camera input (polling-based) ──────────────────────────────── */
@@ -3226,6 +3286,12 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->dock_layout_save_accum = 0.0f;
     e->dock_layout_hash_valid = 0;
     e->initialized = 1;
+
+    /* Init collab state (only if not already connected — survives hot-reload) */
+    if (!e->collab.connected && !e->collab.connecting)
+        collab_init(&e->collab);
+
+    cache_prof_init();
 
     if (d) {
         if (editor_refresh_layout_path(gs, e) &&
@@ -4024,6 +4090,10 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
 
         if (parent >= -1 && scene_tree_parent_assignment_is_valid(child, parent, parent_of, entity_count)) {
             set_parent_transform_component(gs, child, parent);
+            if (e->collab.connected) {
+                op_parent_payload cp = {parent};
+                collab_emit_op(&e->collab, OP_SET_PARENT, child, &cp, sizeof(cp));
+            }
             editor_scene_selection_set_single(e, child);
         }
         e->scene_tree_drag_active = 0;
@@ -4820,7 +4890,9 @@ static void inspector_layout(game_state *gs, editor_state *es) {
 
 static const char *file_menu_action_labels[FILE_MENU_ACTION_COUNT] = {
     "Open Project",
-    "New Project"
+    "New Project",
+    "Connect (collab)",
+    "Disconnect (collab)"
 };
 
 static void menu_bar_layout(game_state *gs, editor_state *es) {
@@ -4921,7 +4993,7 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                             int item_hovered = Clay_Hovered();
                             if (item_hovered) e->menu_hover = i;
                             if (item_hovered && e->menu_click) {
-                                editor_dispatch_file_menu_action(gs, i);
+                                editor_dispatch_file_menu_action(gs, es, i);
                                 e->menu_open = MENU_NONE;
                                 e->menu_hover = -1;
                                 menu_click_handled = 1;
@@ -4949,6 +5021,62 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                 .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(1) }
             }
         }) {}
+
+        /* Collab status indicator */
+        if (e->collab.connected || e->collab.connecting) {
+            Clay_Color collab_color = e->collab.connected
+                ? ((Clay_Color){46, 204, 113, 255})   /* green = connected */
+                : ((Clay_Color){241, 196, 15, 255});   /* yellow = connecting */
+            CLAY(CLAY_ID("MenuCollabStatus"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
+                    .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+                    .childGap = UI_SPACE_XS,
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = {38, 44, 58, 200},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                /* Status dot */
+                CLAY(CLAY_ID("CollabDot"), {
+                    .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
+                    .backgroundColor = collab_color,
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {}
+                {
+                    Clay_String status_str = {
+                        false,
+                        (int32_t)strlen(e->collab.status_msg),
+                        e->collab.status_msg
+                    };
+                    CLAY_TEXT(status_str, CLAY_TEXT_CONFIG({
+                        .textColor = {200, 210, 224, 255},
+                        .fontSize = UI_FONT_BODY
+                    }));
+                }
+                /* Peer dots */
+                {
+                    int pi;
+                    for (pi = 0; pi < COLLAB_MAX_CLIENTS; pi++) {
+                        if (e->collab.peers[pi].active) {
+                            uint32_t pc = e->collab.peers[pi].color;
+                            Clay_Color peer_c = {
+                                (float)((pc >> 16) & 0xFF),
+                                (float)((pc >> 8) & 0xFF),
+                                (float)(pc & 0xFF),
+                                255.0f
+                            };
+                            CLAY(CLAY_IDI("PeerDot", pi), {
+                                .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
+                                .backgroundColor = peer_c,
+                                .cornerRadius = CLAY_CORNER_RADIUS(4)
+                            }) {}
+                        }
+                    }
+                }
+            }
+        }
 
         CLAY(CLAY_ID("MenuPlayMode"), {
             .layout = {
@@ -5156,7 +5284,7 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
     Clay_RenderCommandArray commands;
     cache_prof_frame *frame;
     int i;
-    static char bufs[CACHE_PROF_MAX_ZONES][5][32];
+    static char bufs[CACHE_PROF_MAX_ZONES][6][32];
 
     if (!ctx) return;
 
@@ -5182,8 +5310,11 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
         e->cache_prof_scroll_y = 0;
     }
 
+    EDITOR_CPU_ZONE_BEGIN(e, "cache_clay_begin");
     Clay_BeginLayout();
+    EDITOR_CPU_ZONE_END(e);
 
+    EDITOR_CPU_ZONE_BEGIN(e, "cache_clay_layout");
     CLAY(CLAY_ID("CPRoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
@@ -5199,10 +5330,20 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
             CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
         }
 
-        if (!cache_prof_available()) {
+        /* Always show backend status */
+        {
             const char *status = cache_prof_status_message();
-            if (!status || !status[0]) status = "Hardware counters not available on this platform";
-            Clay_String msg = { false, (int32_t)strlen(status), (char *)status };
+            if (status && status[0]) {
+                Clay_Color sc = cache_prof_is_hardware_backend()
+                    ? (Clay_Color){100, 180, 100, 255}
+                    : (Clay_Color){170, 150, 100, 255};
+                Clay_String msg = { false, (int32_t)strlen(status), (char *)status };
+                CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = sc, .fontSize = 12}));
+            }
+        }
+
+        if (!cache_prof_available()) {
+            Clay_String msg = CLAY_STRING("No profiler backend active");
             CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = {170, 120, 120, 255}, .fontSize = 14}));
         } else {
             /* Column headers */
@@ -5223,14 +5364,18 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
                 CLAY(CLAY_IDI("CPHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                    Clay_String h = CLAY_STRING("L2 Miss");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 3), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("Branch Miss");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
-                CLAY(CLAY_IDI("CPHCol", 3), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                CLAY(CLAY_IDI("CPHCol", 4), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("Instructions");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
-                CLAY(CLAY_IDI("CPHCol", 4), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                CLAY(CLAY_IDI("CPHCol", 5), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                     Clay_String h = CLAY_STRING("Cycles");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
@@ -5273,37 +5418,45 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
                                 CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 180, 100, 255}, .fontSize = 14}));
                             }
                         }
-                        /* Branch miss */
-                        CLAY(CLAY_IDI("CPBr", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
-                            snprintf(bufs[i][1], sizeof(bufs[i][1]), "%llu", (unsigned long long)frame->branch_miss[i]);
+                        /* L2 miss */
+                        CLAY(CLAY_IDI("CPL2", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                            snprintf(bufs[i][1], sizeof(bufs[i][1]), "%llu", (unsigned long long)frame->l2_miss[i]);
                             {
                                 Clay_String vs = {false, (int32_t)strlen(bufs[i][1]), bufs[i][1]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 140, 140, 255}, .fontSize = 14}));
+                            }
+                        }
+                        /* Branch miss */
+                        CLAY(CLAY_IDI("CPBr", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                            snprintf(bufs[i][2], sizeof(bufs[i][2]), "%llu", (unsigned long long)frame->branch_miss[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][2]), bufs[i][2]};
                                 CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {180, 200, 255, 255}, .fontSize = 14}));
                             }
                         }
                         /* Instructions */
                         CLAY(CLAY_IDI("CPIns", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                             if (frame->instructions[i] > 1000000)
-                                snprintf(bufs[i][2], sizeof(bufs[i][2]), "%.1fM", (double)frame->instructions[i] / 1000000.0);
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fM", (double)frame->instructions[i] / 1000000.0);
                             else if (frame->instructions[i] > 1000)
-                                snprintf(bufs[i][2], sizeof(bufs[i][2]), "%.1fK", (double)frame->instructions[i] / 1000.0);
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fK", (double)frame->instructions[i] / 1000.0);
                             else
-                                snprintf(bufs[i][2], sizeof(bufs[i][2]), "%llu", (unsigned long long)frame->instructions[i]);
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%llu", (unsigned long long)frame->instructions[i]);
                             {
-                                Clay_String vs = {false, (int32_t)strlen(bufs[i][2]), bufs[i][2]};
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][3]), bufs[i][3]};
                                 CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
                             }
                         }
                         /* Cycles */
                         CLAY(CLAY_IDI("CPCyc", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                             if (frame->cycles[i] > 1000000)
-                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fM", (double)frame->cycles[i] / 1000000.0);
+                                snprintf(bufs[i][4], sizeof(bufs[i][4]), "%.1fM", (double)frame->cycles[i] / 1000000.0);
                             else if (frame->cycles[i] > 1000)
-                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fK", (double)frame->cycles[i] / 1000.0);
+                                snprintf(bufs[i][4], sizeof(bufs[i][4]), "%.1fK", (double)frame->cycles[i] / 1000.0);
                             else
-                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%llu", (unsigned long long)frame->cycles[i]);
+                                snprintf(bufs[i][4], sizeof(bufs[i][4]), "%llu", (unsigned long long)frame->cycles[i]);
                             {
-                                Clay_String vs = {false, (int32_t)strlen(bufs[i][3]), bufs[i][3]};
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][4]), bufs[i][4]};
                                 CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
                             }
                         }
@@ -5313,7 +5466,12 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
         }
     }
 
+    EDITOR_CPU_ZONE_END(e); /* cache_clay_layout */
+
+    EDITOR_CPU_ZONE_BEGIN(e, "cache_clay_end_layout");
     commands = Clay_EndLayout();
+    EDITOR_CPU_ZONE_END(e);
+
     e->cache_prof_cmd_count = commands.length;
     e->cache_prof_cmd_array = commands.internalArray;
     e->cache_prof_click = 0;
@@ -6282,6 +6440,11 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
 
     if (!e->open) return;
 
+    /* Collaborative editing: process network messages */
+    if (e->collab.connected || e->collab.connecting)
+        collab_update(&e->collab, gs);
+
+    cache_prof_frame_reset();
     EDITOR_CPU_ZONE_BEGIN(e, "editor_update_frame");
     EDITOR_CACHE_ZONE_BEGIN("editor_update_frame");
 
@@ -6451,6 +6614,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
 
 EXPORT void destroy_editor(game_state *gs, editor_state *es) {
     if (!gs || !es) return;
+    collab_disconnect(&es->collab);
     if (editor_save_layout_state(gs, es)) {
         fprintf(stderr, "Editor layout saved to %s\n", es->editor_layout_path);
     }
@@ -6938,6 +7102,10 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             if (!tc) return 0;
             delta = vec3_scale(e->gizmo_drag_axis_world, world_delta);
             tc->position = vec3_add(e->gizmo_drag_start_entity_pos, delta);
+            if (e->collab.connected) {
+                op_vec3_payload cp = {tc->position.x, tc->position.y, tc->position.z};
+                collab_emit_op(&e->collab, OP_SET_TRANSFORM, e->gizmo_entity_index, &cp, sizeof(cp));
+            }
         } else {
             capsule_collider_component *cc = find_capsule_collider_component_mut(gs, e->gizmo_entity_index);
             float axis_scale = e->gizmo_drag_axis_local_scale;
@@ -6947,8 +7115,16 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             local_delta = world_delta / axis_scale;
             if (e->gizmo_drag_mode == 1) {
                 cc->radius = fmaxf(0.05f, e->gizmo_drag_start_capsule_radius + local_delta);
+                if (e->collab.connected) {
+                    op_float_payload cp = {cc->radius};
+                    collab_emit_op(&e->collab, OP_SET_CAPSULE_RADIUS, e->gizmo_entity_index, &cp, sizeof(cp));
+                }
             } else {
                 cc->half_height = fmaxf(0.05f, e->gizmo_drag_start_capsule_half_height + local_delta);
+                if (e->collab.connected) {
+                    op_float_payload cp = {cc->half_height};
+                    collab_emit_op(&e->collab, OP_SET_CAPSULE_HEIGHT, e->gizmo_entity_index, &cp, sizeof(cp));
+                }
             }
         }
     }
