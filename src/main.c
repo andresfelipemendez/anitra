@@ -58,9 +58,8 @@ int main(int argc, char **argv) {
     if (result == 0) {
       /* Normal exit — do NOT FreeLibrary(core_copy.dll).
          All subsystems are already torn down inside init_core().
-         FreeLibrary would cascade through the import chain
-         (core -> externals -> tracy) and tracy.dll's C++ static
-         destructors deadlock in DllMain (loader lock vs thread exit).
+         FreeLibrary would cascade through the DLL import chain and
+         DllMain destructors can deadlock on the loader lock.
          The OS will reclaim everything when the process terminates. */
       return 0;
     }

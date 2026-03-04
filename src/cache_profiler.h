@@ -10,6 +10,7 @@
  *     #include "cache_profiler.h"   // struct typedefs + function declarations only
  *
  * macOS: Uses kpc framework via dlopen/dlsym for hardware performance counters.
+ * Windows: Uses QueryPerformanceCounter as a cycle proxy (no hardware PMCs).
  * Other platforms: Stub implementations, cache_prof_available() returns 0.
  */
 
@@ -69,9 +70,15 @@ void              cache_prof_sort_zones(void);
 
 #if defined(__APPLE__)
 #include <dlfcn.h>
-#define CACHE_PROF_MACOS 1
+#define CACHE_PROF_MACOS   1
+#define CACHE_PROF_WINDOWS 0
+#elif defined(_WIN32)
+#include <windows.h>
+#define CACHE_PROF_MACOS   0
+#define CACHE_PROF_WINDOWS 1
 #else
-#define CACHE_PROF_MACOS 0
+#define CACHE_PROF_MACOS   0
+#define CACHE_PROF_WINDOWS 0
 #endif
 
 /* ── kpc function pointer types (macOS) ─────────────────────────────────── */
@@ -129,6 +136,11 @@ static uint32_t cache_prof__idx_branch_miss  = 0;
 
 #endif /* CACHE_PROF_MACOS */
 
+#if CACHE_PROF_WINDOWS
+static LARGE_INTEGER cache_prof__qpc_freq;
+static const uint32_t cache_prof__idx_cycles = 0;
+#endif /* CACHE_PROF_WINDOWS */
+
 /* ── Snapshot helper ────────────────────────────────────────────────────── */
 
 static void cache_prof__take_snapshot(cache_prof_snapshot *snap) {
@@ -137,6 +149,12 @@ static void cache_prof__take_snapshot(cache_prof_snapshot *snap) {
     if (cache_prof__available && cache_prof__kpc_get_thread_counters) {
         cache_prof__kpc_get_thread_counters(0, cache_prof__num_counters,
                                             snap->counters);
+    }
+#elif CACHE_PROF_WINDOWS
+    if (cache_prof__available) {
+        LARGE_INTEGER ctr;
+        QueryPerformanceCounter(&ctr);
+        snap->counters[0] = (uint64_t)ctr.QuadPart;
     }
 #endif
 }
@@ -277,7 +295,16 @@ void cache_prof_init(void) {
             cache_prof__num_counters, num_fixed, num_configurable);
 
 #endif /* CACHE_PROF_MACOS */
-#if !CACHE_PROF_MACOS
+
+#if CACHE_PROF_WINDOWS
+    QueryPerformanceFrequency(&cache_prof__qpc_freq);
+    cache_prof__available = 1;
+    cache_prof__set_status("QPC cycle counter active (no hardware PMCs)");
+    fprintf(stderr, "[cache_profiler] Windows QPC backend (freq=%llu)\n",
+            (unsigned long long)cache_prof__qpc_freq.QuadPart);
+#endif
+
+#if !CACHE_PROF_MACOS && !CACHE_PROF_WINDOWS
     cache_prof__set_status("No hardware cache-counter backend for this platform");
 #endif
 }
@@ -341,6 +368,9 @@ void cache_zone_end(void) {
                    before->counters[cache_prof__idx_instructions];
     cycles       = after.counters[cache_prof__idx_cycles]      -
                    before->counters[cache_prof__idx_cycles];
+#elif CACHE_PROF_WINDOWS
+    cycles = after.counters[cache_prof__idx_cycles] -
+             before->counters[cache_prof__idx_cycles];
 #endif
 
     /* Append to frame SoA arrays */
@@ -376,7 +406,11 @@ int cache_prof_available(void) {
 }
 
 int cache_prof_is_hardware_backend(void) {
+#if CACHE_PROF_MACOS
     return cache_prof__available;
+#else
+    return 0;
+#endif
 }
 
 const char *cache_prof_status_message(void) {

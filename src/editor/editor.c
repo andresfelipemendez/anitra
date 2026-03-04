@@ -136,6 +136,13 @@ static int editor_cpu_prof_enabled(const editor_state *e) {
     return e && cpu_prof_get_capture_enabled();
 }
 
+static int dock_is_panel_visible(dock_state *d, PanelId pid) {
+    int win_idx;
+    int node = dock_find_leaf_for_panel_global(d, pid, &win_idx);
+    if (node < 0) return 0;
+    return d->nodes[node].panels[d->nodes[node].active_tab] == pid;
+}
+
 #define EDITOR_CPU_ZONE_BEGIN(es, name) do { \
     if (editor_cpu_prof_enabled((es))) cpu_zone_begin(name); \
 } while (0)
@@ -3399,7 +3406,9 @@ static void profiler_layout(game_state *gs, editor_state *es) {
         e->prof_scroll_y = 0; /* consumed */
     }
 
+    EDITOR_CPU_ZONE_BEGIN(e, "prof_clay_begin");
     Clay_BeginLayout();
+    EDITOR_CPU_ZONE_END(e);
 
     a = gs->root_arena;
     used_pct = (a->capacity > 0) ? (100.0f * a->used / a->capacity) : 0.0f;
@@ -3408,8 +3417,10 @@ static void profiler_layout(game_state *gs, editor_state *es) {
         format_bytes(a->used), format_bytes(a->capacity), (double)used_pct);
 
     /* Flatten records for grid */
+    EDITOR_CPU_ZONE_BEGIN(e, "prof_flatten_arena");
     flat_color = 0;
     flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
+    EDITOR_CPU_ZONE_END(e);
     cpu_focus_tag = NULL;
     if (e->cpu_prof_hover_zone_active && e->cpu_prof_hover_zone_name[0]) {
         cpu_focus_tag = e->cpu_prof_hover_zone_name;
@@ -3419,6 +3430,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     have_cpu_focus = (cpu_focus_tag && cpu_focus_tag[0]) ? 1 : 0;
 
     /* Root container */
+    EDITOR_CPU_ZONE_BEGIN(e, "prof_clay_tree_and_grid");
     CLAY(CLAY_ID("PRoot"), {
         .layout = {
             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
@@ -3578,7 +3590,12 @@ static void profiler_layout(game_state *gs, editor_state *es) {
         }
     }
 
+    EDITOR_CPU_ZONE_END(e); /* prof_clay_tree_and_grid */
+
+    EDITOR_CPU_ZONE_BEGIN(e, "prof_clay_end_layout");
     commands = Clay_EndLayout();
+    EDITOR_CPU_ZONE_END(e);
+
     e->profiler_cmd_count = commands.length;
     e->profiler_cmd_array = commands.internalArray;
     e->prof_click = 0;  /* consumed — zeroed after layout used it */
@@ -3604,6 +3621,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     }
 
     /* Export PGridTex bounding box + build pixel buffer for GPU texture */
+    EDITOR_CPU_ZONE_BEGIN(e, "prof_grid_pixels");
     {
         Clay_ElementData gd = Clay_GetElementData(CLAY_ID("PGridTex"));
         if (gd.found) {
@@ -3677,6 +3695,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
             }
         }
     }
+    EDITOR_CPU_ZONE_END(e); /* prof_grid_pixels */
 }
 
 static const char *project_browser_path_basename(const char *path) {
@@ -6327,30 +6346,45 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
         editor_scene_selection_sync(e, scene_count);
     }
     EDITOR_CPU_ZONE_END(e);
-    EDITOR_CPU_ZONE_BEGIN(e, "layout_memory_profiler");
-    profiler_layout(gs, es);
-    EDITOR_CPU_ZONE_END(e);
-    EDITOR_CPU_ZONE_BEGIN(e, "layout_scene_tree");
-    scene_tree_layout(gs, es);
-    EDITOR_CPU_ZONE_END(e);
-    EDITOR_CPU_ZONE_BEGIN(e, "layout_project_browser");
-    project_browser_layout(gs, es);
-    EDITOR_CPU_ZONE_END(e);
-    EDITOR_CPU_ZONE_BEGIN(e, "layout_inspector");
-    inspector_layout(gs, es);
-    EDITOR_CPU_ZONE_END(e);
+    if (dock_is_panel_visible(d, PANEL_PROFILER)) {
+        EDITOR_CPU_ZONE_BEGIN(e, "layout_memory_profiler");
+        profiler_layout(gs, es);
+        EDITOR_CPU_ZONE_END(e);
+    }
+    if (dock_is_panel_visible(d, PANEL_SCENE_TREE)) {
+        EDITOR_CPU_ZONE_BEGIN(e, "layout_scene_tree");
+        scene_tree_layout(gs, es);
+        EDITOR_CPU_ZONE_END(e);
+    }
+    if (dock_is_panel_visible(d, PANEL_ASSETS)) {
+        EDITOR_CPU_ZONE_BEGIN(e, "layout_project_browser");
+        project_browser_layout(gs, es);
+        EDITOR_CPU_ZONE_END(e);
+    }
+    if (dock_is_panel_visible(d, PANEL_INSPECTOR)) {
+        EDITOR_CPU_ZONE_BEGIN(e, "layout_inspector");
+        inspector_layout(gs, es);
+        EDITOR_CPU_ZONE_END(e);
+    }
+    /* Menu bar is always visible when editor is open */
     EDITOR_CPU_ZONE_BEGIN(e, "layout_menu_bar");
     menu_bar_layout(gs, es);
     EDITOR_CPU_ZONE_END(e);
-    EDITOR_CPU_ZONE_BEGIN(e, "layout_editor_toolbar");
-    editor_toolbar_layout(gs, es);
-    EDITOR_CPU_ZONE_END(e);
-    EDITOR_CPU_ZONE_BEGIN(e, "layout_cache_profiler");
-    cache_profiler_layout(gs, es);
-    EDITOR_CPU_ZONE_END(e);
-    EDITOR_CPU_ZONE_BEGIN(e, "layout_cpu_profiler");
-    cpu_profiler_layout(gs, es);
-    EDITOR_CPU_ZONE_END(e);
+    if (dock_is_panel_visible(d, PANEL_EDITOR)) {
+        EDITOR_CPU_ZONE_BEGIN(e, "layout_editor_toolbar");
+        editor_toolbar_layout(gs, es);
+        EDITOR_CPU_ZONE_END(e);
+    }
+    if (dock_is_panel_visible(d, PANEL_CACHE_PROFILER)) {
+        EDITOR_CPU_ZONE_BEGIN(e, "layout_cache_profiler");
+        cache_profiler_layout(gs, es);
+        EDITOR_CPU_ZONE_END(e);
+    }
+    if (dock_is_panel_visible(d, PANEL_CPU_PROFILER)) {
+        EDITOR_CPU_ZONE_BEGIN(e, "layout_cpu_profiler");
+        cpu_profiler_layout(gs, es);
+        EDITOR_CPU_ZONE_END(e);
+    }
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
     EDITOR_CPU_ZONE_BEGIN(e, "editor_camera_and_gizmo");
@@ -6397,6 +6431,22 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
 
     EDITOR_CACHE_ZONE_END();
     EDITOR_CPU_ZONE_END(e);
+
+    /* Commit this frame's editor zones to the ring buffer so the
+       CPU profiler panel can read history via cpu_prof_get_history_count(). */
+    {
+        static int was_paused = 0;
+        int paused = e->cpu_prof_timeline_paused;
+        cpu_prof_set_capture_enabled(!paused);
+        if (!paused) {
+            if (was_paused) {
+                cpu_prof_clear_current_frame();
+            } else {
+                cpu_prof_frame_end();
+            }
+        }
+        was_paused = paused;
+    }
 }
 
 EXPORT void destroy_editor(game_state *gs, editor_state *es) {

@@ -11,7 +11,6 @@
 #include <SDL3/SDL_gpu.h>
 #include <SDL3_shadercross/SDL_shadercross.h>
 
-#include <tracy/TracyC.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -92,6 +91,7 @@ static SDL_GPUTexture *panel_color[PANEL_COUNT] = {0};
 static SDL_GPUTexture *panel_depth[PANEL_COUNT] = {0};
 static int panel_tex_w[PANEL_COUNT] = {0};
 static int panel_tex_h[PANEL_COUNT] = {0};
+static int panel_visible[PANEL_COUNT] = {0}; /* set each frame by ensure_panel_textures */
 static float display_density = 1.0f;  /* pixel density (2.0 on Retina) */
 
 // Composite pipeline (draws panel textures into window swapchain)
@@ -1646,6 +1646,8 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
 }
 
 // Game window: run Clay layout for game UI overlay, build + upload vertices
+static float fps_smooth = 0.0f;
+
 static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     Clay_SetCurrentContext(clay_context);
 
@@ -1655,8 +1657,37 @@ static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     if (win_h <= 0) win_h = 600;
     Clay_SetLayoutDimensions((Clay_Dimensions){win_w, win_h});
 
+    /* Smoothed FPS (EMA, ~20-frame window) */
+    float dt = g->game.dt;
+    if (dt > 0.0f) {
+        float instant_fps = 1.0f / dt;
+        fps_smooth = (fps_smooth == 0.0f) ? instant_fps
+                                          : fps_smooth * 0.95f + instant_fps * 0.05f;
+    }
+    static char fps_buf[16];
+    snprintf(fps_buf, sizeof(fps_buf), "%.0f FPS", fps_smooth);
+    Clay_String fps_str = {false, (int32_t)strlen(fps_buf), fps_buf};
+
     Clay_BeginLayout();
-    /* (game HUD elements will go here later) */
+    CLAY(CLAY_ID("GameHUDRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .childAlignment = {CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_TOP},
+            .padding = {.right = 8, .top = 8}
+        }
+    }) {
+        CLAY(CLAY_ID("FPSBox"), {
+            .layout = {
+                .padding = {.left = 8, .right = 8, .top = 4, .bottom = 4}
+            },
+            .backgroundColor = {0, 0, 0, 140},
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            CLAY_TEXT(fps_str, CLAY_TEXT_CONFIG({
+                .textColor = {220, 220, 220, 255}, .fontSize = 14
+            }));
+        }
+    }
     Clay_RenderCommandArray commands = Clay_EndLayout();
 
     ui_build_vertices(&ui_game, commands);
@@ -3226,6 +3257,7 @@ static int ensure_panel_texture(int panel_idx, int w, int h)
 static void ensure_panel_textures(dock_state *d)
 {
     int i, j;
+    memset(panel_visible, 0, sizeof(panel_visible));
     for (i = 0; i < MAX_DOCK_WINDOWS; i++) {
         if (!d->windows[i].in_use) continue;
         for (j = 0; j < MAX_DOCK_NODES; j++) {
@@ -3236,6 +3268,7 @@ static void ensure_panel_textures(dock_state *d)
                 int pw = (int)(n->w * display_density);
                 int ph = (int)((n->h - DOCK_HEADER_HEIGHT) * display_density);
                 if (ph < 1) ph = 1;
+                panel_visible[(int)pid] = 1;
                 ensure_panel_texture((int)pid, pw, ph);
             }
         }
@@ -3249,7 +3282,7 @@ static void ensure_panel_textures(dock_state *d)
 EXPORT int update_externals(void) {
     dock_state *dock = (dock_state *)g_mem->editor.dock;
     static int previous_editor_play_mode = -1;
-    TracyCZoneN(ctx_update, "update_externals", 1);
+    FRAME_CPU_ZONE_BEGIN("update_externals");
     // --- Timing ---
     double now = (double)SDL_GetTicks() / 1000.0;
     double dtd = now - g_mem->game._t_prev;
@@ -3260,13 +3293,13 @@ EXPORT int update_externals(void) {
 
     // --- Events ---
     {
-        TracyCZoneN(ctx_poll, "SDL_PollEvents", 1);
+        FRAME_CPU_ZONE_BEGIN("SDL_PollEvents");
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 g_mem->game.play = 0;
-                TracyCZoneEnd(ctx_poll);
-                TracyCZoneEnd(ctx_update);
+                FRAME_CPU_ZONE_END();
+                FRAME_CPU_ZONE_END();
                 return 0;
             }
 
@@ -3321,8 +3354,8 @@ EXPORT int update_externals(void) {
                 }
                 if (is_main) {
                     g_mem->game.play = 0;
-                    TracyCZoneEnd(ctx_poll);
-                    TracyCZoneEnd(ctx_update);
+                    FRAME_CPU_ZONE_END();
+                    FRAME_CPU_ZONE_END();
                     return 0;
                 }
                 continue; /* don't forward close events to editor */
@@ -3334,7 +3367,7 @@ EXPORT int update_externals(void) {
                     continue; /* editor consumed the event */
             }
         }
-        TracyCZoneEnd(ctx_poll);
+        FRAME_CPU_ZONE_END();
     }
 
     /* Leaving Play mode: rebuild scene from project so runtime mutations are discarded. */
@@ -3621,7 +3654,7 @@ EXPORT int update_externals(void) {
     FRAME_CPU_ZONE_END();
     if (!cmd_buf) {
         fprintf(stderr, "Failed to acquire command buffer: %s\n", SDL_GetError());
-        TracyCZoneEnd(ctx_update);
+        FRAME_CPU_ZONE_END();
         return g_mem->game.play;
     }
 
@@ -3703,49 +3736,49 @@ EXPORT int update_externals(void) {
     FRAME_CPU_ZONE_END();
 
     // --- Prepare Clay UI: profiler window (layout + upload) ---
-    if (panel_color[PANEL_PROFILER]) {
+    if (panel_color[PANEL_PROFILER] && panel_visible[PANEL_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_profiler");
         profiler_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: scene tree window (layout + upload) ---
-    if (panel_color[PANEL_SCENE_TREE]) {
+    if (panel_color[PANEL_SCENE_TREE] && panel_visible[PANEL_SCENE_TREE]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_scene_tree");
         scene_tree_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: project browser window (layout + upload) ---
-    if (panel_color[PANEL_ASSETS]) {
+    if (panel_color[PANEL_ASSETS] && panel_visible[PANEL_ASSETS]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_project_browser");
         project_browser_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: inspector window (layout + upload) ---
-    if (panel_color[PANEL_INSPECTOR]) {
+    if (panel_color[PANEL_INSPECTOR] && panel_visible[PANEL_INSPECTOR]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_inspector");
         inspector_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: cache profiler (layout + upload) ---
-    if (panel_color[PANEL_CACHE_PROFILER]) {
+    if (panel_color[PANEL_CACHE_PROFILER] && panel_visible[PANEL_CACHE_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_cache_profiler");
         cache_profiler_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: cpu profiler (layout + upload) ---
-    if (panel_color[PANEL_CPU_PROFILER]) {
+    if (panel_color[PANEL_CPU_PROFILER] && panel_visible[PANEL_CPU_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_cpu_profiler");
         cpu_profiler_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
 
     // --- Prepare Clay UI: editor viewport toolbar (layout + upload) ---
-    if (panel_color[PANEL_EDITOR]) {
+    if (panel_color[PANEL_EDITOR] && panel_visible[PANEL_EDITOR]) {
         FRAME_CPU_ZONE_BEGIN("ui_prepare_editor_toolbar");
         editor_toolbar_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
@@ -3866,7 +3899,7 @@ EXPORT int update_externals(void) {
     // ================================================================
 
     // --- GAME PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_GAME] && panel_depth[PANEL_GAME]) {
+    if (panel_color[PANEL_GAME] && panel_depth[PANEL_GAME] && panel_visible[PANEL_GAME]) {
         FRAME_CPU_ZONE_BEGIN("render_game_panel");
         Uint32 gw = (Uint32)panel_tex_w[PANEL_GAME];
         Uint32 gh = (Uint32)panel_tex_h[PANEL_GAME];
@@ -3979,7 +4012,7 @@ EXPORT int update_externals(void) {
     }
 
     // --- PROFILER PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_PROFILER]) {
+    if (panel_color[PANEL_PROFILER] && panel_visible[PANEL_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("render_memory_profiler_panel");
         Uint32 pw = (Uint32)panel_tex_w[PANEL_PROFILER];
         Uint32 ph = (Uint32)panel_tex_h[PANEL_PROFILER];
@@ -4021,7 +4054,7 @@ EXPORT int update_externals(void) {
     }
 
     // --- SCENE TREE PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_SCENE_TREE] && panel_depth[PANEL_SCENE_TREE]) {
+    if (panel_color[PANEL_SCENE_TREE] && panel_depth[PANEL_SCENE_TREE] && panel_visible[PANEL_SCENE_TREE]) {
         FRAME_CPU_ZONE_BEGIN("render_scene_tree_panel");
         Uint32 sw = (Uint32)panel_tex_w[PANEL_SCENE_TREE];
         Uint32 sh = (Uint32)panel_tex_h[PANEL_SCENE_TREE];
@@ -4063,7 +4096,7 @@ EXPORT int update_externals(void) {
     }
 
     // --- PROJECT BROWSER PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_ASSETS] && panel_depth[PANEL_ASSETS]) {
+    if (panel_color[PANEL_ASSETS] && panel_depth[PANEL_ASSETS] && panel_visible[PANEL_ASSETS]) {
         FRAME_CPU_ZONE_BEGIN("render_project_panel");
         Uint32 aw = (Uint32)panel_tex_w[PANEL_ASSETS];
         Uint32 ah = (Uint32)panel_tex_h[PANEL_ASSETS];
@@ -4301,7 +4334,7 @@ EXPORT int update_externals(void) {
     }
 
     // --- INSPECTOR PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_INSPECTOR] && panel_depth[PANEL_INSPECTOR]) {
+    if (panel_color[PANEL_INSPECTOR] && panel_depth[PANEL_INSPECTOR] && panel_visible[PANEL_INSPECTOR]) {
         FRAME_CPU_ZONE_BEGIN("render_inspector_panel");
         Uint32 iw = (Uint32)panel_tex_w[PANEL_INSPECTOR];
         Uint32 ih = (Uint32)panel_tex_h[PANEL_INSPECTOR];
@@ -4343,7 +4376,7 @@ EXPORT int update_externals(void) {
     }
 
     // --- CACHE PROFILER PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_CACHE_PROFILER] && panel_depth[PANEL_CACHE_PROFILER]) {
+    if (panel_color[PANEL_CACHE_PROFILER] && panel_depth[PANEL_CACHE_PROFILER] && panel_visible[PANEL_CACHE_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("render_cache_profiler_panel");
         Uint32 cpw = (Uint32)panel_tex_w[PANEL_CACHE_PROFILER];
         Uint32 cph = (Uint32)panel_tex_h[PANEL_CACHE_PROFILER];
@@ -4383,7 +4416,7 @@ EXPORT int update_externals(void) {
     }
 
     // --- CPU PROFILER PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_CPU_PROFILER] && panel_depth[PANEL_CPU_PROFILER]) {
+    if (panel_color[PANEL_CPU_PROFILER] && panel_depth[PANEL_CPU_PROFILER] && panel_visible[PANEL_CPU_PROFILER]) {
         FRAME_CPU_ZONE_BEGIN("render_cpu_profiler_panel");
         Uint32 cpuw = (Uint32)panel_tex_w[PANEL_CPU_PROFILER];
         Uint32 cpuh = (Uint32)panel_tex_h[PANEL_CPU_PROFILER];
@@ -4423,7 +4456,7 @@ EXPORT int update_externals(void) {
     }
 
     // --- EDITOR PANEL RENDER PASS (offscreen) ---
-    if (g_mem->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR]) {
+    if (g_mem->editor.open && panel_color[PANEL_EDITOR] && panel_depth[PANEL_EDITOR] && panel_visible[PANEL_EDITOR]) {
         FRAME_CPU_ZONE_BEGIN("render_editor_panel");
         Uint32 ew = (Uint32)panel_tex_w[PANEL_EDITOR];
         Uint32 eh = (Uint32)panel_tex_h[PANEL_EDITOR];
@@ -4629,8 +4662,7 @@ EXPORT int update_externals(void) {
     if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
     FRAME_CPU_ZONE_END();
 
-    TracyCZoneEnd(ctx_update);
-    TracyCFrameMark;
+    FRAME_CPU_ZONE_END();
     return g_mem->game.play;
 }
 

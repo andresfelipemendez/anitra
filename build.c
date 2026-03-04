@@ -1,9 +1,9 @@
 /*
  * build.c - nobuild build system for the Anitra game engine
  *
- * Compile:  tcc -Blib/tcc-windows -o builder.exe build.c             (Windows)
- *           ./tcc -Blib/tcc-linux -o builder build.c                (Linux)
- *           lib/tcc/macos/tcc -Blib/tcc/macos -o builder build.c    (macOS)
+ * Compile:  build.bat
+			 build.sh
+			 build.cmd
  * Usage:    builder          (build only)
  *           builder watch    (build, launch engine, and watch for changes)
  *
@@ -65,7 +65,6 @@
 #define BUILD_DIR       "build"
 #define DEBUG_DIR       "build/Debug"
 #define OBJ_DIR         "build/obj"
-#define OBJ_TRACY_DIR   "build/obj/tracy"
 #define OBJ_EXT_DIR     "build/obj/externals"
 #define OBJ_CORE_DIR    "build/obj/core"
 #define OBJ_ENGINE_DIR  "build/obj/engine"
@@ -84,7 +83,7 @@
     "/Ilib/SDL3/include /Ilib/SDL_shadercross/include " \
     "/Ilib/SDL_shadercross/external/SPIRV-Cross " \
     "/Ilib/SDL_shadercross/external/prebuilt/inc " \
-    "/Ilib/tracy/public " \
+    "/Ilib/remotery " \
     "/Ilib/harfbuzz-src/src " \
     "/Ilib/clay " \
     "/Ilib/cgltf"
@@ -94,7 +93,7 @@
     "-Ilib/SDL3/include -Ilib/SDL_shadercross/include " \
     "-Ilib/SDL_shadercross/external/SPIRV-Cross " \
     "-Ilib/SDL_shadercross/external/prebuilt/inc " \
-    "-Ilib/tracy/public " \
+    "-Ilib/remotery " \
     "-Ilib/harfbuzz-src/src " \
     "-Ilib/clay " \
     "-Ilib/cgltf"
@@ -363,7 +362,6 @@ static int ensure_dirs(void)
     if (ensure_dir(BUILD_DIR))      return 1;
     if (ensure_dir(DEBUG_DIR))      return 1;
     if (ensure_dir(OBJ_DIR))        return 1;
-    if (ensure_dir(OBJ_TRACY_DIR))  return 1;
     if (ensure_dir(OBJ_EXT_DIR))    return 1;
     if (ensure_dir(OBJ_CORE_DIR))   return 1;
     if (ensure_dir(OBJ_ENGINE_DIR)) return 1;
@@ -478,84 +476,6 @@ static void rand_hex(char *buf, int len)
 static int generate_def_from_dll(const char *dll_path, const char *def_path,
                                  const char *library_name);
 #endif
-
-/* ------- tracy (DLL — only C++ target, exports C API for externals) ------ */
-static int build_tracy(void)
-{
-    char cmd[CMD_MAX];
-    int any_rebuilt = 0;
-
-    printf("\n=== Building tracy ===\n");
-    if (ensure_dirs() != 0) return 1;
-
-    if (needs_rebuild("lib/tracy/public/TracyClient.cpp",
-                      OBJ_TRACY_DIR "/TracyClient" OBJ_EXT)) {
-#ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
-        snprintf(cmd, sizeof(cmd),
-            "\"%s\" /std:c++20 /EHsc /MD /Zi /Od /nologo /c "
-            "/DTRACY_ENABLE /DTRACY_ON_DEMAND /DTRACY_EXPORTS "
-            "/Ilib/tracy/public "
-            "/Fo" OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
-            "/Fd" OBJ_TRACY_DIR "/TracyClient.pdb "
-            "lib/tracy/public/TracyClient.cpp",
-            tool_cxx);
-#else
-        snprintf(cmd, sizeof(cmd),
-            "%s -std=c++20 -fPIC -g -O0 -c "
-            "-DTRACY_ENABLE -DTRACY_ON_DEMAND "
-            "-Ilib/tracy/public "
-            "-o " OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
-            "lib/tracy/public/TracyClient.cpp",
-            tool_cxx);
-#endif
-        if (run_cmd(cmd) != 0) return 1;
-        any_rebuilt = 1;
-    }
-
-    if (any_rebuilt ||
-        needs_rebuild(OBJ_TRACY_DIR "/TracyClient" OBJ_EXT,
-                      DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT)) {
-#ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
-        {
-            char pdb_suffix[9];
-            rand_hex(pdb_suffix, 8);
-            snprintf(cmd, sizeof(cmd),
-                "\"%s\" /nologo /DLL /DEBUG "
-                "/PDB:" DEBUG_DIR "/tracy_%s.pdb "
-                "/OUT:" DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT " "
-                "/IMPLIB:" DEBUG_DIR "/tracy" LIB_EXT " "
-                OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
-                "ws2_32.lib dbghelp.lib advapi32.lib user32.lib",
-                tool_link, pdb_suffix);
-        }
-#elif defined(__APPLE__)
-        snprintf(cmd, sizeof(cmd),
-            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT " "
-            OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
-            "-lpthread -lc++",
-            tool_link);
-#else
-        snprintf(cmd, sizeof(cmd),
-            "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "tracy" DLL_EXT " "
-            OBJ_TRACY_DIR "/TracyClient" OBJ_EXT " "
-            "-lpthread -ldl",
-            tool_link);
-#endif
-        if (run_cmd(cmd) != 0) return 1;
-
-#ifdef _WIN32
-        /* Generate .def for TCC linking */
-        generate_def_from_dll(DEBUG_DIR "/tracy.dll",
-                              DEBUG_DIR "/tracy.def", "tracy.dll");
-#endif
-    } else {
-        printf("   tracy is up to date.\n");
-    }
-
-    return 0;
-}
 
 /* ------- harfbuzz (DLL — C++ amalgamation, exports C API) ---------------- */
 static int build_harfbuzz(void)
@@ -752,44 +672,48 @@ static int build_externals(void)
     snprintf(cmd, sizeof(cmd),
         ".\\tcc.exe -Blib/tcc-windows -shared"
         " -o " DEBUG_DIR "/externals.dll"
-        " -DTRACY_ENABLE -DTRACY_ON_DEMAND -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD"
+        " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
+        " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD"
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
-        " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
+        " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
         " -Ilib/sqlite -Ilib/toml-c"
         " src/externals/externals_runtime.c src/externals/externals.c"
         " src/project.c lib/sqlite/sqlite3.c"
+        " lib/remotery/Remotery.c lib/remotery/rmt_tcc_compat.c"
         " " DEBUG_DIR "/SDL3.def"
         " " DEBUG_DIR "/SDL3_shadercross.def"
-        " " DEBUG_DIR "/tracy.def"
-        " " DEBUG_DIR "/harfbuzz.def");
+        " " DEBUG_DIR "/harfbuzz.def"
+        " lib/tcc-windows/lib/ws2_32.def"
+        " lib/tcc-windows/lib/winmm.def"
+        " lib/tcc-windows/lib/kernel32.def");
 #elif defined(__APPLE__)
     snprintf(cmd, sizeof(cmd),
         "lib/tcc/macos/tcc -Blib/tcc/macos -shared"
         " -DMAC_OS_X_VERSION_MIN_REQUIRED=1100"
         " -DSTBI_NO_THREAD_LOCALS -DCLAY_DISABLE_SIMD"
         " -o " DEBUG_DIR "/libexternals.dylib"
-        " -DTRACY_ENABLE -DTRACY_ON_DEMAND"
+        " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
-        " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
+        " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
         " -Ilib/sqlite -Ilib/toml-c"
         " src/externals/externals_runtime.c src/externals/externals.c"
-        " src/project.c lib/sqlite/sqlite3.c"
-        " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -ltracy -lharfbuzz"
+        " src/project.c lib/sqlite/sqlite3.c lib/remotery/Remotery.c"
+        " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz"
         " -lpthread -lm");
 #else
     snprintf(cmd, sizeof(cmd),
         "./tcc -Blib/tcc-linux -shared"
         " -o " DEBUG_DIR "/libexternals.so"
-        " -DTRACY_ENABLE -DTRACY_ON_DEMAND"
+        " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
-        " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
+        " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
         " -Ilib/sqlite -Ilib/toml-c"
         " src/externals/externals_runtime.c src/externals/externals.c"
-        " src/project.c lib/sqlite/sqlite3.c"
-        " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -ltracy -lharfbuzz"
+        " src/project.c lib/sqlite/sqlite3.c lib/remotery/Remotery.c"
+        " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz"
         " -lpthread -ldl -lm");
 #endif
     printf(">> %s\n", cmd);
@@ -1982,7 +1906,6 @@ static int build_all(void)
     if (build_spirvcross() != 0) return 1;
     if (build_shadercross() != 0) return 1;
     if (build_shaders() != 0) return 1;
-    if (build_tracy() != 0) return 1;
     if (build_harfbuzz() != 0) return 1;
     force_rebuild = 1;
     if (build_externals() != 0) return 1;

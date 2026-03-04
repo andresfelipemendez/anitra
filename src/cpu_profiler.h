@@ -41,8 +41,9 @@ static inline uint64_t cpu_prof_now_ns(void) {
 #if defined(__APPLE__)
     return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
 #elif defined(_WIN32)
-    LARGE_INTEGER freq, ctr;
-    QueryPerformanceFrequency(&freq);
+    static LARGE_INTEGER freq = {0};
+    LARGE_INTEGER ctr;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&ctr);
     return (uint64_t)((double)ctr.QuadPart / (double)freq.QuadPart * 1e9);
 #else
@@ -85,12 +86,12 @@ void            cpu_prof_sort_zones(void);
 
 #ifdef CPU_PROF_IMPL
 
-/* ── SQLite ─────────────────────────────────────────────────────────────── */
-
-#include "sqlite3.h"
 #include <stdio.h>
 
-#define CPU_PROF_BATCH_SIZE 60   /* flush every ~1s at 60fps */
+#ifdef CPU_PROF_USE_REMOTERY
+#include "Remotery.h"
+static Remotery *cpu_prof__rmt = NULL;
+#endif
 
 /* ── Global state ───────────────────────────────────────────────────────── */
 
@@ -106,142 +107,6 @@ static int16_t     cpu_prof__stack_zone_idx[CPU_PROF_MAX_STACK];
 static int         cpu_prof__stack_depth = 0;
 static int         cpu_prof__capture_enabled = 1;
 
-/* SQLite persistence state */
-static sqlite3      *cpu_prof__db = NULL;
-static sqlite3_stmt *cpu_prof__insert_stmt = NULL;
-static uint64_t      cpu_prof__frame_id = 0;
-static uint32_t      cpu_prof__batch_counter = 0;
-
-/* ── SQLite helpers ─────────────────────────────────────────────────────── */
-
-static void cpu_prof__db_init(void) {
-    int rc = sqlite3_open("build/profile.db", &cpu_prof__db);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "[cpu_profiler] sqlite3_open failed: %s\n",
-                cpu_prof__db ? sqlite3_errmsg(cpu_prof__db) : "unknown");
-        if (cpu_prof__db) {
-            sqlite3_close(cpu_prof__db);
-        }
-        cpu_prof__db = NULL;
-        return;
-    }
-
-    /* WAL mode for better concurrent read/write */
-    sqlite3_exec(cpu_prof__db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
-    sqlite3_exec(cpu_prof__db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
-
-    const char *create_sql =
-        "CREATE TABLE IF NOT EXISTS zones ("
-        "  frame_id  INTEGER NOT NULL,"
-        "  name      TEXT    NOT NULL,"
-        "  start_ns  INTEGER NOT NULL,"
-        "  duration_ns INTEGER NOT NULL,"
-        "  depth     INTEGER NOT NULL,"
-        "  parent_idx INTEGER NOT NULL DEFAULT -1"
-        ");"
-        "CREATE INDEX IF NOT EXISTS idx_zones_frame ON zones(frame_id);";
-
-    char *err = NULL;
-    rc = sqlite3_exec(cpu_prof__db, create_sql, NULL, NULL, &err);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "[cpu_profiler] create table failed: %s\n",
-                err ? err : "unknown");
-        if (err) sqlite3_free(err);
-        sqlite3_close(cpu_prof__db);
-        cpu_prof__db = NULL;
-        return;
-    }
-
-    /* Find the max frame_id so we continue from where we left off */
-    sqlite3_stmt *q = NULL;
-    cpu_prof__frame_id = 0;
-    rc = sqlite3_prepare_v2(cpu_prof__db,
-        "SELECT COALESCE(MAX(frame_id), 0) FROM zones;", -1, &q, NULL);
-    if (rc == SQLITE_OK && sqlite3_step(q) == SQLITE_ROW) {
-        cpu_prof__frame_id = (uint64_t)sqlite3_column_int64(q, 0);
-    }
-    if (q) sqlite3_finalize(q);
-
-    /* Backfill old DB schema created before parent_idx existed. */
-    sqlite3_exec(cpu_prof__db,
-                 "ALTER TABLE zones ADD COLUMN parent_idx INTEGER NOT NULL DEFAULT -1;",
-                 NULL, NULL, NULL);
-
-    cpu_prof__current_frame_id = cpu_prof__frame_id + 1;
-    if (cpu_prof__current_frame_id == 0) cpu_prof__current_frame_id = 1;
-
-    rc = sqlite3_prepare_v2(cpu_prof__db,
-        "INSERT INTO zones (frame_id, name, start_ns, duration_ns, depth, parent_idx) "
-        "VALUES (?, ?, ?, ?, ?, ?);", -1, &cpu_prof__insert_stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "[cpu_profiler] prepare insert failed: %s\n",
-                sqlite3_errmsg(cpu_prof__db));
-        sqlite3_close(cpu_prof__db);
-        cpu_prof__db = NULL;
-        return;
-    }
-
-    fprintf(stderr, "[cpu_profiler] SQLite initialized (frame_id=%llu)\n",
-            (unsigned long long)cpu_prof__frame_id);
-}
-
-static void cpu_prof__db_flush(void) {
-    if (!cpu_prof__db || !cpu_prof__insert_stmt) return;
-
-    sqlite3_exec(cpu_prof__db, "BEGIN;", NULL, NULL, NULL);
-
-    /* Walk the ring buffer for the last batch_counter frames */
-    uint32_t frames_to_flush = cpu_prof__batch_counter;
-    if (frames_to_flush > cpu_prof__frames_recorded) frames_to_flush = cpu_prof__frames_recorded;
-
-    for (uint32_t f = 0; f < frames_to_flush; f++) {
-        /* Walk backwards from most recently completed frame slot. */
-        int idx = (int)cpu_prof__write_idx - (int)f;
-        if (idx < 0) idx += CPU_PROF_MAX_FRAMES;
-
-        cpu_prof_frame *frame = &cpu_prof__frames[idx];
-        uint64_t fid = cpu_prof__slot_frame_id[idx];
-        if (fid == 0) continue;
-
-        for (uint16_t z = 0; z < frame->count; z++) {
-            sqlite3_reset(cpu_prof__insert_stmt);
-            sqlite3_bind_int64(cpu_prof__insert_stmt, 1, (sqlite3_int64)fid);
-            sqlite3_bind_text(cpu_prof__insert_stmt, 2,
-                              frame->names[z] ? frame->names[z] : "",
-                              -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(cpu_prof__insert_stmt, 3,
-                               (sqlite3_int64)frame->start_ns[z]);
-            sqlite3_bind_int64(cpu_prof__insert_stmt, 4,
-                               (sqlite3_int64)frame->duration_ns[z]);
-            sqlite3_bind_int(cpu_prof__insert_stmt, 5, frame->depth[z]);
-            sqlite3_bind_int(cpu_prof__insert_stmt, 6,
-                             frame->parent[z] == CPU_PROF_INVALID_PARENT
-                                 ? -1
-                                 : (int)frame->parent[z]);
-            sqlite3_step(cpu_prof__insert_stmt);
-        }
-    }
-
-    sqlite3_exec(cpu_prof__db, "COMMIT;", NULL, NULL, NULL);
-}
-
-static void cpu_prof__db_shutdown(void) {
-    if (!cpu_prof__db) return;
-
-    /* Final flush of any remaining frames */
-    if (cpu_prof__batch_counter > 0) {
-        cpu_prof__db_flush();
-        cpu_prof__batch_counter = 0;
-    }
-
-    if (cpu_prof__insert_stmt) {
-        sqlite3_finalize(cpu_prof__insert_stmt);
-        cpu_prof__insert_stmt = NULL;
-    }
-    sqlite3_close(cpu_prof__db);
-    cpu_prof__db = NULL;
-}
-
 /* ── API function bodies ────────────────────────────────────────────────── */
 
 void cpu_prof_init(void) {
@@ -252,12 +117,23 @@ void cpu_prof_init(void) {
     cpu_prof__stack_depth = 0;
     cpu_prof__capture_enabled = 1;
     memset(cpu_prof__stack_zone_idx, 0xFF, sizeof(cpu_prof__stack_zone_idx));
-    cpu_prof__batch_counter = 0;
-    cpu_prof__db_init();
+
+#ifdef CPU_PROF_USE_REMOTERY
+    rmtError err = rmt_CreateGlobalInstance(&cpu_prof__rmt);
+    if (err != RMT_ERROR_NONE) {
+        fprintf(stderr, "[cpu_profiler] Remotery init failed (%d)\n", (int)err);
+        cpu_prof__rmt = NULL;
+    }
+#endif
 }
 
 void cpu_prof_shutdown(void) {
-    cpu_prof__db_shutdown();
+#ifdef CPU_PROF_USE_REMOTERY
+    if (cpu_prof__rmt) {
+        rmt_DestroyGlobalInstance(cpu_prof__rmt);
+        cpu_prof__rmt = NULL;
+    }
+#endif
     cpu_prof__write_idx = 0;
     cpu_prof__frames_recorded = 0;
     cpu_prof__stack_depth = 0;
@@ -268,6 +144,10 @@ void cpu_prof_shutdown(void) {
 void cpu_zone_begin(const char *name) {
     if (!cpu_prof__capture_enabled) return;
     if (cpu_prof__stack_depth >= CPU_PROF_MAX_STACK) return;
+
+#ifdef CPU_PROF_USE_REMOTERY
+    if (cpu_prof__rmt) _rmt_BeginCPUSample(name, 0, NULL);
+#endif
 
     cpu_prof_frame *frame = &cpu_prof__frames[cpu_prof__write_idx];
     int d = cpu_prof__stack_depth;
@@ -321,22 +201,17 @@ void cpu_zone_end(void) {
 
     start_ns = frame->start_ns[(uint16_t)zone_idx];
     frame->duration_ns[(uint16_t)zone_idx] = end_ns - start_ns;
+
+#ifdef CPU_PROF_USE_REMOTERY
+    if (cpu_prof__rmt) _rmt_EndCPUSample();
+#endif
 }
 
 void cpu_prof_frame_end(void) {
     if (!cpu_prof__capture_enabled) return;
     /* Mark current slot as completed with its stable frame id. */
     cpu_prof__slot_frame_id[cpu_prof__write_idx] = cpu_prof__current_frame_id;
-    cpu_prof__frame_id = cpu_prof__current_frame_id;
     if (cpu_prof__frames_recorded < CPU_PROF_MAX_FRAMES) cpu_prof__frames_recorded++;
-
-    cpu_prof__batch_counter++;
-
-    /* Batch-flush to SQLite every CPU_PROF_BATCH_SIZE frames */
-    if (cpu_prof__batch_counter >= CPU_PROF_BATCH_SIZE) {
-        cpu_prof__db_flush();
-        cpu_prof__batch_counter = 0;
-    }
 
     /* Advance write index, wrapping around the ring buffer */
     cpu_prof__write_idx = (cpu_prof__write_idx + 1) % CPU_PROF_MAX_FRAMES;
