@@ -26,6 +26,7 @@
 #define CACHE_PROF_IMPL
 #include "cache_profiler.h"
 
+#define CPU_PROF_DLL_EXPORT
 #define CPU_PROF_IMPL
 #include "cpu_profiler.h"
 
@@ -2029,7 +2030,9 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.length = g->editor.profiler_cmd_count;
     commands.internalArray = (Clay_RenderCommand *)g->editor.profiler_cmd_array;
 
+    FRAME_CPU_ZONE_BEGIN("prof_build_verts");
     ui_build_vertices(&ui_profiler, commands);
+    FRAME_CPU_ZONE_END();
 
     /* Append scrollbar thumb as an extra rect.
        Uses scroll data + PTreeScroll bounding box exported by profiler_layout. */
@@ -2061,9 +2064,12 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
         }
     }
 
+    FRAME_CPU_ZONE_BEGIN("prof_ui_upload");
     ui_upload(cmd_buf, &ui_profiler);
+    FRAME_CPU_ZONE_END();
 
     /* Upload grid pixel buffer to GPU texture + build quad vertex buffer (copy pass) */
+    FRAME_CPU_ZONE_BEGIN("prof_grid_gpu_upload");
     {
         editor_state *e = &g->editor;
         int gw = e->prof_grid_w, gh = e->prof_grid_h;
@@ -2093,6 +2099,7 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
             }
 
             /* Upload pixels via transfer buffer */
+            FRAME_CPU_ZONE_BEGIN("grid:tex_transfer");
             {
                 Uint32 pixel_size = (Uint32)(gw * gh * 4);
                 SDL_GPUTransferBufferCreateInfo tbi = {0};
@@ -2115,8 +2122,10 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
                 SDL_EndGPUCopyPass(copy);
                 SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
             }
+            FRAME_CPU_ZONE_END();
 
             /* Build and upload quad vertex buffer (pixel → NDC) */
+            FRAME_CPU_ZONE_BEGIN("grid:quad_transfer");
             {
                 float x0 = e->prof_grid_x, y0 = e->prof_grid_y;
                 float x1 = x0 + e->prof_grid_bw, y1 = y0 + e->prof_grid_bh;
@@ -2158,8 +2167,10 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
                 SDL_EndGPUCopyPass(vcopy);
                 SDL_ReleaseGPUTransferBuffer(gpu_device, vxfer);
             }
+            FRAME_CPU_ZONE_END(); /* grid:quad_transfer */
         }
     }
+    FRAME_CPU_ZONE_END(); /* prof_grid_gpu_upload */
 }
 
 static void scene_tree_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
@@ -4004,18 +4015,6 @@ EXPORT int update_externals(void) {
     FRAME_CPU_ZONE_END();
     BOOT_PROF_END(TP_FRAME_EDITOR_UPDATE);
 
-    cpu_prof_capture_paused = (g_mem->editor.cpu_prof_timeline_paused != 0);
-    cpu_prof_set_capture_enabled(!cpu_prof_capture_paused);
-    if (!cpu_prof_capture_paused) {
-        if (cpu_prof_capture_was_paused) {
-            /* Discard stale pre-pause data so resumed capture starts cleanly. */
-            cpu_prof_clear_current_frame();
-        } else {
-            cpu_prof_frame_end();
-        }
-    }
-    cpu_prof_capture_was_paused = cpu_prof_capture_paused;
-
     // --- Panel textures (after dock_layout in editor, which set node rects) ---
     FRAME_CPU_ZONE_BEGIN("ensure_panel_textures");
     ensure_panel_textures(dock);
@@ -4452,8 +4451,13 @@ EXPORT int update_externals(void) {
         float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
         memcpy(prof_uniforms.view, identity, sizeof(identity));
 
+        FRAME_CPU_ZONE_BEGIN("prof_ui_draw");
         ui_draw(prof_pass, cmd_buf, &prof_uniforms, &ui_profiler);
+        FRAME_CPU_ZONE_END();
+
+        FRAME_CPU_ZONE_BEGIN("prof_grid_draw");
         grid_tex_draw(prof_pass, cmd_buf);
+        FRAME_CPU_ZONE_END();
 
         SDL_EndGPURenderPass(prof_pass);
         FRAME_CPU_ZONE_END();
@@ -5078,7 +5082,21 @@ EXPORT int update_externals(void) {
     if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
     FRAME_CPU_ZONE_END();
 
-    FRAME_CPU_ZONE_END();
+    FRAME_CPU_ZONE_END(); /* update_externals */
+
+    /* Commit the completed frame to the ring buffer.
+       ALL zones (externals + editor + engine) are now recorded. */
+    cpu_prof_capture_paused = (g_mem->editor.cpu_prof_timeline_paused != 0);
+    cpu_prof_set_capture_enabled(!cpu_prof_capture_paused);
+    if (!cpu_prof_capture_paused) {
+        if (cpu_prof_capture_was_paused) {
+            cpu_prof_clear_current_frame();
+        } else {
+            cpu_prof_frame_end();
+        }
+    }
+    cpu_prof_capture_was_paused = cpu_prof_capture_paused;
+
     return g_mem->game.play;
 }
 

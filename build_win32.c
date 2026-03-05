@@ -30,7 +30,7 @@
 #define TCC_EDITOR_CMD \
     ".\\tcc.exe -Blib/tcc-windows -shared" \
     " -o build/Debug/editor.dll" \
-    " -DCLAY_DISABLE_SIMD -DCPU_PROF_IMPL -DCACHE_PROF_IMPL" \
+    " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay -Ilib/toml-c -Ilib/sqlite" \
     " src/editor/editor.c" \
@@ -39,6 +39,7 @@
     " src/project.c" \
     " lib/sqlite/sqlite3.c" \
     " build/Debug/SDL3.def" \
+    " build/Debug/externals.def" \
     " lib/tcc-windows/lib/ws2_32.def"
 
 #define TCC_CORE_CMD \
@@ -68,6 +69,13 @@
     " -o build/Debug/test_inspector.exe" \
     " -Isrc -Isrc/editor" \
     " tests/test_inspector.c"
+
+#define TCC_TEST_HOTRELOAD_CMD \
+    ".\\tcc.exe -Blib/tcc-windows" \
+    " -o build/Debug/test_hotreload.exe" \
+    " -DCLAY_DISABLE_SIMD" \
+    " -Isrc -Isrc/editor -Ilib/clay" \
+    " tests/test_hotreload.c"
 
 /* ------- SDL3 platform sources ------------------------------------------ */
 

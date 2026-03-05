@@ -1,0 +1,40 @@
+[Unit]
+Description=Anitra Collaborative Editing Relay Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anitra
+Group=anitra
+ExecStart=/opt/anitra/collab_server --port 7777
+WorkingDirectory=/opt/anitra
+
+# Restart policy
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadOnlyPaths=/
+ReadWritePaths=/opt/anitra
+
+# Resource limits
+LimitNOFILE=256
+MemoryMax=64M
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=collab_server
+
+[Install]
+WantedBy=multi-user.target

@@ -66,6 +66,13 @@
     " -Isrc -Isrc/editor" \
     " tests/test_inspector.c"
 
+#define TCC_TEST_HOTRELOAD_CMD \
+    "lib/tcc/macos/tcc -Blib/tcc/macos" \
+    " -o build/Debug/test_hotreload" \
+    " -DCLAY_DISABLE_SIMD" \
+    " -Isrc -Isrc/editor -Ilib/clay" \
+    " tests/test_hotreload.c"
+
 /* ------- SDL3 platform sources ------------------------------------------ */
 
 static const char *sdl3_sources_platform[] = {

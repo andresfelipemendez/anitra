@@ -75,11 +75,22 @@ static DWORD WINAPI waitforeditorreloadsignal(LPVOID param) {
 }
 #endif
 
+/* PID-based copy names — built once, used for initial load + hot-reload */
+static char engine_copy_name[64];
+static char editor_copy_name[64];
+
 EXPORT int init_core(const char *project_path) {
   int reload;
   printf("Core initialized\n");
 
+  /* Build PID-based copy names so multiple instances don't collide */
 #ifdef _WIN32
+  {
+    unsigned long pid = (unsigned long)GetCurrentProcessId();
+    snprintf(engine_copy_name, sizeof(engine_copy_name), "engine_%lu", pid);
+    snprintf(editor_copy_name, sizeof(editor_copy_name), "editor_%lu", pid);
+  }
+
   HANDLE hEngineEvent = CreateEvent(NULL, TRUE, FALSE, HOTRELOAD_EVENT_NAME);
   HANDLE hEditorEvent;
 
@@ -92,15 +103,20 @@ EXPORT int init_core(const char *project_path) {
     printf("CreateEvent (editor) failed (%lu)\n", GetLastError());
   }
 #else
+  {
+    int pid = (int)getpid();
+    snprintf(engine_copy_name, sizeof(engine_copy_name), "engine_%d", pid);
+    snprintf(editor_copy_name, sizeof(editor_copy_name), "editor_%d", pid);
+  }
   /* Avoid stale file signals causing immediate reload after launch */
   clear_reload_signal_files();
 #endif
 
   /* Load engine DLL (copy first so engine.dll stays unlocked) */
-  copylibrary("engine", "engine_copy");
-  engine_lib = loadlibrary("engine_copy");
+  copylibrary("engine", engine_copy_name);
+  engine_lib = loadlibrary(engine_copy_name);
   if (!engine_lib) {
-    fprintf(stderr, "Failed to load engine_copy.dll\n");
+    fprintf(stderr, "Failed to load %s.dll\n", engine_copy_name);
     return 1;
   }
 
@@ -128,8 +144,8 @@ EXPORT int init_core(const char *project_path) {
   }
 
   /* Load editor DLL (copy first so editor.dll stays unlocked) */
-  copylibrary("editor", "editor_copy");
-  editor_lib = loadlibrary("editor_copy");
+  copylibrary("editor", editor_copy_name);
+  editor_lib = loadlibrary(editor_copy_name);
   if (editor_lib) {
     editor_init_fn init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
     editor_destroy_fn destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
@@ -224,10 +240,10 @@ int begin_game_loop(void) {
       printf("Reloading engine...\n");
 
       unloadlibrary(engine_lib);
-      copylibrary("engine", "engine_copy");
-      engine_lib = loadlibrary("engine_copy");
+      copylibrary("engine", engine_copy_name);
+      engine_lib = loadlibrary(engine_copy_name);
       if (!engine_lib) {
-        fprintf(stderr, "Failed to reload engine_copy.dll\n");
+        fprintf(stderr, "Failed to reload %s.dll\n", engine_copy_name);
         continue;
       }
 
@@ -273,10 +289,10 @@ int begin_game_loop(void) {
       printf("Reloading editor...\n");
 
       unloadlibrary(editor_lib);
-      copylibrary("editor", "editor_copy");
-      editor_lib = loadlibrary("editor_copy");
+      copylibrary("editor", editor_copy_name);
+      editor_lib = loadlibrary(editor_copy_name);
       if (!editor_lib) {
-        fprintf(stderr, "Failed to reload editor_copy.dll\n");
+        fprintf(stderr, "Failed to reload %s.dll\n", editor_copy_name);
         continue;
       }
 

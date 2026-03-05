@@ -11,6 +11,8 @@ static double _boot_ms(LARGE_INTEGER start) {
   QueryPerformanceFrequency(&freq);
   return (double)(now.QuadPart - start.QuadPart) * 1000.0 / (double)freq.QuadPart;
 }
+#else
+#include <unistd.h>
 #endif
 
 static const char *resolve_project_path(int argc, char **argv) {
@@ -36,10 +38,23 @@ static const char *resolve_project_path(int argc, char **argv) {
 int main(int argc, char **argv) {
   const char *project_path = resolve_project_path(argc, argv);
 
+  /* Build PID-based copy names so multiple instances don't collide */
+  char ext_copy[64], core_copy[64];
 #ifdef _WIN32
   LARGE_INTEGER t0;
+  {
+    unsigned long pid = (unsigned long)GetCurrentProcessId();
+    snprintf(ext_copy, sizeof(ext_copy), "externals_%lu", pid);
+    snprintf(core_copy, sizeof(core_copy), "core_%lu", pid);
+  }
   QueryPerformanceCounter(&t0);
   printf("[boot] start\n");
+#else
+  {
+    int pid = (int)getpid();
+    snprintf(ext_copy, sizeof(ext_copy), "externals_%d", pid);
+    snprintf(core_copy, sizeof(core_copy), "core_%d", pid);
+  }
 #endif
 
   while (1) {
@@ -47,7 +62,7 @@ int main(int argc, char **argv) {
     init_core_func init;
     int result;
 
-    if (copylibrary("externals", "externals_copy") != 0) {
+    if (copylibrary("externals", ext_copy) != 0) {
       fprintf(stderr, "Failed to copy externals.dll\n");
       return 1;
     }
@@ -55,7 +70,7 @@ int main(int argc, char **argv) {
     printf("[boot] copy externals: %.2f ms\n", _boot_ms(t0));
 #endif
 
-    if (copylibrary("core", "core_copy") != 0) {
+    if (copylibrary("core", core_copy) != 0) {
       fprintf(stderr, "Failed to copy core.dll\n");
       return 1;
     }
@@ -63,13 +78,13 @@ int main(int argc, char **argv) {
     printf("[boot] copy core: %.2f ms\n", _boot_ms(t0));
 #endif
 
-    lib = loadlibrary("core_copy");
+    lib = loadlibrary(core_copy);
     if (lib == NULL) {
-      fprintf(stderr, "Failed to load core_copy.dll\n");
+      fprintf(stderr, "Failed to load %s.dll\n", core_copy);
       return 1;
     }
 #ifdef _WIN32
-    printf("[boot] load core_copy: %.2f ms\n", _boot_ms(t0));
+    printf("[boot] load %s: %.2f ms\n", core_copy, _boot_ms(t0));
 #endif
 
     init = (init_core_func)getfunction(lib, "init_core");

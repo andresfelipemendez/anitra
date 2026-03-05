@@ -1,0 +1,72 @@
+name: Deploy Collab Server
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'server/**'
+      - 'src/project.c'
+      - 'src/project.h'
+      - 'src/collab/collab_ops.h'
+      - 'lib/toml-c/**'
+      - '.github/workflows/deploy-collab-server.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build collab_server
+        run: |
+          cc -O2 -o collab_server \
+            -Isrc -Ilib/toml-c \
+            server/collab_server.c src/project.c
+          file collab_server
+          ls -lh collab_server
+
+      - name: Copy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          source: "collab_server,server/collab_server.service,server/deploy-setup.sh"
+          target: "/tmp/anitra-deploy"
+          overwrite: true
+
+      - name: Deploy and restart
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          script: |
+            set -e
+
+            # First-time setup if service doesn't exist yet
+            if ! systemctl list-unit-files | grep -q collab_server.service; then
+              echo "=== First-time setup ==="
+              bash /tmp/anitra-deploy/server/deploy-setup.sh
+            fi
+
+            # Install binary
+            sudo install -o anitra -g anitra -m 755 \
+              /tmp/anitra-deploy/collab_server /opt/anitra/collab_server
+
+            # Update service file
+            sudo cp /tmp/anitra-deploy/server/collab_server.service \
+              /etc/systemd/system/collab_server.service
+            sudo systemctl daemon-reload
+
+            # Restart and verify
+            sudo systemctl restart collab_server
+            sleep 2
+            sudo systemctl status collab_server --no-pager
+
+            # Cleanup
+            rm -rf /tmp/anitra-deploy

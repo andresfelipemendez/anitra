@@ -64,21 +64,31 @@ typedef struct {
     uint16_t    count;
 } cpu_prof_frame;
 
+/* ── DLL export decoration ──────────────────────────────────────────────── */
+/* Define CPU_PROF_DLL_EXPORT in the DLL that owns the profiler state
+   (externals.dll) so all functions get __declspec(dllexport).
+   Other DLLs (editor.dll) link against the .def file and import them. */
+#if defined(CPU_PROF_DLL_EXPORT) && defined(_WIN32)
+#define CPU_PROF_API __declspec(dllexport)
+#else
+#define CPU_PROF_API
+#endif
+
 /* ── API Declarations ───────────────────────────────────────────────────── */
 
-void            cpu_prof_init(void);
-void            cpu_prof_shutdown(void);
-void            cpu_zone_begin(const char *name);
-void            cpu_zone_end(void);
-void            cpu_prof_frame_end(void);
-void            cpu_prof_clear_current_frame(void);
-void            cpu_prof_set_capture_enabled(int enabled);
-int             cpu_prof_get_capture_enabled(void);
-cpu_prof_frame *cpu_prof_get_frame(void);
-cpu_prof_frame *cpu_prof_get_frame_at_offset(uint16_t frames_back);
-uint64_t        cpu_prof_get_frame_id_at_offset(uint16_t frames_back);
-int             cpu_prof_get_history_count(void);
-void            cpu_prof_sort_zones(void);
+CPU_PROF_API void            cpu_prof_init(void);
+CPU_PROF_API void            cpu_prof_shutdown(void);
+CPU_PROF_API void            cpu_zone_begin(const char *name);
+CPU_PROF_API void            cpu_zone_end(void);
+CPU_PROF_API void            cpu_prof_frame_end(void);
+CPU_PROF_API void            cpu_prof_clear_current_frame(void);
+CPU_PROF_API void            cpu_prof_set_capture_enabled(int enabled);
+CPU_PROF_API int             cpu_prof_get_capture_enabled(void);
+CPU_PROF_API cpu_prof_frame *cpu_prof_get_frame(void);
+CPU_PROF_API cpu_prof_frame *cpu_prof_get_frame_at_offset(uint16_t frames_back);
+CPU_PROF_API uint64_t        cpu_prof_get_frame_id_at_offset(uint16_t frames_back);
+CPU_PROF_API int             cpu_prof_get_history_count(void);
+CPU_PROF_API void            cpu_prof_sort_zones(void);
 
 #define CPU_PROF_INVALID_PARENT 0xFFFFu
 
@@ -109,7 +119,7 @@ static int         cpu_prof__capture_enabled = 1;
 
 /* ── API function bodies ────────────────────────────────────────────────── */
 
-void cpu_prof_init(void) {
+CPU_PROF_API void cpu_prof_init(void) {
     memset(cpu_prof__frames, 0, sizeof(cpu_prof__frames));
     memset(cpu_prof__slot_frame_id, 0, sizeof(cpu_prof__slot_frame_id));
     cpu_prof__write_idx = 0;
@@ -127,7 +137,7 @@ void cpu_prof_init(void) {
 #endif
 }
 
-void cpu_prof_shutdown(void) {
+CPU_PROF_API void cpu_prof_shutdown(void) {
 #ifdef CPU_PROF_USE_REMOTERY
     if (cpu_prof__rmt) {
         rmt_DestroyGlobalInstance(cpu_prof__rmt);
@@ -141,7 +151,7 @@ void cpu_prof_shutdown(void) {
     memset(cpu_prof__slot_frame_id, 0, sizeof(cpu_prof__slot_frame_id));
 }
 
-void cpu_zone_begin(const char *name) {
+CPU_PROF_API void cpu_zone_begin(const char *name) {
     if (!cpu_prof__capture_enabled) return;
     if (cpu_prof__stack_depth >= CPU_PROF_MAX_STACK) return;
 
@@ -184,7 +194,7 @@ void cpu_zone_begin(const char *name) {
     cpu_prof__stack_depth = d + 1;
 }
 
-void cpu_zone_end(void) {
+CPU_PROF_API void cpu_zone_end(void) {
     if (!cpu_prof__capture_enabled) return;
     if (cpu_prof__stack_depth <= 0) return;
 
@@ -207,7 +217,7 @@ void cpu_zone_end(void) {
 #endif
 }
 
-void cpu_prof_frame_end(void) {
+CPU_PROF_API void cpu_prof_frame_end(void) {
     if (!cpu_prof__capture_enabled) return;
     /* Mark current slot as completed with its stable frame id. */
     cpu_prof__slot_frame_id[cpu_prof__write_idx] = cpu_prof__current_frame_id;
@@ -227,13 +237,13 @@ void cpu_prof_frame_end(void) {
     memset(cpu_prof__stack_zone_idx, 0xFF, sizeof(cpu_prof__stack_zone_idx));
 }
 
-void cpu_prof_clear_current_frame(void) {
+CPU_PROF_API void cpu_prof_clear_current_frame(void) {
     cpu_prof__frames[cpu_prof__write_idx].count = 0;
     cpu_prof__stack_depth = 0;
     memset(cpu_prof__stack_zone_idx, 0xFF, sizeof(cpu_prof__stack_zone_idx));
 }
 
-void cpu_prof_set_capture_enabled(int enabled) {
+CPU_PROF_API void cpu_prof_set_capture_enabled(int enabled) {
     cpu_prof__capture_enabled = enabled ? 1 : 0;
     if (!cpu_prof__capture_enabled) {
         cpu_prof__stack_depth = 0;
@@ -241,15 +251,15 @@ void cpu_prof_set_capture_enabled(int enabled) {
     }
 }
 
-int cpu_prof_get_capture_enabled(void) {
+CPU_PROF_API int cpu_prof_get_capture_enabled(void) {
     return cpu_prof__capture_enabled;
 }
 
-cpu_prof_frame *cpu_prof_get_frame(void) {
+CPU_PROF_API cpu_prof_frame *cpu_prof_get_frame(void) {
     return &cpu_prof__frames[cpu_prof__write_idx];
 }
 
-cpu_prof_frame *cpu_prof_get_frame_at_offset(uint16_t frames_back) {
+CPU_PROF_API cpu_prof_frame *cpu_prof_get_frame_at_offset(uint16_t frames_back) {
     int idx;
     if (frames_back >= cpu_prof__frames_recorded) return NULL;
     idx = (int)cpu_prof__write_idx - (int)frames_back;
@@ -258,7 +268,7 @@ cpu_prof_frame *cpu_prof_get_frame_at_offset(uint16_t frames_back) {
     return &cpu_prof__frames[idx];
 }
 
-uint64_t cpu_prof_get_frame_id_at_offset(uint16_t frames_back) {
+CPU_PROF_API uint64_t cpu_prof_get_frame_id_at_offset(uint16_t frames_back) {
     int idx;
     if (frames_back >= cpu_prof__frames_recorded) return 0;
     idx = (int)cpu_prof__write_idx - (int)frames_back;
@@ -266,11 +276,11 @@ uint64_t cpu_prof_get_frame_id_at_offset(uint16_t frames_back) {
     return cpu_prof__slot_frame_id[idx];
 }
 
-int cpu_prof_get_history_count(void) {
+CPU_PROF_API int cpu_prof_get_history_count(void) {
     return (int)cpu_prof__frames_recorded;
 }
 
-void cpu_prof_sort_zones(void) {
+CPU_PROF_API void cpu_prof_sort_zones(void) {
     /* Insertion sort by duration_ns descending */
     cpu_prof_frame *frame = &cpu_prof__frames[cpu_prof__write_idx];
     uint16_t n = frame->count;

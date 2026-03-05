@@ -6,6 +6,8 @@
 			 build.cmd
  * Usage:    builder          (build only)
  *           builder watch    (build, launch engine, and watch for changes)
+ *           builder collab   (build + server + 2 editors + watch)
+ *           builder server   (build collab server only)
  *
  * This is a single-file C89 build system that replaces CMake.
  * It invokes the platform's native toolchain directly via system().
@@ -1198,6 +1200,13 @@ static int build_test(void)
         return 1;
     }
 
+    printf(">> " TCC_TEST_HOTRELOAD_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_HOTRELOAD_CMD) != 0) {
+        printf("!! test_hotreload build failed.\n");
+        return 1;
+    }
+
     printf("\n=== Running tests ===\n");
     fflush(stdout);
 #ifdef _WIN32
@@ -1214,6 +1223,14 @@ static int build_test(void)
     if (system("build/Debug/test_inspector") != 0) {
 #endif
         printf("!! test_inspector failed.\n");
+        failed = 1;
+    }
+#ifdef _WIN32
+    if (system("build\\Debug\\test_hotreload.exe") != 0) {
+#else
+    if (system("build/Debug/test_hotreload") != 0) {
+#endif
+        printf("!! test_hotreload failed.\n");
         failed = 1;
     }
 
@@ -2121,6 +2138,196 @@ static int build_and_run(void)
 #endif
 }
 
+/* ------- collab (server + 2 editors + watch) ----------------------------- */
+static int build_collab(void)
+{
+    char project_path[PATH_SIZE];
+    const char *project_include;
+
+    printf("=== Building collab (server + 2 editors) ===\n\n");
+
+    /* Build everything including server */
+    if (build_all() != 0) return 1;
+    if (build_server() != 0) return 1;
+
+    /* Find project path */
+    project_include = NULL;
+    project_path[0] = '\0';
+    if (read_project_include_path(project_path, sizeof(project_path))) {
+        project_include = project_path;
+    } else if (file_exists_regular(DEFAULT_PROJECT_TOML)) {
+        snprintf(project_path, sizeof(project_path), "%s", DEFAULT_PROJECT_TOML);
+        project_include = project_path;
+    }
+
+    printf("\n=== Launching collab server + 2 editors ===\n");
+
+    /* Signal editors to auto-connect to collab server on launch.
+       Child processes inherit the parent's environment. */
+#ifdef _WIN32
+    SetEnvironmentVariableA("ANITRA_COLLAB", "1");
+#else
+    setenv("ANITRA_COLLAB", "1", 1);
+#endif
+
+#ifdef _WIN32
+    {
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi_server = {0}, pi_editor1 = {0}, pi_editor2 = {0};
+        char cmdline[CMD_MAX];
+
+        /* 1. Launch collab server */
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        if (project_include) {
+            snprintf(cmdline, sizeof(cmdline),
+                     "\"%s/collab_server.exe\" --port 7777 --project \"%s\"",
+                     DEBUG_DIR, project_include);
+        } else {
+            snprintf(cmdline, sizeof(cmdline),
+                     "\"%s/collab_server.exe\" --port 7777", DEBUG_DIR);
+        }
+        if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0,
+                            NULL, NULL, &si, &pi_server)) {
+            printf("!! Failed to launch collab server (error %lu)\n",
+                   GetLastError());
+            return 1;
+        }
+        printf("   Server launched (PID: %lu)\n",
+               (unsigned long)pi_server.dwProcessId);
+        CloseHandle(pi_server.hThread);
+
+        /* Brief pause to let the server bind */
+        Sleep(500);
+
+        /* 2. Launch editor 1 */
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        if (project_include) {
+            snprintf(cmdline, sizeof(cmdline),
+                     "\"%s/AnitraEngine.exe\" --include \"%s\"",
+                     DEBUG_DIR, project_include);
+        } else {
+            snprintf(cmdline, sizeof(cmdline),
+                     "\"%s/AnitraEngine.exe\"", DEBUG_DIR);
+        }
+        if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0,
+                            NULL, NULL, &si, &pi_editor1)) {
+            printf("!! Failed to launch editor 1 (error %lu)\n",
+                   GetLastError());
+            TerminateProcess(pi_server.hProcess, 0);
+            CloseHandle(pi_server.hProcess);
+            return 1;
+        }
+        printf("   Editor 1 launched (PID: %lu)\n",
+               (unsigned long)pi_editor1.dwProcessId);
+        CloseHandle(pi_editor1.hThread);
+
+        /* 3. Launch editor 2 */
+        memset(&si, 0, sizeof(si));
+        si.cb = sizeof(si);
+        /* Reuse same cmdline */
+        if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0,
+                            NULL, NULL, &si, &pi_editor2)) {
+            printf("!! Failed to launch editor 2 (error %lu)\n",
+                   GetLastError());
+            TerminateProcess(pi_server.hProcess, 0);
+            CloseHandle(pi_server.hProcess);
+            CloseHandle(pi_editor1.hProcess);
+            return 1;
+        }
+        printf("   Editor 2 launched (PID: %lu)\n",
+               (unsigned long)pi_editor2.dwProcessId);
+        CloseHandle(pi_editor2.hThread);
+
+        /* Watch mode: set editor 1 as the "engine process" so watch exits
+           when editor 1 closes */
+        g_engine_process = pi_editor1.hProcess;
+        {
+            int rc = watch_and_rebuild();
+
+            /* Cleanup: terminate server and remaining editor */
+            printf("\n--- Stopping collab session... ---\n");
+            TerminateProcess(pi_server.hProcess, 0);
+            TerminateProcess(pi_editor2.hProcess, 0);
+            CloseHandle(pi_server.hProcess);
+            CloseHandle(pi_editor1.hProcess);
+            CloseHandle(pi_editor2.hProcess);
+            g_engine_process = NULL;
+            return rc;
+        }
+    }
+#else
+    {
+        pid_t server_pid, editor2_pid;
+        char engine_path[PATH_SIZE];
+        char server_path[PATH_SIZE];
+
+        snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
+        snprintf(server_path, PATH_SIZE, "%s/collab_server", DEBUG_DIR);
+
+        /* 1. Fork collab server */
+        server_pid = fork();
+        if (server_pid < 0) { printf("!! Failed to fork server\n"); return 1; }
+        if (server_pid == 0) {
+            if (project_include)
+                execl(server_path, "collab_server",
+                      "--port", "7777", "--project", project_include, NULL);
+            else
+                execl(server_path, "collab_server", "--port", "7777", NULL);
+            printf("!! Failed to exec server\n");
+            exit(1);
+        }
+        printf("   Server launched (PID: %d)\n", server_pid);
+
+        /* Brief pause to let the server bind */
+        usleep(500000);
+
+        /* 2. Fork editor 1 */
+        {
+            pid_t pid = fork();
+            if (pid < 0) { printf("!! Failed to fork editor 1\n");
+                           kill(server_pid, SIGTERM); return 1; }
+            if (pid == 0) {
+                if (project_include)
+                    execl(engine_path, "AnitraEngine",
+                          "--include", project_include, NULL);
+                else
+                    execl(engine_path, "AnitraEngine", NULL);
+                printf("!! Failed to exec editor 1\n");
+                exit(1);
+            }
+            printf("   Editor 1 launched (PID: %d)\n", pid);
+            g_engine_pid = pid;
+        }
+
+        /* 3. Fork editor 2 */
+        editor2_pid = fork();
+        if (editor2_pid < 0) { printf("!! Failed to fork editor 2\n");
+                               kill(server_pid, SIGTERM); return 1; }
+        if (editor2_pid == 0) {
+            if (project_include)
+                execl(engine_path, "AnitraEngine",
+                      "--include", project_include, NULL);
+            else
+                execl(engine_path, "AnitraEngine", NULL);
+            printf("!! Failed to exec editor 2\n");
+            exit(1);
+        }
+        printf("   Editor 2 launched (PID: %d)\n", editor2_pid);
+
+        /* Watch mode */
+        {
+            int rc = watch_and_rebuild();
+            printf("\n--- Stopping collab session... ---\n");
+            kill(server_pid, SIGTERM);
+            kill(editor2_pid, SIGTERM);
+            return rc;
+        }
+    }
+#endif
+}
+
 /* ========================================================================= */
 /* main                                                                       */
 /* ========================================================================= */
@@ -2131,6 +2338,9 @@ int main(int argc, char **argv)
 
     if (argc > 1 && strcmp(argv[1], "watch") == 0) {
         return build_and_run();
+    }
+    if (argc > 1 && strcmp(argv[1], "collab") == 0) {
+        return build_collab();
     }
     if (argc > 1 && strcmp(argv[1], "server") == 0) {
         return build_server();

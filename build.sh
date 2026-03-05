@@ -8,4 +8,9 @@ if [ "$(uname -s)" != "Linux" ]; then
     exit 1
 fi
 
+# Kill any running instances so the binary can be overwritten
+killall AnitraEngine 2>/dev/null
+killall collab_server 2>/dev/null
+killall builder 2>/dev/null
+
 ./tcc -Blib/tcc-linux -o builder build.c

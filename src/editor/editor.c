@@ -315,6 +315,7 @@ typedef struct FlatRecord {
     uint32_t    offset;
     uint32_t    size;
     int         color_idx;
+    uint8_t     cr, cg, cb; /* precomputed pixel color (set by grid fill) */
 } FlatRecord;
 
 /* Flatten arena into leaf records for block/grid views.
@@ -3279,7 +3280,42 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             "mig_editor_state");
     }
 
-    if (e->initialized) return;
+    /* ── Post-reload fixup ─────────────────────────────────────────
+       After editor.dll hot-reload, Clay's file-scope globals
+       (Clay__currentContext, Clay__MeasureText, Clay__QueryScrollOffset)
+       are zeroed because CLAY_IMPLEMENTATION lives in editor.dll.
+       Re-wire the measure-text callback for every persisted Clay context
+       so text layout works immediately on the next frame.
+       ────────────────────────────────────────────────────────────── */
+    if (e->initialized) {
+        void *clay_ctxs[] = {
+            e->profiler_clay_ctx,
+            e->scene_tree_clay_ctx,
+            e->inspector_clay_ctx,
+            e->project_browser_clay_ctx,
+            e->menu_bar_clay_ctx,
+            e->editor_toolbar_clay_ctx,
+            e->cache_prof_clay_ctx,
+            e->cpu_prof_clay_ctx,
+        };
+        int i;
+        for (i = 0; i < (int)(sizeof(clay_ctxs) / sizeof(clay_ctxs[0])); i++) {
+            if (clay_ctxs[i]) {
+                Clay_SetCurrentContext((Clay_Context *)clay_ctxs[i]);
+                Clay_SetMeasureTextFunction(profiler_measure_text, e);
+            }
+        }
+        /* Publish editor Clay context to externals (may reference old ptr) */
+        es->clay_editor = e->profiler_clay_ctx;
+
+        /* Re-init cache profiler statics (CACHE_PROF_IMPL is compiled into
+           editor.dll, so its file-scope data is also zeroed on reload) */
+        cache_prof_init();
+
+        fprintf(stderr, "Editor hot-reload: re-wired %d Clay contexts\n",
+                (int)(sizeof(clay_ctxs) / sizeof(clay_ctxs[0])));
+        return;
+    }
 
     /* ── Defaults (conditional to preserve migrated values) ─────── */
     ED_BOOT_PROF(gs, TP_ED_DEFAULTS);
@@ -3351,8 +3387,19 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->initialized = 1;
 
     /* Init collab state (only if not already connected — survives hot-reload) */
-    if (!e->collab.connected && !e->collab.connecting)
+    if (!e->collab.connected && !e->collab.connecting) {
         collab_init(&e->collab);
+
+        /* Auto-connect when launched via `build.exe collab` —
+           the builder sets ANITRA_COLLAB=1 in the environment */
+        {
+            const char *auto_collab = getenv("ANITRA_COLLAB");
+            if (auto_collab && auto_collab[0] == '1') {
+                fprintf(stderr, "Collab: auto-connecting to 127.0.0.1:7777...\n");
+                collab_connect(&e->collab, "127.0.0.1", 7777);
+            }
+        }
+    }
 
     cache_prof_init();
 
@@ -3652,9 +3699,11 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                             HoverInfo hi = {0};
                             int row_id = 0;
                             int tree_color = 0;
+                            EDITOR_CPU_ZONE_BEGIN(e, "prof_tree_walk");
                             profiler_tree_arena(a, 1, &row_id, 0, &hi,
                                                 &tree_color, click, e->profiler_tree_collapsed,
                                                 cpu_focus_tag);
+                            EDITOR_CPU_ZONE_END(e);
                             hover_offset = hi.offset;
                             hover_size = hi.size;
                             have_hover = hi.found;
@@ -3752,77 +3801,92 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     /* Export PGridTex bounding box + build pixel buffer for GPU texture */
     EDITOR_CPU_ZONE_BEGIN(e, "prof_grid_pixels");
     {
-        Clay_ElementData gd = Clay_GetElementData(CLAY_ID("PGridTex"));
-        if (gd.found) {
-            e->prof_grid_x  = gd.boundingBox.x;
-            e->prof_grid_y  = gd.boundingBox.y;
-            e->prof_grid_bw = gd.boundingBox.width;
-            e->prof_grid_bh = gd.boundingBox.height;
-        }
+        uint32_t cell_size = 64 * 1024;
+        uint32_t total_cells;
+        int grid_cols, grid_rows;
+        int total_px, row, col, i;
 
-        /* Build grid pixel buffer: each pixel = one 64KB arena cell */
+        /* --- Sub-zone: Clay bounding box lookup --- */
+        EDITOR_CPU_ZONE_BEGIN(e, "grid:bbox");
         {
-            uint32_t cell_size = 64 * 1024;
-            uint32_t total_cells = (a->capacity + cell_size - 1) / cell_size;
-            int grid_cols = 16;
-            int grid_rows = ((int)total_cells + grid_cols - 1) / grid_cols;
-            int row, col;
+            Clay_ElementData gd = Clay_GetElementData(CLAY_ID("PGridTex"));
+            if (gd.found) {
+                e->prof_grid_x  = gd.boundingBox.x;
+                e->prof_grid_y  = gd.boundingBox.y;
+                e->prof_grid_bw = gd.boundingBox.width;
+                e->prof_grid_bh = gd.boundingBox.height;
+            }
+        }
+        EDITOR_CPU_ZONE_END(e);
 
-            if (grid_cols > PROF_GRID_MAX_COLS) grid_cols = PROF_GRID_MAX_COLS;
-            if (grid_rows > PROF_GRID_MAX_ROWS) grid_rows = PROF_GRID_MAX_ROWS;
+        /* --- Grid dimensions --- */
+        total_cells = (a->capacity + cell_size - 1) / cell_size;
+        grid_cols = 16;
+        grid_rows = ((int)total_cells + grid_cols - 1) / grid_cols;
+        if (grid_cols > PROF_GRID_MAX_COLS) grid_cols = PROF_GRID_MAX_COLS;
+        if (grid_rows > PROF_GRID_MAX_ROWS) grid_rows = PROF_GRID_MAX_ROWS;
+        e->prof_grid_w = grid_cols;
+        e->prof_grid_h = grid_rows;
+        total_px = grid_cols * grid_rows;
 
-            e->prof_grid_w = grid_cols;
-            e->prof_grid_h = grid_rows;
+        /* --- Sub-zone: clear all pixels to "free" color --- */
+        EDITOR_CPU_ZONE_BEGIN(e, "grid:clear");
+        for (i = 0; i < total_px; i++) {
+            e->prof_grid_pixels[i * 4 + 0] = 50;
+            e->prof_grid_pixels[i * 4 + 1] = 50;
+            e->prof_grid_pixels[i * 4 + 2] = 55;
+            e->prof_grid_pixels[i * 4 + 3] = 255;
+        }
+        EDITOR_CPU_ZONE_END(e);
 
-            for (row = 0; row < grid_rows; row++) {
-                for (col = 0; col < grid_cols; col++) {
-                    uint32_t cell_idx = (uint32_t)(row * grid_cols + col);
-                    uint8_t cr = 50, cg = 50, cb = 55, ca = 255; /* free = dark gray */
-                    int pi = (row * grid_cols + col) * 4;
-                    int fi;
-
-                    if (cell_idx < total_cells) {
-                        uint32_t cell_start = cell_idx * cell_size;
-                        uint32_t cell_end = cell_start + cell_size;
-                        if (cell_end > a->capacity) cell_end = a->capacity;
-
-                        for (fi = 0; fi < flat_count; fi++) {
-                            uint32_t rec_start = flat[fi].offset;
-                            uint32_t rec_end = flat[fi].offset + flat[fi].size;
-                            if (rec_start < cell_end && rec_end > cell_start) {
-                                Clay_Color cc = profiler_colors[flat[fi].color_idx % profiler_color_count];
-                                int is_hovered = have_hover &&
-                                    flat[fi].offset >= hover_offset &&
-                                    flat[fi].offset + flat[fi].size <= hover_offset + hover_size;
-                                int is_cpu_match = have_cpu_focus && flat[fi].tag &&
-                                    cpu_zone_highlights_record_tag(cpu_focus_tag, flat[fi].tag);
-                                if (have_hover || have_cpu_focus) {
-                                    if (is_hovered || is_cpu_match) {
-                                        cr = (uint8_t)(cc.r + (255 - cc.r) * 0.5f);
-                                        cg = (uint8_t)(cc.g + (255 - cc.g) * 0.5f);
-                                        cb = (uint8_t)(cc.b + (255 - cc.b) * 0.5f);
-                                    } else {
-                                        cr = (uint8_t)(cc.r * 0.3f);
-                                        cg = (uint8_t)(cc.g * 0.3f);
-                                        cb = (uint8_t)(cc.b * 0.3f);
-                                    }
-                                } else {
-                                    cr = (uint8_t)cc.r;
-                                    cg = (uint8_t)cc.g;
-                                    cb = (uint8_t)cc.b;
-                                }
-                                break;
-                            }
-                        }
+        /* --- Sub-zone: precompute per-record colors (O(records)) --- */
+        EDITOR_CPU_ZONE_BEGIN(e, "grid:color_precompute");
+        {
+            int fi;
+            for (fi = 0; fi < flat_count; fi++) {
+                Clay_Color cc = profiler_colors[flat[fi].color_idx % profiler_color_count];
+                int is_hovered = have_hover &&
+                    flat[fi].offset >= hover_offset &&
+                    flat[fi].offset + flat[fi].size <= hover_offset + hover_size;
+                int is_cpu_match = have_cpu_focus && flat[fi].tag &&
+                    cpu_zone_highlights_record_tag(cpu_focus_tag, flat[fi].tag);
+                if (have_hover || have_cpu_focus) {
+                    if (is_hovered || is_cpu_match) {
+                        flat[fi].cr = (uint8_t)(cc.r + (255 - cc.r) * 0.5f);
+                        flat[fi].cg = (uint8_t)(cc.g + (255 - cc.g) * 0.5f);
+                        flat[fi].cb = (uint8_t)(cc.b + (255 - cc.b) * 0.5f);
+                    } else {
+                        flat[fi].cr = (uint8_t)(cc.r * 0.3f);
+                        flat[fi].cg = (uint8_t)(cc.g * 0.3f);
+                        flat[fi].cb = (uint8_t)(cc.b * 0.3f);
                     }
-
-                    e->prof_grid_pixels[pi + 0] = cr;
-                    e->prof_grid_pixels[pi + 1] = cg;
-                    e->prof_grid_pixels[pi + 2] = cb;
-                    e->prof_grid_pixels[pi + 3] = ca;
+                } else {
+                    flat[fi].cr = (uint8_t)cc.r;
+                    flat[fi].cg = (uint8_t)cc.g;
+                    flat[fi].cb = (uint8_t)cc.b;
                 }
             }
         }
+        EDITOR_CPU_ZONE_END(e);
+
+        /* --- Sub-zone: stamp record colors onto cells (O(records), record-major) --- */
+        EDITOR_CPU_ZONE_BEGIN(e, "grid:stamp_cells");
+        {
+            int fi;
+            for (fi = 0; fi < flat_count; fi++) {
+                uint32_t first_cell = flat[fi].offset / cell_size;
+                uint32_t last_cell  = (flat[fi].offset + flat[fi].size - 1) / cell_size;
+                uint32_t c;
+                if (last_cell >= total_cells) last_cell = total_cells - 1;
+                for (c = first_cell; c <= last_cell; c++) {
+                    int pi = (int)c * 4;
+                    e->prof_grid_pixels[pi + 0] = flat[fi].cr;
+                    e->prof_grid_pixels[pi + 1] = flat[fi].cg;
+                    e->prof_grid_pixels[pi + 2] = flat[fi].cb;
+                }
+            }
+        }
+        EDITOR_CPU_ZONE_END(e);
     }
     EDITOR_CPU_ZONE_END(e); /* prof_grid_pixels */
 }
@@ -6587,17 +6651,10 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
 
             if (hovered_zone >= 0 && hovered_zone < frame->count) {
                 uint64_t duration_ns = frame->duration_ns[hovered_zone];
-                if (duration_ns > 1000000ULL) {
-                    snprintf(hover_line, 192, "Hovered: %s | %.3f ms | depth %u",
-                             frame->names[hovered_zone] ? frame->names[hovered_zone] : "(null)",
-                             (double)duration_ns / 1000000.0,
-                             (unsigned)frame->depth[hovered_zone]);
-                } else {
-                    snprintf(hover_line, 192, "Hovered: %s | %.2f us | depth %u",
-                             frame->names[hovered_zone] ? frame->names[hovered_zone] : "(null)",
-                             (double)duration_ns / 1000.0,
-                             (unsigned)frame->depth[hovered_zone]);
-                }
+                snprintf(hover_line, 192, "Hovered: %s | %.1f us | depth %u",
+                         frame->names[hovered_zone] ? frame->names[hovered_zone] : "(null)",
+                         (double)duration_ns / 1000.0,
+                         (unsigned)frame->depth[hovered_zone]);
                 {
                     Clay_String hs = {false, (int32_t)strlen(hover_line), hover_line};
                     CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = {196, 206, 228, 255}, .fontSize = 13}));
@@ -6756,10 +6813,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
 
                             CLAY(CLAY_IDI("CUDur", row_count), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
                                 uint64_t duration_ns = frame->duration_ns[idx];
-                                if (duration_ns > 1000000ULL)
-                                    snprintf(bufs[row_count][0], sizeof(bufs[row_count][0]), "%.2f ms", (double)duration_ns / 1000000.0);
-                                else
-                                    snprintf(bufs[row_count][0], sizeof(bufs[row_count][0]), "%.1f us", (double)duration_ns / 1000.0);
+                                snprintf(bufs[row_count][0], sizeof(bufs[row_count][0]), "%.1f us", (double)duration_ns / 1000.0);
                                 {
                                     Clay_String vs = {false, (int32_t)strlen(bufs[row_count][0]), bufs[row_count][0]};
                                     CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 200, 120, 255}, .fontSize = 14}));
@@ -7077,21 +7131,8 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     EDITOR_CACHE_ZONE_END();
     EDITOR_CPU_ZONE_END(e);
 
-    /* Commit this frame's editor zones to the ring buffer so the
-       CPU profiler panel can read history via cpu_prof_get_history_count(). */
-    {
-        static int was_paused = 0;
-        int paused = e->cpu_prof_timeline_paused;
-        cpu_prof_set_capture_enabled(!paused);
-        if (!paused) {
-            if (was_paused) {
-                cpu_prof_clear_current_frame();
-            } else {
-                cpu_prof_frame_end();
-            }
-        }
-        was_paused = paused;
-    }
+    /* Frame commit + pause handling moved to externals (single shared ring buffer).
+       Externals calls cpu_prof_frame_end() after editor_update returns. */
 }
 
 EXPORT void destroy_editor(game_state *gs, editor_state *es) {
