@@ -434,6 +434,154 @@ static int icon_glyph_count = 0;
 static float icon_font_ascent, icon_font_descent, icon_font_line_gap;
 
 // ---------------------------------------------------------------------------
+// File pre-cache (background thread reads all boot files into memory)
+// ---------------------------------------------------------------------------
+
+#define MAX_PRECACHE_FILES 64
+
+typedef struct {
+    const char *path;
+    void       *data;
+    size_t      size;
+} precache_entry;
+
+static precache_entry s_precache[MAX_PRECACHE_FILES];
+static int            s_precache_count = 0;
+static SDL_AtomicInt  s_precache_done;  /* 0 = loading, 1 = done */
+static uint64_t       s_precache_t_start, s_precache_t_end; /* perf counter */
+
+/* Register a file to be pre-loaded. Call BEFORE spawning the thread. */
+static void precache_register(const char *path) {
+    if (s_precache_count >= MAX_PRECACHE_FILES) {
+        fprintf(stderr, "[precache] overflow, ignoring %s\n", path);
+        return;
+    }
+    s_precache[s_precache_count].path = path;
+    s_precache[s_precache_count].data = NULL;
+    s_precache[s_precache_count].size = 0;
+    s_precache_count++;
+}
+
+/* Background thread: reads all registered files using raw C I/O
+   (runs before SDL_Init, so we can't use SDL_LoadFile). */
+static int precache_thread_fn(void *userdata) {
+    int i;
+    (void)userdata;
+    s_precache_t_start = SDL_GetPerformanceCounter();
+    for (i = 0; i < s_precache_count; i++) {
+        FILE *f = fopen(s_precache[i].path, "rb");
+        long len;
+        if (!f) {
+            fprintf(stderr, "[precache] MISS  %s (fopen failed)\n", s_precache[i].path);
+            continue;
+        }
+        fseek(f, 0, SEEK_END);
+        len = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        s_precache[i].data = malloc((size_t)len);
+        if (s_precache[i].data) {
+            s_precache[i].size = fread(s_precache[i].data, 1, (size_t)len, f);
+        }
+        fclose(f);
+    }
+    s_precache_t_end = SDL_GetPerformanceCounter();
+    SDL_SetAtomicInt(&s_precache_done, 1);
+    return 0;
+}
+
+/* Look up a pre-loaded file. Returns data pointer or NULL on miss.
+   Caller must NOT free the returned pointer — owned by the cache. */
+static void *precache_get(const char *path, size_t *out_size) {
+    int i;
+    for (i = 0; i < s_precache_count; i++) {
+        if (strcmp(s_precache[i].path, path) == 0 && s_precache[i].data) {
+            *out_size = s_precache[i].size;
+            return s_precache[i].data;
+        }
+    }
+    return NULL;
+}
+
+/* Free all pre-cached data (call after boot is complete). */
+static void precache_free(void) {
+    int i;
+    for (i = 0; i < s_precache_count; i++) {
+        free(s_precache[i].data);
+        s_precache[i].data = NULL;
+    }
+    s_precache_count = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Parallel shader compilation (struct needed by thread trace writer below)
+// ---------------------------------------------------------------------------
+
+#define MAX_SHADER_TASKS 16
+
+typedef struct {
+    const char *vs_path;
+    const char *fs_path;
+    SDL_GPUShader *vs;
+    SDL_GPUShader *fs;
+    uint64_t t_start, t_end;  /* perf counter for thread trace */
+} shader_compile_task;
+
+static int shader_compile_fn(void *userdata);  /* forward decl, needs load_shader_from_spirv */
+
+/* ── Thread trace writer ─────────────────────────────────────────── */
+/* Writes boot_threads.json in Chrome about://tracing format.
+   Shows precache thread + shader compile threads as separate lanes.
+   Load alongside the main boot.json from nanoprof2chrome. */
+
+static uint64_t s_boot_t0;  /* perf counter at boot start (for relative times) */
+
+static void boot_write_thread_traces(const shader_compile_task *tasks, int task_count) {
+    static const char *task_names[] = {
+        "shader:sprite", "shader:debug_lines", "shader:editor_line",
+        "shader:ui_rect", "shader:font", "shader:mesh", "shader:composite"
+    };
+    FILE *f = fopen("build/Debug/boot_threads.json", "w");
+    uint64_t freq = SDL_GetPerformanceFrequency();
+    int i, first = 1;
+    if (!f) return;
+
+    fprintf(f, "[\n");
+
+    /* Precache thread */
+    if (s_precache_t_start && s_precache_t_end) {
+        uint64_t ts = (s_precache_t_start - s_boot_t0) * 1000000 / freq;
+        uint64_t dur = (s_precache_t_end - s_precache_t_start) * 1000000 / freq;
+        fprintf(f, "{\"cat\":\"boot\",\"pid\":\"Anitra\",\"tid\":\"precache\","
+                    "\"ph\":\"X\",\"name\":\"file_preload\","
+                    "\"ts\":%llu,\"dur\":%llu}",
+                (unsigned long long)ts, (unsigned long long)dur);
+        first = 0;
+    }
+
+    /* Shader compile threads */
+    for (i = 0; i < task_count; i++) {
+        uint64_t ts, dur;
+        const char *name;
+        if (!tasks[i].t_start || !tasks[i].t_end) continue;
+        ts  = (tasks[i].t_start - s_boot_t0) * 1000000 / freq;
+        dur = (tasks[i].t_end - tasks[i].t_start) * 1000000 / freq;
+        name = (i < (int)(sizeof(task_names)/sizeof(task_names[0])))
+                    ? task_names[i] : "shader:unknown";
+        if (!first) fprintf(f, ",\n");
+        fprintf(f, "{\"cat\":\"boot\",\"pid\":\"Anitra\",\"tid\":\"shader_%d\","
+                    "\"ph\":\"X\",\"name\":\"%s\","
+                    "\"ts\":%llu,\"dur\":%llu}",
+                i, name, (unsigned long long)ts, (unsigned long long)dur);
+        first = 0;
+    }
+
+    fprintf(f, "\n]\n");
+    fclose(f);
+    printf("[boot_threads] wrote build/Debug/boot_threads.json (%d threads)\n",
+           task_count + 1);
+}
+
+// ---------------------------------------------------------------------------
 // Helper: compile HLSL -> SPIRV -> SDL_GPUShader
 // ---------------------------------------------------------------------------
 
@@ -451,16 +599,19 @@ static SDL_GPUShader* load_shader_from_spirv(
     const char* entrypoint,
     SDL_ShaderCross_ShaderStage stage)
 {
-    // Read pre-compiled SPIR-V from disk
+    // Try pre-cache first, fall back to disk
     size_t spirv_size = 0;
-    void* spirv_bytecode = SDL_LoadFile(filename, &spirv_size);
+    void *cached = precache_get(filename, &spirv_size);
+    int from_cache = (cached != NULL);
+    void *spirv_bytecode = cached ? cached : SDL_LoadFile(filename, &spirv_size);
     if (!spirv_bytecode) {
         fprintf(stderr, "ERROR: Failed to load SPIR-V file: %s\n", filename);
         fprintf(stderr, "       SDL Error: %s\n", SDL_GetError());
         return NULL;
     }
-    
-    printf("INFO: Loaded SPIR-V file: %s (%zu bytes)\n", filename, spirv_size);
+
+    printf("INFO: Loaded SPIR-V file: %s (%zu bytes, %s)\n",
+           filename, spirv_size, from_cache ? "precache" : "disk");
 
     // Reflect to get resource info
     SDL_ShaderCross_GraphicsShaderMetadata* metadata =
@@ -468,11 +619,9 @@ static SDL_GPUShader* load_shader_from_spirv(
     if (!metadata) {
         fprintf(stderr, "ERROR: Failed to reflect SPIR-V shader: %s\n", filename);
         fprintf(stderr, "       SDL Error: %s\n", SDL_GetError());
-        SDL_free(spirv_bytecode);
+        if (!from_cache) SDL_free(spirv_bytecode);
         return NULL;
     }
-    
-    printf("INFO: Reflected shader resources for: %s\n", filename);
 
     // Compile SPIRV -> GPU shader
     SDL_ShaderCross_SPIRV_Info spirv_info = {0};
@@ -485,9 +634,9 @@ static SDL_GPUShader* load_shader_from_spirv(
     SDL_GPUShader* shader = SDL_ShaderCross_CompileGraphicsShaderFromSPIRV(
         gpu_device, &spirv_info, &metadata->resource_info, 0);
 
-    // Cleanup before checking result (in case shader fails to compile)
+    // Cleanup before checking result (pre-cache data is NOT freed here)
     SDL_free(metadata);
-    SDL_free(spirv_bytecode);
+    if (!from_cache) SDL_free(spirv_bytecode);
     
     if (!shader) {
         char stage_name[32];
@@ -509,13 +658,32 @@ static SDL_GPUShader* load_shader_from_spirv(
     printf("INFO: Successfully compiled shader: %s\n", filename);
     return shader;
 }
+
+/* Thread entry for parallel shader pair compilation. */
+static int shader_compile_fn(void *userdata) {
+    shader_compile_task *t = (shader_compile_task *)userdata;
+    t->t_start = SDL_GetPerformanceCounter();
+    t->vs = load_shader_from_spirv(t->vs_path, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
+    t->fs = load_shader_from_spirv(t->fs_path, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
+    t->t_end = SDL_GetPerformanceCounter();
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: load texture via stb_image -> SDL_GPUTexture
 // ---------------------------------------------------------------------------
 
 static SDL_GPUTexture* load_gpu_texture(const char* filepath) {
     int w, h, channels;
-    unsigned char* data = stbi_load(filepath, &w, &h, &channels, 4); // force RGBA
+    unsigned char *data;
+    size_t cached_size = 0;
+    void *cached = precache_get(filepath, &cached_size);
+    if (cached) {
+        data = stbi_load_from_memory((const unsigned char *)cached,
+                                     (int)cached_size, &w, &h, &channels, 4);
+    } else {
+        data = stbi_load(filepath, &w, &h, &channels, 4);
+    }
     if (!data) {
         fprintf(stderr, "Failed to load image: %s\n", filepath);
         return NULL;
@@ -722,7 +890,18 @@ static int font_load_msdf(const char *path) {
     msdf_atlas atlas;
 
     BOOT_PROF_BEGIN(TP_FONT_FILE_LOAD);
-    font_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
+    {
+        size_t cached_size = 0;
+        void *cached = precache_get(path, &cached_size);
+        if (cached) {
+            /* Use pre-cached data — make a copy because stbtt keeps the pointer */
+            font_ttf_buffer = (unsigned char *)malloc(cached_size);
+            memcpy(font_ttf_buffer, cached, cached_size);
+            size = cached_size;
+        } else {
+            font_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
+        }
+    }
     if (!font_ttf_buffer) {
         fprintf(stderr, "Failed to load font: %s\n", path);
         return -1;
@@ -1064,7 +1243,17 @@ static int icon_font_load_msdf(const char *path) {
     msdf_atlas atlas;
 
     BOOT_PROF_BEGIN(TP_ICON_FILE_LOAD);
-    icon_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
+    {
+        size_t cached_size = 0;
+        void *cached = precache_get(path, &cached_size);
+        if (cached) {
+            icon_ttf_buffer = (unsigned char *)malloc(cached_size);
+            memcpy(icon_ttf_buffer, cached, cached_size);
+            size = cached_size;
+        } else {
+            icon_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
+        }
+    }
     if (!icon_ttf_buffer) {
         fprintf(stderr, "Failed to load icon font: %s\n", path);
         return -1;
@@ -2154,6 +2343,7 @@ EXPORT int init_externals(const char *project_path) {
 
     /* ── Boot profiler: start ─────────────────────────────────────── */
     boot_prof_create();
+    s_boot_t0 = SDL_GetPerformanceCounter();
     BOOT_PROF_BEGIN(TP_BOOT);
     BOOT_PROF_BEGIN(TP_INIT_EXTERNALS);
     BOOT_PROF_BEGIN(TP_EXT_ALLOC_MEMORY);
@@ -2291,6 +2481,50 @@ EXPORT int init_externals(const char *project_path) {
         }
     }
 
+    /* ── Pre-cache: register all boot files, spawn reader thread ─── */
+    {
+        SDL_Thread *precache_thread;
+
+        SDL_SetAtomicInt(&s_precache_done, 0);
+
+        /* Shaders (14 .spv files — 12 from game + 1 hardcoded editor_line + debug_lines_fs reused by grid) */
+        precache_register(g_mem->game.shader_sprite_vs);
+        precache_register(g_mem->game.shader_sprite_fs);
+        precache_register(g_mem->game.shader_debug_lines_vs);
+        precache_register(g_mem->game.shader_debug_lines_fs);
+        precache_register("assets/shaders/compiled/editor_line_vs.spv");
+        precache_register(g_mem->game.shader_ui_rect_vs);
+        precache_register(g_mem->game.shader_ui_rect_fs);
+        precache_register(g_mem->game.shader_font_vs);
+        precache_register(g_mem->game.shader_font_fs);
+        precache_register(g_mem->game.shader_mesh_vs);
+        precache_register(g_mem->game.shader_mesh_fs);
+        precache_register(g_mem->game.shader_composite_vs);
+        precache_register(g_mem->game.shader_composite_fs);
+
+        /* Textures */
+        precache_register(g_mem->game.texture_player);
+        precache_register(g_mem->game.texture_tiles);
+        precache_register(g_mem->game.texture_slime);
+        precache_register(g_mem->game.texture_health_bar);
+        precache_register(g_mem->game.texture_health_fill);
+
+        /* Fonts */
+        precache_register(g_mem->game.font_editor);
+        precache_register(BOOTSTRAP_ICON_FONT_PATH);
+
+        /* MSDF atlas caches */
+        precache_register("build/Debug/font_atlas.cache");
+        precache_register("build/Debug/icon_atlas.cache");
+
+        /* Note: GLB model files are NOT pre-cached because model loading
+           happens in engine.dll (after init_externals returns and precache
+           is freed).  The big model loading cost (texture decode) was already
+           handled by the texture dedup cache — remaining I/O is small. */
+
+        printf("[precache] registered %d files, spawning reader thread\n", s_precache_count);
+        precache_thread = SDL_CreateThread(precache_thread_fn, "precache", NULL);
+
     // 1. Init SDL
     BOOT_PROF_BEGIN(TP_EXT_SDL_INIT);
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -2330,6 +2564,12 @@ EXPORT int init_externals(const char *project_path) {
     /* Expose GPU device to engine for asset loading */
     g_mem->game.gpu_device = gpu_device;
 
+    /* Wait for pre-cache thread to finish (should already be done —
+       it had 354ms+ of SDL_Init + ShaderCross_Init + CreateWindow + CreateGPUDevice). */
+    SDL_WaitThread(precache_thread, NULL);
+    printf("[precache] reader thread joined (%d files loaded)\n", s_precache_count);
+    } /* end of pre-cache scope */
+
     /* Initialize profilers */
     BOOT_PROF_BEGIN(TP_EXT_PROFILERS_INIT);
     cache_prof_init();
@@ -2347,15 +2587,55 @@ EXPORT int init_externals(const char *project_path) {
     /* Store swapchain format — used for offscreen textures + pipelines */
     offscreen_format = SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
 
-    // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
-    BOOT_PROF_BEGIN(TP_EXT_SHADER_SPRITE);
-    SDL_GPUShader* sprite_vs = load_shader_from_spirv(
-        g_mem->game.shader_sprite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-    SDL_GPUShader* sprite_fs = load_shader_from_spirv(
-        g_mem->game.shader_sprite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
-    if (!sprite_vs || !sprite_fs) {
-        fprintf(stderr, "Failed to compile sprite shaders\n");
-        return -1;
+    /* ── Parallel shader compilation ───────────────────────────────── */
+    /* Compile all 7 shader pairs simultaneously.  Each task gets its
+       own thread; the main thread waits for all to finish.           */
+    /* Task indices: 0=sprite, 1=debug_lines, 2=editor_line,
+       3=ui_rect, 4=font, 5=mesh, 6=composite (reused for grid) */
+    #define SHADER_TASK_COUNT 7
+    SDL_GPUShader *all_vs[SHADER_TASK_COUNT];
+    SDL_GPUShader *all_fs[SHADER_TASK_COUNT];
+
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_SPRITE); /* reuse existing profiler ID for the whole compile phase */
+    {
+        shader_compile_task stasks[SHADER_TASK_COUNT];
+        SDL_Thread *sthreads[SHADER_TASK_COUNT];
+        int si;
+
+        stasks[0].vs_path = g_mem->game.shader_sprite_vs;
+        stasks[0].fs_path = g_mem->game.shader_sprite_fs;
+        stasks[1].vs_path = g_mem->game.shader_debug_lines_vs;
+        stasks[1].fs_path = g_mem->game.shader_debug_lines_fs;
+        stasks[2].vs_path = "assets/shaders/compiled/editor_line_vs.spv";
+        stasks[2].fs_path = g_mem->game.shader_debug_lines_fs;
+        stasks[3].vs_path = g_mem->game.shader_ui_rect_vs;
+        stasks[3].fs_path = g_mem->game.shader_ui_rect_fs;
+        stasks[4].vs_path = g_mem->game.shader_font_vs;
+        stasks[4].fs_path = g_mem->game.shader_font_fs;
+        stasks[5].vs_path = g_mem->game.shader_mesh_vs;
+        stasks[5].fs_path = g_mem->game.shader_mesh_fs;
+        stasks[6].vs_path = g_mem->game.shader_composite_vs;
+        stasks[6].fs_path = g_mem->game.shader_composite_fs;
+
+        for (si = 0; si < SHADER_TASK_COUNT; si++) {
+            stasks[si].vs = NULL;
+            stasks[si].fs = NULL;
+            sthreads[si] = SDL_CreateThread(shader_compile_fn, "shader", &stasks[si]);
+        }
+        for (si = 0; si < SHADER_TASK_COUNT; si++)
+            SDL_WaitThread(sthreads[si], NULL);
+
+        for (si = 0; si < SHADER_TASK_COUNT; si++) {
+            if (!stasks[si].vs || !stasks[si].fs) {
+                fprintf(stderr, "Failed to compile shader pair %d (%s, %s)\n",
+                        si, stasks[si].vs_path, stasks[si].fs_path);
+                return -1;
+            }
+            all_vs[si] = stasks[si].vs;
+            all_fs[si] = stasks[si].fs;
+        }
+        printf("[shaders] all %d pairs compiled in parallel\n", SHADER_TASK_COUNT);
+        boot_write_thread_traces(stasks, SHADER_TASK_COUNT);
     }
 
     // 7. Create sprite pipeline
@@ -2402,8 +2682,8 @@ EXPORT int init_externals(const char *project_path) {
         color_target.blend_state = blend;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = sprite_vs;
-        pipe_info.fragment_shader = sprite_fs;
+        pipe_info.vertex_shader = all_vs[0];
+        pipe_info.fragment_shader = all_fs[0];
 
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
@@ -2434,22 +2714,7 @@ EXPORT int init_externals(const char *project_path) {
         }
     }
 
-    // Release sprite shaders (pipeline keeps internal reference)
-    SDL_ReleaseGPUShader(gpu_device, sprite_vs);
-    SDL_ReleaseGPUShader(gpu_device, sprite_fs);
-
-// 8. Compile debug line shaders (split files)
-    BOOT_PROF_BEGIN(TP_EXT_SHADER_DEBUG_LINES);
-    SDL_GPUShader* line_vs = load_shader_from_spirv(
-        g_mem->game.shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-    SDL_GPUShader* line_fs = load_shader_from_spirv(
-        g_mem->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
-    if (!line_vs || !line_fs) {
-        fprintf(stderr, "Failed to compile debug line shaders\n");
-        return -1;
-    }
-
-    // 9. Create line pipeline
+    // 8-9. Create line pipeline (shaders already compiled)
     BOOT_PROF_BEGIN(TP_EXT_PIPELINE_DEBUG_LINES);
     {
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
@@ -2477,8 +2742,8 @@ EXPORT int init_externals(const char *project_path) {
         color_target.format = swapchain_format;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = line_vs;
-        pipe_info.fragment_shader = line_fs;
+        pipe_info.vertex_shader = all_vs[1];
+        pipe_info.fragment_shader = all_fs[1];
 
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
@@ -2509,22 +2774,9 @@ EXPORT int init_externals(const char *project_path) {
         }
     }
 
-    SDL_ReleaseGPUShader(gpu_device, line_vs);
-    SDL_ReleaseGPUShader(gpu_device, line_fs);
-
-    // 9b. Create 3D editor line pipeline (float3 position)
+    // 9b. Create 3D editor line pipeline (shaders already compiled)
     BOOT_PROF_BEGIN(TP_EXT_SHADER_EDITOR_LINES);
     {
-        const char *editor_line_vs_path = "assets/shaders/compiled/editor_line_vs.spv";
-        SDL_GPUShader *ed_vs = load_shader_from_spirv(
-            editor_line_vs_path, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-        SDL_GPUShader *ed_fs = load_shader_from_spirv(
-            g_mem->game.shader_debug_lines_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
-        if (!ed_vs || !ed_fs) {
-            fprintf(stderr, "Failed to compile editor line shaders (vs=%s)\n", editor_line_vs_path);
-            return -1;
-        }
-
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
         vbuf_desc.pitch = sizeof(editor_line_vert); /* float3 pos + float3 color = 24 bytes */
@@ -2547,8 +2799,8 @@ EXPORT int init_externals(const char *project_path) {
         color_target.format = swapchain_format;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = ed_vs;
-        pipe_info.fragment_shader = ed_fs;
+        pipe_info.vertex_shader = all_vs[2];
+        pipe_info.fragment_shader = all_fs[2];
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
@@ -2573,22 +2825,11 @@ EXPORT int init_externals(const char *project_path) {
             return -1;
         }
 
-        SDL_ReleaseGPUShader(gpu_device, ed_vs);
-        SDL_ReleaseGPUShader(gpu_device, ed_fs);
     }
 
-    // 10. Compile and create UI rect pipeline
+    // 10. Create UI rect pipeline (shaders already compiled)
     BOOT_PROF_BEGIN(TP_EXT_SHADER_UI_RECT);
     {
-        SDL_GPUShader *ui_vs = load_shader_from_spirv(
-            g_mem->game.shader_ui_rect_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-        SDL_GPUShader *ui_fs = load_shader_from_spirv(
-            g_mem->game.shader_ui_rect_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
-        if (!ui_vs || !ui_fs) {
-            fprintf(stderr, "Failed to compile UI rect shaders\n");
-            return -1;
-        }
-
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
         vbuf_desc.pitch = sizeof(ui_rect_vertex);
@@ -2621,8 +2862,8 @@ EXPORT int init_externals(const char *project_path) {
         color_target.blend_state = blend;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = ui_vs;
-        pipe_info.fragment_shader = ui_fs;
+        pipe_info.vertex_shader = all_vs[3];
+        pipe_info.fragment_shader = all_fs[3];
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
@@ -2643,22 +2884,11 @@ EXPORT int init_externals(const char *project_path) {
             return -1;
         }
 
-        SDL_ReleaseGPUShader(gpu_device, ui_vs);
-        SDL_ReleaseGPUShader(gpu_device, ui_fs);
     }
 
-    // 11. Compile and create font pipeline
+    // 11. Create font pipeline (shaders already compiled)
     BOOT_PROF_BEGIN(TP_EXT_SHADER_FONT);
     {
-        SDL_GPUShader *font_vs = load_shader_from_spirv(
-            g_mem->game.shader_font_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-        SDL_GPUShader *font_fs = load_shader_from_spirv(
-            g_mem->game.shader_font_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
-        if (!font_vs || !font_fs) {
-            fprintf(stderr, "Failed to compile font shaders\n");
-            return -1;
-        }
-
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
         vbuf_desc.pitch = sizeof(font_vertex);
@@ -2698,8 +2928,8 @@ EXPORT int init_externals(const char *project_path) {
         color_target.blend_state = blend;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = font_vs;
-        pipe_info.fragment_shader = font_fs;
+        pipe_info.vertex_shader = all_vs[4];
+        pipe_info.fragment_shader = all_fs[4];
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
@@ -2720,22 +2950,11 @@ EXPORT int init_externals(const char *project_path) {
             return -1;
         }
 
-        SDL_ReleaseGPUShader(gpu_device, font_vs);
-        SDL_ReleaseGPUShader(gpu_device, font_fs);
     }
 
-    // 12. Compile and create mesh (3D skinned) pipeline
+    // 12. Create mesh (3D skinned) pipeline (shaders already compiled)
     BOOT_PROF_BEGIN(TP_EXT_SHADER_MESH);
     {
-        SDL_GPUShader *mesh_vs = load_shader_from_spirv(
-            g_mem->game.shader_mesh_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-        SDL_GPUShader *mesh_fs = load_shader_from_spirv(
-            g_mem->game.shader_mesh_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
-        if (!mesh_vs || !mesh_fs) {
-            fprintf(stderr, "Failed to compile mesh shaders\n");
-            return -1;
-        }
-
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
         vbuf_desc.pitch = sizeof(SkinnedVertex);
@@ -2779,8 +2998,8 @@ EXPORT int init_externals(const char *project_path) {
         color_target.blend_state = blend;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = mesh_vs;
-        pipe_info.fragment_shader = mesh_fs;
+        pipe_info.vertex_shader = all_vs[5];
+        pipe_info.fragment_shader = all_fs[5];
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
@@ -2808,8 +3027,6 @@ EXPORT int init_externals(const char *project_path) {
             return -1;
         }
 
-        SDL_ReleaseGPUShader(gpu_device, mesh_vs);
-        SDL_ReleaseGPUShader(gpu_device, mesh_fs);
     }
 
     // 13. Create mesh sampler (linear filtering for 3D textures)
@@ -3038,18 +3255,9 @@ EXPORT int init_externals(const char *project_path) {
     g_mem->editor.open = 1;
     g_mem->editor.window = window;  /* editor gets the main window handle for focus/mouse checks */
 
-    // Create composite pipeline (draws panel textures into window)
+    // Create composite pipeline (shaders already compiled — task 6)
     BOOT_PROF_BEGIN(TP_EXT_SHADER_COMPOSITE);
     {
-        SDL_GPUShader *comp_vs = load_shader_from_spirv(
-            g_mem->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-        SDL_GPUShader *comp_fs = load_shader_from_spirv(
-            g_mem->game.shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
-        if (!comp_vs || !comp_fs) {
-            fprintf(stderr, "Failed to compile composite shaders\n");
-            return -1;
-        }
-
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
         vbuf_desc.pitch = sizeof(composite_vertex);
@@ -3080,8 +3288,8 @@ EXPORT int init_externals(const char *project_path) {
         ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = comp_vs;
-        pipe_info.fragment_shader = comp_fs;
+        pipe_info.vertex_shader = all_vs[6];
+        pipe_info.fragment_shader = all_fs[6];
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
@@ -3099,8 +3307,6 @@ EXPORT int init_externals(const char *project_path) {
             fprintf(stderr, "Failed to create composite pipeline: %s\n", SDL_GetError());
             return -1;
         }
-        SDL_ReleaseGPUShader(gpu_device, comp_vs);
-        SDL_ReleaseGPUShader(gpu_device, comp_fs);
     }
 
     // Create composite sampler (linear for smooth panel blitting)
@@ -3114,15 +3320,9 @@ EXPORT int init_externals(const char *project_path) {
         composite_sampler = SDL_CreateGPUSampler(gpu_device, &si);
     }
 
-    // Create grid texture pipeline (same shaders as composite, but with depth stencil
+    // Create grid texture pipeline (reuses composite shaders from task 6)
     BOOT_PROF_BEGIN(TP_EXT_SHADER_GRID);
-    // so it can draw inside the profiler render pass which has a depth target)
     {
-        SDL_GPUShader *grid_vs = load_shader_from_spirv(
-            g_mem->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
-        SDL_GPUShader *grid_fs = load_shader_from_spirv(
-            g_mem->game.shader_composite_fs, "main", SDL_SHADERCROSS_SHADERSTAGE_FRAGMENT);
-
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
         vbuf_desc.pitch = sizeof(composite_vertex);
@@ -3147,8 +3347,8 @@ EXPORT int init_externals(const char *project_path) {
         ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
 
         SDL_GPUGraphicsPipelineCreateInfo pi = {0};
-        pi.vertex_shader = grid_vs;
-        pi.fragment_shader = grid_fs;
+        pi.vertex_shader = all_vs[6];  /* reuse composite shaders */
+        pi.fragment_shader = all_fs[6];
         pi.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pi.vertex_input_state.num_vertex_buffers = 1;
         pi.vertex_input_state.vertex_attributes = attrs;
@@ -3167,9 +3367,6 @@ EXPORT int init_externals(const char *project_path) {
             fprintf(stderr, "Failed to create grid texture pipeline: %s\n", SDL_GetError());
             return -1;
         }
-        SDL_ReleaseGPUShader(gpu_device, grid_vs);
-        SDL_ReleaseGPUShader(gpu_device, grid_fs);
-
         /* Nearest-neighbor sampler for crisp pixel cells */
         SDL_GPUSamplerCreateInfo gsi = {0};
         gsi.min_filter = SDL_GPU_FILTER_NEAREST;
@@ -3178,6 +3375,15 @@ EXPORT int init_externals(const char *project_path) {
         gsi.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         gsi.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         grid_sampler = SDL_CreateGPUSampler(gpu_device, &gsi);
+    }
+
+    /* Release all compiled shaders — pipelines keep internal references */
+    {
+        int si;
+        for (si = 0; si < SHADER_TASK_COUNT; si++) {
+            SDL_ReleaseGPUShader(gpu_device, all_vs[si]);
+            SDL_ReleaseGPUShader(gpu_device, all_fs[si]);
+        }
     }
 
     // Create pre-rendered tab header textures (once at init)
@@ -3235,6 +3441,9 @@ EXPORT int init_externals(const char *project_path) {
     g_mem->game.boot_prof_begin    = _boot_prof_begin_bridge;
     g_mem->game.boot_prof_end      = _boot_prof_end_bridge;
     g_mem->game.boot_prof_register = _boot_prof_register_bridge;
+
+    /* Release pre-cached file data (no longer needed after boot) */
+    precache_free();
 
     BOOT_PROF_END(TP_INIT_EXTERNALS);
     printf("Externals initialized (SDL3 GPU, docked panels)\n");

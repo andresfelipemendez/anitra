@@ -343,7 +343,7 @@ static void write_scope(const timepoint_event *start, uint64_t nsecs_end)
     first_scope = 0;
 
     /* Chrome tracing uses microseconds; nanoprof stores nanoseconds */
-    printf("{\"cat\":\"nanoprof\",\"pid\":\"main\",\"tid\":\"main\","
+    printf("{\"cat\":\"nanoprof\",\"pid\":\"Anitra\",\"tid\":\"main\","
            "\"ph\":\"X\",\"name\":\"%s\","
            "\"ts\":" FMT_U64 ",\"dur\":" FMT_U64 "}",
            start->name,
@@ -540,6 +540,56 @@ int main(int argc, char **argv)
     if (have_prev) {
         for (i = 0; i < pending.len; i++)
             write_scope(&pending.data[i], prev_hp);
+    }
+
+    /* ── Merge boot_threads.json if it sits next to the input file ──── */
+    if (argc > 1) {
+        /* Build path: replace filename with boot_threads.json */
+        const char *inp = argv[1];
+        const char *sep = inp;
+        const char *p;
+        char threads_path[1024];
+        FILE *tf;
+        for (p = inp; *p; p++) {
+            if (*p == '/' || *p == '\\') sep = p + 1;
+        }
+        if (sep > inp) {
+            size_t dir_len = (size_t)(sep - inp);
+            if (dir_len + 20 < sizeof(threads_path)) {
+                memcpy(threads_path, inp, dir_len);
+                strcpy(threads_path + dir_len, "boot_threads.json");
+            } else {
+                threads_path[0] = '\0';
+            }
+        } else {
+            strcpy(threads_path, "boot_threads.json");
+        }
+
+        tf = fopen(threads_path, "r");
+        if (tf) {
+            /* Read the entire file and splice events into our JSON array.
+               boot_threads.json is a JSON array: [ {event}, ... ]
+               We strip the outer [ ] and emit each event with a leading comma. */
+            char buf[4096];
+            size_t n;
+            int inside = 0;  /* have we seen the opening '[' ? */
+            while ((n = fread(buf, 1, sizeof(buf), tf)) > 0) {
+                size_t j;
+                for (j = 0; j < n; j++) {
+                    char c = buf[j];
+                    if (!inside) {
+                        if (c == '[') { inside = 1; printf(",\n"); }
+                        continue;
+                    }
+                    /* Stop at closing ']' */
+                    if (c == ']') goto threads_done;
+                    putchar(c);
+                }
+            }
+        threads_done:
+            fclose(tf);
+            fprintf(stderr, "Merged thread traces from %s\n", threads_path);
+        }
     }
 
 done:
