@@ -1207,6 +1207,20 @@ static int build_test(void)
         return 1;
     }
 
+    printf(">> " TCC_TEST_DLL_EDITOR_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_DLL_EDITOR_CMD) != 0) {
+        printf("!! test_editor.dll build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_DLL_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_DLL_CMD) != 0) {
+        printf("!! test_hotreload_dll build failed.\n");
+        return 1;
+    }
+
     printf("\n=== Running tests ===\n");
     fflush(stdout);
 #ifdef _WIN32
@@ -1231,6 +1245,14 @@ static int build_test(void)
     if (system("build/Debug/test_hotreload") != 0) {
 #endif
         printf("!! test_hotreload failed.\n");
+        failed = 1;
+    }
+#ifdef _WIN32
+    if (system("build\\Debug\\test_hotreload_dll.exe") != 0) {
+#else
+    if (system("build/Debug/test_hotreload_dll") != 0) {
+#endif
+        printf("!! test_hotreload_dll failed.\n");
         failed = 1;
     }
 

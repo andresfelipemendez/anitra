@@ -77,6 +77,23 @@
     " -Isrc -Isrc/editor -Ilib/clay" \
     " tests/test_hotreload.c"
 
+/* test_editor.dll: real editor.c with SDL/externals stubs compiled in */
+#define TCC_TEST_DLL_EDITOR_CMD \
+    ".\\tcc.exe -Blib/tcc-windows -shared" \
+    " -o build/Debug/test_editor.dll" \
+    " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL" \
+    " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
+    " -Ilib/SDL3/include -Ilib/clay -Ilib/toml-c -Ilib/sqlite" \
+    " src/editor/editor.c" \
+    " tests/test_dll_stubs.c"
+
+/* test_hotreload_dll.exe: exercises real DLL load/unload/reload */
+#define TCC_TEST_DLL_CMD \
+    ".\\tcc.exe -Blib/tcc-windows" \
+    " -o build/Debug/test_hotreload_dll.exe" \
+    " -Isrc -Isrc/editor -Isrc/engine" \
+    " tests/test_hotreload_dll.c"
+
 /* ------- SDL3 platform sources ------------------------------------------ */
 
 static const char *sdl3_sources_platform[] = {
