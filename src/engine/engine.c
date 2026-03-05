@@ -4,6 +4,8 @@
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
+#include <SDL3/SDL_thread.h>
+#include <SDL3/SDL_timer.h>
 #include "state_migration.gen.h"
 #include "boot_profiler.h"
 
@@ -1417,82 +1419,157 @@ static const char *asset_filename(const char *path) {
     return slash ? slash + 1 : path;
 }
 
-static void load_scene_model_assets(game_state *gs) {
-    int i;
-    int needs_load = 0;
-    int tp_id = TP_ASSET_BASE;  /* next available asset timepoint ID */
-    arena *model_arena;
-    char prof_name[128];
-    if (!gs || !gs->gpu_device || !gs->root_arena) return;
-    for (i = 0; i < gs->scene_model_asset_count; i++) {
-        if (!gs->scene_model_assets[i].loaded) {
-            needs_load = 1;
-            break;
+/* ── Parallel model loading ─────────────────────────────────────── */
+
+typedef struct {
+    /* inputs (read-only from thread) */
+    const char          *path;
+    const char          *anim_path;
+    int                  has_animation;
+    const project_data  *project;      /* for extra animation assets (read-only) */
+    arena               *ar;           /* per-model sub-arena */
+    /* outputs */
+    GltfModel            model;
+    int                  ok;
+    uint64_t             t_start, t_end;  /* perf counter for thread trace */
+} model_load_task;
+
+static int model_load_fn(void *userdata) {
+    model_load_task *t = (model_load_task *)userdata;
+    t->t_start = SDL_GetPerformanceCounter();
+
+    t->model = load_glb(t->path, t->ar);
+    t->ok = (t->model.mesh.primitive_count > 0) ? 1 : 0;
+
+    /* Load animations if model has a skeleton */
+    if (t->model.skeleton.joint_count > 0 && t->has_animation && t->anim_path[0]) {
+        load_animations_glb(t->anim_path, &t->model, t->ar);
+        /* Also load all other animation assets from the project */
+        if (t->project) {
+            int ai;
+            for (ai = 0; ai < t->project->asset_count; ai++) {
+                if (t->project->assets[ai].type != ASSET_ANIMATION) continue;
+                if (strcmp(t->project->assets[ai].path, t->anim_path) == 0)
+                    continue;
+                load_animations_glb(t->project->assets[ai].path,
+                                    &t->model, t->ar);
+            }
         }
     }
-    if (!needs_load) return;
 
+    t->t_end = SDL_GetPerformanceCounter();
+    return 0;
+}
+
+static uint64_t s_model_boot_t0;  /* perf counter at model loading start */
+
+static void write_model_thread_traces(const model_load_task *tasks, int count) {
+    FILE *f = fopen("build/Debug/model_threads.json", "w");
+    uint64_t freq = SDL_GetPerformanceFrequency();
+    int i, first = 1;
+    if (!f) return;
+
+    fprintf(f, "[\n");
+    for (i = 0; i < count; i++) {
+        uint64_t ts, dur;
+        if (!tasks[i].t_start || !tasks[i].t_end) continue;
+        ts  = (tasks[i].t_start - s_model_boot_t0) * 1000000 / freq;
+        dur = (tasks[i].t_end - tasks[i].t_start) * 1000000 / freq;
+        if (!first) fprintf(f, ",\n");
+        fprintf(f, "{\"cat\":\"boot\",\"pid\":\"Anitra\",\"tid\":\"model_%d\","
+                    "\"ph\":\"X\",\"name\":\"glb:%s\","
+                    "\"ts\":%llu,\"dur\":%llu}",
+                i, asset_filename(tasks[i].path),
+                (unsigned long long)ts, (unsigned long long)dur);
+        first = 0;
+    }
+    fprintf(f, "\n]\n");
+    fclose(f);
+    printf("[model_threads] wrote build/Debug/model_threads.json (%d threads)\n", count);
+}
+
+static void load_scene_model_assets(game_state *gs) {
+    int i, ti;
+    int needs_load = 0;
+    arena *model_arena;
+    uint32_t per_model_bytes;
+    model_load_task tasks[SCENE_MODEL_ASSET_MAX];
+    SDL_Thread *threads[SCENE_MODEL_ASSET_MAX];
+    int task_count = 0;
+
+    if (!gs || !gs->gpu_device || !gs->root_arena) return;
+
+    /* Count models that need loading */
+    for (i = 0; i < gs->scene_model_asset_count; i++) {
+        if (!gs->scene_model_assets[i].loaded)
+            needs_load++;
+    }
+    if (needs_load == 0) return;
+
+    /* Allocate parent arena, then carve per-model sub-arenas */
     model_arena = arena_alloc_subarena(gs->root_arena, MODEL_ARENA_BYTES, 16, "scene_models");
     if (!model_arena) {
         fprintf(stderr, "Warning: failed to allocate scene model arena\n");
         return;
     }
+    per_model_bytes = (MODEL_ARENA_BYTES - (uint32_t)(needs_load * sizeof(arena))) / needs_load;
 
     gltf_set_gpu_device(gs->gpu_device);
-    gltf_set_boot_profiler(gs->boot_prof_begin);
+    gltf_set_boot_profiler(NULL);  /* disable nanoprof in threads (single-threaded profiler) */
     gltf_tex_cache_init();
 
+    s_model_boot_t0 = SDL_GetPerformanceCounter();
+
+    /* Build tasks and spawn threads */
+    for (i = 0; i < gs->scene_model_asset_count; i++) {
+        scene_model_asset *asset = &gs->scene_model_assets[i];
+        model_load_task *t;
+        char tag[32];
+        if (asset->loaded) continue;
+
+        t = &tasks[task_count];
+        memset(t, 0, sizeof(*t));
+        t->path          = asset->path;
+        t->anim_path     = asset->animation_path;
+        t->has_animation = asset->has_animation_path;
+        t->project       = &gs->project;
+
+        snprintf(tag, sizeof(tag), "model_%d", task_count);
+        t->ar = arena_alloc_subarena(model_arena, per_model_bytes, 16, tag);
+        if (!t->ar) {
+            fprintf(stderr, "Warning: failed to allocate sub-arena for model %d\n", task_count);
+            continue;
+        }
+
+        threads[task_count] = SDL_CreateThread(model_load_fn, "glb_load", t);
+        task_count++;
+    }
+
+    /* Join all threads */
+    for (i = 0; i < task_count; i++)
+        SDL_WaitThread(threads[i], NULL);
+
+    /* Copy results back to scene_model_assets */
+    ti = 0;
     for (i = 0; i < gs->scene_model_asset_count; i++) {
         scene_model_asset *asset = &gs->scene_model_assets[i];
         if (asset->loaded) continue;
+        if (ti >= task_count) break;
 
-        /* Profile: load_glb */
-        if (tp_id <= TP_ASSET_MAX) {
-            snprintf(prof_name, sizeof(prof_name), "glb:%s", asset_filename(asset->path));
-            ENG_BOOT_PROF_REG(gs, tp_id, 3, prof_name);
-            ENG_BOOT_PROF(gs, tp_id);
-            tp_id++;
-        }
-        asset->model = load_glb(asset->path, model_arena);
-        asset->loaded = 1;
+        asset->model       = tasks[ti].model;
+        asset->loaded      = 1;
         asset->has_skeleton = asset->model.skeleton.joint_count > 0 ? 1 : 0;
-
-        if (asset->has_skeleton && asset->has_animation_path && asset->animation_path[0]) {
-            /* Profile: primary animation GLB */
-            if (tp_id <= TP_ASSET_MAX) {
-                snprintf(prof_name, sizeof(prof_name), "anim:%s", asset_filename(asset->animation_path));
-                ENG_BOOT_PROF_REG(gs, tp_id, 3, prof_name);
-                ENG_BOOT_PROF(gs, tp_id);
-                tp_id++;
-            }
-            load_animations_glb(asset->animation_path, &asset->model, model_arena);
-            /* Also load all other animation assets from the project */
-            {
-                int ai;
-                for (ai = 0; ai < gs->project.asset_count; ai++) {
-                    if (gs->project.assets[ai].type != ASSET_ANIMATION) continue;
-                    if (strcmp(gs->project.assets[ai].path, asset->animation_path) == 0)
-                        continue;
-                    /* Profile: extra animation GLB */
-                    if (tp_id <= TP_ASSET_MAX) {
-                        snprintf(prof_name, sizeof(prof_name), "anim:%s",
-                                 asset_filename(gs->project.assets[ai].path));
-                        ENG_BOOT_PROF_REG(gs, tp_id, 3, prof_name);
-                        ENG_BOOT_PROF(gs, tp_id);
-                        tp_id++;
-                    }
-                    load_animations_glb(gs->project.assets[ai].path,
-                                        &asset->model, model_arena);
-                }
-            }
-        }
 
         if (asset->model.mesh.primitive_count == 0) {
             fprintf(stderr, "Warning: model '%s' has no primitives\n", asset->path);
         }
+        ti++;
     }
 
     gltf_tex_cache_free();
+    gltf_set_boot_profiler(gs->boot_prof_begin);  /* restore profiler */
+
+    write_model_thread_traces(tasks, task_count);
 }
 
 static void sync_primary_mesh3d_asset(game_state *gs) {

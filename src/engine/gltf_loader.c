@@ -9,6 +9,7 @@
 #define STB_DS_IMPLEMENTATION
 #include "stb_ds.h"
 #include <SDL3/SDL_gpu.h>
+#include <SDL3/SDL_mutex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,7 @@ typedef struct {
 
 static TexCacheEntry *s_tex_cache = NULL;
 static int s_tex_cache_hits = 0;
+static SDL_Mutex *s_tex_cache_mtx = NULL;  /* protects s_tex_cache for parallel model loading */
 
 /* FNV-1a fingerprint: hash compressed image size + first 256 bytes */
 static uint64_t tex_fingerprint(cgltf_image *image) {
@@ -74,6 +76,7 @@ static uint64_t tex_fingerprint(cgltf_image *image) {
 void gltf_tex_cache_init(void) {
     s_tex_cache = NULL;
     s_tex_cache_hits = 0;
+    s_tex_cache_mtx = SDL_CreateMutex();
 }
 
 void gltf_tex_cache_free(void) {
@@ -82,6 +85,10 @@ void gltf_tex_cache_free(void) {
            total, s_tex_cache_hits);
     hmfree(s_tex_cache);
     s_tex_cache = NULL;
+    if (s_tex_cache_mtx) {
+        SDL_DestroyMutex(s_tex_cache_mtx);
+        s_tex_cache_mtx = NULL;
+    }
 }
 
 /* ── helpers ──────────────────────────────────────────────────── */
@@ -181,16 +188,20 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, const char *asset_dir
     SDL_GPUTextureRegion dst_region = {0};
     uint64_t fp;
 
-    /* check texture cache — skip decode+upload if we already have this image */
+    /* ── Check texture cache (lock) ──────────────────────────── */
     fp = tex_fingerprint(image);
+    SDL_LockMutex(s_tex_cache_mtx);
     {
         ptrdiff_t idx = hmgeti(s_tex_cache, fp);
         if (idx >= 0) {
             s_tex_cache_hits++;
+            SDL_UnlockMutex(s_tex_cache_mtx);
             return s_tex_cache[idx].value;
         }
     }
+    SDL_UnlockMutex(s_tex_cache_mtx);
 
+    /* ── Decode pixels (no lock — CPU-heavy, thread-safe) ──── */
     if (image->buffer_view) {
         /* embedded image in GLB */
         const uint8_t *buf = (const uint8_t *)image->buffer_view->buffer->data;
@@ -212,6 +223,7 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, const char *asset_dir
         return NULL;
     }
 
+    /* ── Upload to GPU (no lock — SDL3 GPU is internally mutex-protected) ── */
     img_size = (uint32_t)(w * h * 4);
 
     tex_info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -250,8 +262,19 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, const char *asset_dir
     SDL_SubmitGPUCommandBuffer(cmd);
     SDL_ReleaseGPUTransferBuffer(s_gpu_device, transfer);
 
-    /* store in texture cache for future lookups */
-    hmput(s_tex_cache, fp, texture);
+    /* ── Re-check cache and insert (double-checked locking) ── */
+    SDL_LockMutex(s_tex_cache_mtx);
+    {
+        ptrdiff_t idx = hmgeti(s_tex_cache, fp);
+        if (idx >= 0) {
+            /* Another thread beat us — release our duplicate and use theirs */
+            SDL_ReleaseGPUTexture(s_gpu_device, texture);
+            SDL_UnlockMutex(s_tex_cache_mtx);
+            return s_tex_cache[idx].value;
+        }
+        hmput(s_tex_cache, fp, texture);
+    }
+    SDL_UnlockMutex(s_tex_cache_mtx);
 
     return texture;
 }

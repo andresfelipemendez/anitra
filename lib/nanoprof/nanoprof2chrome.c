@@ -542,53 +542,63 @@ int main(int argc, char **argv)
             write_scope(&pending.data[i], prev_hp);
     }
 
-    /* ── Merge boot_threads.json if it sits next to the input file ──── */
+    /* ── Merge *_threads.json files sitting next to the input ──── */
     if (argc > 1) {
-        /* Build path: replace filename with boot_threads.json */
         const char *inp = argv[1];
         const char *sep = inp;
         const char *p;
-        char threads_path[1024];
-        FILE *tf;
+        char dir_prefix[1024];
+        size_t dir_len = 0;
+        static const char *thread_files[] = {
+            "boot_threads.json",
+            "model_threads.json",
+        };
+        int fi;
+
         for (p = inp; *p; p++) {
             if (*p == '/' || *p == '\\') sep = p + 1;
         }
         if (sep > inp) {
-            size_t dir_len = (size_t)(sep - inp);
-            if (dir_len + 20 < sizeof(threads_path)) {
-                memcpy(threads_path, inp, dir_len);
-                strcpy(threads_path + dir_len, "boot_threads.json");
+            dir_len = (size_t)(sep - inp);
+            if (dir_len < sizeof(dir_prefix)) {
+                memcpy(dir_prefix, inp, dir_len);
+                dir_prefix[dir_len] = '\0';
             } else {
-                threads_path[0] = '\0';
+                dir_len = 0;
             }
-        } else {
-            strcpy(threads_path, "boot_threads.json");
         }
 
-        tf = fopen(threads_path, "r");
-        if (tf) {
-            /* Read the entire file and splice events into our JSON array.
-               boot_threads.json is a JSON array: [ {event}, ... ]
-               We strip the outer [ ] and emit each event with a leading comma. */
-            char buf[4096];
-            size_t n;
-            int inside = 0;  /* have we seen the opening '[' ? */
-            while ((n = fread(buf, 1, sizeof(buf), tf)) > 0) {
-                size_t j;
-                for (j = 0; j < n; j++) {
-                    char c = buf[j];
-                    if (!inside) {
-                        if (c == '[') { inside = 1; printf(",\n"); }
-                        continue;
-                    }
-                    /* Stop at closing ']' */
-                    if (c == ']') goto threads_done;
-                    putchar(c);
-                }
+        for (fi = 0; fi < (int)(sizeof(thread_files)/sizeof(thread_files[0])); fi++) {
+            char threads_path[1024];
+            FILE *tf;
+            if (dir_len > 0) {
+                snprintf(threads_path, sizeof(threads_path), "%s%s", dir_prefix, thread_files[fi]);
+            } else {
+                snprintf(threads_path, sizeof(threads_path), "%s", thread_files[fi]);
             }
-        threads_done:
-            fclose(tf);
-            fprintf(stderr, "Merged thread traces from %s\n", threads_path);
+
+            tf = fopen(threads_path, "r");
+            if (tf) {
+                /* Splice events from JSON array: strip outer [ ] and emit with leading comma */
+                char buf[4096];
+                size_t n;
+                int inside = 0;
+                while ((n = fread(buf, 1, sizeof(buf), tf)) > 0) {
+                    size_t j;
+                    for (j = 0; j < n; j++) {
+                        char c = buf[j];
+                        if (!inside) {
+                            if (c == '[') { inside = 1; printf(",\n"); }
+                            continue;
+                        }
+                        if (c == ']') goto splice_done;
+                        putchar(c);
+                    }
+                }
+            splice_done:
+                fclose(tf);
+                fprintf(stderr, "Merged thread traces from %s\n", threads_path);
+            }
         }
     }
 
