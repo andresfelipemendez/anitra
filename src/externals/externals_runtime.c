@@ -34,6 +34,9 @@
 
 #include "gltf_types.h"
 
+#define BOOT_PROFILER_IMPL
+#include "boot_profiler.h"
+
 // ---------------------------------------------------------------------------
 // Static globals (replace GL state)
 // ---------------------------------------------------------------------------
@@ -606,11 +609,119 @@ SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
 }
 
 // ---------------------------------------------------------------------------
+// MSDF atlas disk cache
+// ---------------------------------------------------------------------------
+
+#define MSDF_CACHE_MAGIC   0x4644534Du  /* 'MSDF' */
+#define MSDF_CACHE_VERSION 2u           /* bump when format or MSDF algorithm changes */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t font_fp;        /* FNV-1a fingerprint of TTF file */
+    uint32_t source_size;    /* MSDF_SOURCE_SIZE at generation time */
+    uint32_t atlas_w, atlas_h;
+    uint32_t glyph_count;
+    float    ascent, descent, line_gap;
+} msdf_cache_header;
+
+static uint64_t ttf_fingerprint(const unsigned char *data, size_t size) {
+    uint64_t hash = 14695981039346656037ULL;
+    size_t i, n;
+    for (i = 0; i < 8; i++) {
+        hash ^= (size >> (i * 8)) & 0xFF;
+        hash *= 1099511628211ULL;
+    }
+    n = size < 4096 ? size : 4096;
+    for (i = 0; i < n; i++) {
+        hash ^= data[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+/* Try loading cached atlas. Returns 1 on success, 0 on miss/invalid. */
+static int msdf_cache_load(const char *cache_path, uint64_t expected_fp,
+                           void *glyphs, size_t glyph_stride, int glyph_count,
+                           msdf_atlas *atlas,
+                           float *ascent, float *descent, float *line_gap)
+{
+    FILE *f = fopen(cache_path, "rb");
+    msdf_cache_header hdr;
+    uint32_t pixel_size;
+    if (!f) return 0;
+
+    if (fread(&hdr, sizeof(hdr), 1, f) != 1) goto fail;
+    if (hdr.magic != MSDF_CACHE_MAGIC) goto fail;
+    if (hdr.version != MSDF_CACHE_VERSION) goto fail;
+    if (hdr.font_fp != expected_fp) goto fail;
+    if (hdr.source_size != MSDF_SOURCE_SIZE) goto fail;
+    if ((int)hdr.glyph_count != glyph_count) goto fail;
+
+    if (fread(glyphs, glyph_stride, (size_t)glyph_count, f) != (size_t)glyph_count) goto fail;
+
+    atlas->width = (int)hdr.atlas_w;
+    atlas->height = (int)hdr.atlas_h;
+    pixel_size = hdr.atlas_w * hdr.atlas_h * 4;
+    atlas->pixels = (unsigned char *)malloc(pixel_size);
+    if (!atlas->pixels) goto fail;
+    if (fread(atlas->pixels, 1, pixel_size, f) != pixel_size) {
+        free(atlas->pixels);
+        atlas->pixels = NULL;
+        goto fail;
+    }
+
+    *ascent = hdr.ascent;
+    *descent = hdr.descent;
+    *line_gap = hdr.line_gap;
+    fclose(f);
+    printf("[msdf_cache] HIT  %s\n", cache_path);
+    return 1;
+
+fail:
+    fclose(f);
+    return 0;
+}
+
+static void msdf_cache_save(const char *cache_path, uint64_t font_fp,
+                            const void *glyphs, size_t glyph_stride, int glyph_count,
+                            const msdf_atlas *atlas,
+                            float ascent, float descent, float line_gap)
+{
+    FILE *f = fopen(cache_path, "wb");
+    msdf_cache_header hdr;
+    uint32_t pixel_size;
+    if (!f) { fprintf(stderr, "[msdf_cache] failed to write %s\n", cache_path); return; }
+
+    hdr.magic = MSDF_CACHE_MAGIC;
+    hdr.version = MSDF_CACHE_VERSION;
+    hdr.font_fp = font_fp;
+    hdr.source_size = MSDF_SOURCE_SIZE;
+    hdr.atlas_w = (uint32_t)atlas->width;
+    hdr.atlas_h = (uint32_t)atlas->height;
+    hdr.glyph_count = (uint32_t)glyph_count;
+    hdr.ascent = ascent;
+    hdr.descent = descent;
+    hdr.line_gap = line_gap;
+
+    fwrite(&hdr, sizeof(hdr), 1, f);
+    fwrite(glyphs, glyph_stride, (size_t)glyph_count, f);
+    pixel_size = (uint32_t)(atlas->width * atlas->height * 4);
+    fwrite(atlas->pixels, 1, pixel_size, f);
+    fclose(f);
+    printf("[msdf_cache] MISS saved %s\n", cache_path);
+}
+
+// ---------------------------------------------------------------------------
 // Font loading (MSDF atlas)
 // ---------------------------------------------------------------------------
 
 static int font_load_msdf(const char *path) {
     size_t size = 0;
+    uint64_t fp;
+    msdf_atlas atlas;
+
+    BOOT_PROF_BEGIN(TP_FONT_FILE_LOAD);
     font_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
     if (!font_ttf_buffer) {
         fprintf(stderr, "Failed to load font: %s\n", path);
@@ -623,14 +734,23 @@ static int font_load_msdf(const char *path) {
         return -1;
     }
 
-    msdf_atlas atlas;
-    if (msdf_build_atlas(&font_stb_info, font_glyphs, 32, 127, &atlas,
-                          &font_ascent, &font_descent, &font_line_gap) != 0) {
-        fprintf(stderr, "Failed to build MSDF atlas\n");
-        return -1;
+    BOOT_PROF_BEGIN(TP_FONT_ATLAS_BUILD);
+    fp = ttf_fingerprint(font_ttf_buffer, font_ttf_size);
+    if (!msdf_cache_load("build/Debug/font_atlas.cache", fp,
+                         font_glyphs, sizeof(msdf_glyph), 128,
+                         &atlas, &font_ascent, &font_descent, &font_line_gap)) {
+        if (msdf_build_atlas(&font_stb_info, font_glyphs, 32, 127, &atlas,
+                              &font_ascent, &font_descent, &font_line_gap) != 0) {
+            fprintf(stderr, "Failed to build MSDF atlas\n");
+            return -1;
+        }
+        msdf_cache_save("build/Debug/font_atlas.cache", fp,
+                        font_glyphs, sizeof(msdf_glyph), 128,
+                        &atlas, font_ascent, font_descent, font_line_gap);
     }
 
     /* Upload atlas to GPU texture */
+    BOOT_PROF_BEGIN(TP_FONT_GPU_UPLOAD);
     {
         SDL_GPUTextureCreateInfo tex_info = {0};
         tex_info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -677,6 +797,7 @@ static int font_load_msdf(const char *path) {
     }
 
     /* Create sampler for MSDF atlas (linear filtering is essential for SDF) */
+    BOOT_PROF_BEGIN(TP_FONT_SAMPLER);
     {
         SDL_GPUSamplerCreateInfo samp_info = {0};
         samp_info.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -937,9 +1058,12 @@ static int icon_font_load_msdf(const char *path) {
         BI_ICON_ARROW_RIGHT,
         BI_ICON_ARROW_UP
     };
+    int expected_icon_count = (int)(sizeof(icon_codepoints) / sizeof(icon_codepoints[0]));
     size_t size = 0;
+    uint64_t fp;
     msdf_atlas atlas;
 
+    BOOT_PROF_BEGIN(TP_ICON_FILE_LOAD);
     icon_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
     if (!icon_ttf_buffer) {
         fprintf(stderr, "Failed to load icon font: %s\n", path);
@@ -952,20 +1076,29 @@ static int icon_font_load_msdf(const char *path) {
         return -1;
     }
 
-    if (msdf_build_atlas_for_list(&icon_stb_info,
-                                  icon_codepoints,
-                                  (int)(sizeof(icon_codepoints) / sizeof(icon_codepoints[0])),
-                                  icon_glyphs,
-                                  ICON_GLYPH_MAX,
-                                  &icon_glyph_count,
-                                  &atlas,
-                                  &icon_font_ascent,
-                                  &icon_font_descent,
-                                  &icon_font_line_gap) != 0) {
-        fprintf(stderr, "Failed to build icon MSDF atlas\n");
-        return -1;
+    BOOT_PROF_BEGIN(TP_ICON_ATLAS_BUILD);
+    fp = ttf_fingerprint(icon_ttf_buffer, icon_ttf_size);
+    if (msdf_cache_load("build/Debug/icon_atlas.cache", fp,
+                        icon_glyphs, sizeof(icon_glyph_entry), expected_icon_count,
+                        &atlas, &icon_font_ascent, &icon_font_descent, &icon_font_line_gap)) {
+        icon_glyph_count = expected_icon_count;
+    } else {
+        if (msdf_build_atlas_for_list(&icon_stb_info,
+                                      icon_codepoints, expected_icon_count,
+                                      icon_glyphs, ICON_GLYPH_MAX, &icon_glyph_count,
+                                      &atlas,
+                                      &icon_font_ascent,
+                                      &icon_font_descent,
+                                      &icon_font_line_gap) != 0) {
+            fprintf(stderr, "Failed to build icon MSDF atlas\n");
+            return -1;
+        }
+        msdf_cache_save("build/Debug/icon_atlas.cache", fp,
+                        icon_glyphs, sizeof(icon_glyph_entry), icon_glyph_count,
+                        &atlas, icon_font_ascent, icon_font_descent, icon_font_line_gap);
     }
 
+    BOOT_PROF_BEGIN(TP_ICON_GPU_UPLOAD);
     {
         SDL_GPUTextureCreateInfo tex_info = {0};
         Uint32 pixel_size;
@@ -2001,12 +2134,29 @@ static void ui_release_buffers(UIRenderState *ui) {
 static int  ensure_panel_texture(int panel_idx, int w, int h);
 static void ensure_panel_textures(dock_state *d);
 
+/* Bridge functions: let engine/editor DLLs record boot profiler timepoints */
+static void _boot_prof_begin_bridge(int id) {
+    BOOT_PROF_BEGIN((uint16_t)id);
+}
+static void _boot_prof_end_bridge(int id) {
+    BOOT_PROF_END((uint16_t)id);
+}
+static void _boot_prof_register_bridge(int id, int level, const char *name) {
+    if (g_boot_prof) nanoprof_event_register(g_boot_prof, (uint16_t)id, level, name);
+}
+
 // ---------------------------------------------------------------------------
 // init_externals
 // ---------------------------------------------------------------------------
 
 EXPORT int init_externals(const char *project_path) {
     dock_state *dock = NULL;
+
+    /* ── Boot profiler: start ─────────────────────────────────────── */
+    boot_prof_create();
+    BOOT_PROF_BEGIN(TP_BOOT);
+    BOOT_PROF_BEGIN(TP_INIT_EXTERNALS);
+    BOOT_PROF_BEGIN(TP_EXT_ALLOC_MEMORY);
 
     /* Allocate and zero the memory struct */
     g_mem = (memory *)malloc(sizeof(memory));
@@ -2044,6 +2194,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     /* Load project file if provided */
+    BOOT_PROF_BEGIN(TP_EXT_LOAD_PROJECT);
     if (project_path) {
         project_data loaded_project;
         if (project_load(project_path, &loaded_project) == 0) {
@@ -2141,6 +2292,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 1. Init SDL
+    BOOT_PROF_BEGIN(TP_EXT_SDL_INIT);
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return -1;
@@ -2148,12 +2300,14 @@ EXPORT int init_externals(const char *project_path) {
 
     // 2. Init shadercross BEFORE creating GPU device (needs DXC/SPIRV-Cross loaded
     //    so GetSPIRVShaderFormats returns correct format flags)
+    BOOT_PROF_BEGIN(TP_EXT_SHADERCROSS_INIT);
     if (!SDL_ShaderCross_Init()) {
         fprintf(stderr, "SDL_ShaderCross_Init failed: %s\n", SDL_GetError());
         return -1;
     }
 
     // 3. Create single docked window (all panels inside)
+    BOOT_PROF_BEGIN(TP_EXT_CREATE_WINDOW);
     window = SDL_CreateWindow("Anitra", 1600, 900, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -2163,6 +2317,7 @@ EXPORT int init_externals(const char *project_path) {
     display_density = SDL_GetWindowPixelDensity(window);
 
     // 4. Create GPU device
+    BOOT_PROF_BEGIN(TP_EXT_CREATE_GPU_DEVICE);
     gpu_device = SDL_CreateGPUDevice(
         SDL_ShaderCross_GetSPIRVShaderFormats(),
         true,  // debug_mode
@@ -2176,12 +2331,14 @@ EXPORT int init_externals(const char *project_path) {
     g_mem->game.gpu_device = gpu_device;
 
     /* Initialize profilers */
+    BOOT_PROF_BEGIN(TP_EXT_PROFILERS_INIT);
     cache_prof_init();
     cpu_prof_init();
     cpu_prof_capture_paused = 0;
     cpu_prof_capture_was_paused = 0;
 
     // 5. Claim window
+    BOOT_PROF_BEGIN(TP_EXT_CLAIM_WINDOW);
     if (!SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
         fprintf(stderr, "SDL_ClaimWindowForGPUDevice failed: %s\n", SDL_GetError());
         return -1;
@@ -2191,7 +2348,7 @@ EXPORT int init_externals(const char *project_path) {
     offscreen_format = SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
 
     // 6. Compile sprite shaders (split files to avoid DXC including unused resources)
-// 6. Compile sprite shaders (split files to avoid DXC including unused resources)
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_SPRITE);
     SDL_GPUShader* sprite_vs = load_shader_from_spirv(
         g_mem->game.shader_sprite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* sprite_fs = load_shader_from_spirv(
@@ -2202,6 +2359,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 7. Create sprite pipeline
+    BOOT_PROF_BEGIN(TP_EXT_PIPELINE_SPRITE);
     {
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -2281,6 +2439,7 @@ EXPORT int init_externals(const char *project_path) {
     SDL_ReleaseGPUShader(gpu_device, sprite_fs);
 
 // 8. Compile debug line shaders (split files)
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_DEBUG_LINES);
     SDL_GPUShader* line_vs = load_shader_from_spirv(
         g_mem->game.shader_debug_lines_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
     SDL_GPUShader* line_fs = load_shader_from_spirv(
@@ -2291,6 +2450,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 9. Create line pipeline
+    BOOT_PROF_BEGIN(TP_EXT_PIPELINE_DEBUG_LINES);
     {
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -2353,6 +2513,7 @@ EXPORT int init_externals(const char *project_path) {
     SDL_ReleaseGPUShader(gpu_device, line_fs);
 
     // 9b. Create 3D editor line pipeline (float3 position)
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_EDITOR_LINES);
     {
         const char *editor_line_vs_path = "assets/shaders/compiled/editor_line_vs.spv";
         SDL_GPUShader *ed_vs = load_shader_from_spirv(
@@ -2417,6 +2578,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 10. Compile and create UI rect pipeline
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_UI_RECT);
     {
         SDL_GPUShader *ui_vs = load_shader_from_spirv(
             g_mem->game.shader_ui_rect_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
@@ -2486,6 +2648,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 11. Compile and create font pipeline
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_FONT);
     {
         SDL_GPUShader *font_vs = load_shader_from_spirv(
             g_mem->game.shader_font_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
@@ -2562,6 +2725,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 12. Compile and create mesh (3D skinned) pipeline
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_MESH);
     {
         SDL_GPUShader *mesh_vs = load_shader_from_spirv(
             g_mem->game.shader_mesh_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
@@ -2649,6 +2813,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 13. Create mesh sampler (linear filtering for 3D textures)
+    BOOT_PROF_BEGIN(TP_EXT_CREATE_SAMPLERS);
     {
         SDL_GPUSamplerCreateInfo samp_info = {0};
         samp_info.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -2666,6 +2831,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 14. Create white 1x1 fallback texture (for untextured meshes)
+    BOOT_PROF_BEGIN(TP_EXT_CREATE_WHITE_TEXTURE);
     {
         SDL_GPUTextureCreateInfo tex_info = {0};
         tex_info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -2704,6 +2870,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // 15. Create bone storage buffer
+    BOOT_PROF_BEGIN(TP_EXT_CREATE_BONE_BUFFERS);
     {
         SDL_GPUBufferCreateInfo buf_info = {0};
         buf_info.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
@@ -2779,22 +2946,31 @@ EXPORT int init_externals(const char *project_path) {
     }
 
 // 11. Load textures from config paths
+    BOOT_PROF_BEGIN(TP_EXT_LOAD_TEXTURES);
+    BOOT_PROF_BEGIN(TP_EXT_LOAD_TEXTURE_PLAYER);
     gpu_textures[TEXTURE_PLAYER]      = load_gpu_texture(g_mem->game.texture_player);
+    BOOT_PROF_BEGIN(TP_EXT_LOAD_TEXTURE_TILES);
     gpu_textures[TEXTURE_TILES]       = load_gpu_texture(g_mem->game.texture_tiles);
+    BOOT_PROF_BEGIN(TP_EXT_LOAD_TEXTURE_SLIME);
     gpu_textures[TEXTURE_SLIME]       = load_gpu_texture(g_mem->game.texture_slime);
+    BOOT_PROF_BEGIN(TP_EXT_LOAD_TEXTURE_HEALTH_BAR);
     gpu_textures[TEXTURE_HEALTH_BAR]  = load_gpu_texture(g_mem->game.texture_health_bar);
+    BOOT_PROF_BEGIN(TP_EXT_LOAD_TEXTURE_HEALTH_FILL);
     gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture(g_mem->game.texture_health_fill);
 
     // Load editor font (MSDF atlas) and upload to GPU
+    BOOT_PROF_BEGIN(TP_EXT_FONT_LOAD_MSDF);
     if (font_load_msdf(g_mem->game.font_editor) != 0) {
         fprintf(stderr, "Failed to load editor font from: %s\n", g_mem->game.font_editor);
         return -1;
     }
+    BOOT_PROF_BEGIN(TP_EXT_HARFBUZZ_INIT);
     if (harfbuzz_init() != 0) {
         fprintf(stderr, "Failed to init HarfBuzz\n");
         return -1;
     }
 
+    BOOT_PROF_BEGIN(TP_EXT_ICON_FONT_LOAD);
     if (icon_font_load_msdf(BOOTSTRAP_ICON_FONT_PATH) != 0) {
         fprintf(stderr, "Warning: failed to load Bootstrap Icons font from: %s\n",
                 BOOTSTRAP_ICON_FONT_PATH);
@@ -2803,6 +2979,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // Pre-compute ASCII advance table for editor.dll's Clay text measurement
+    BOOT_PROF_BEGIN(TP_EXT_FONT_ADVANCE_TABLE);
     {
         float scale1 = stbtt_ScaleForPixelHeight(&font_stb_info, 1.0f);
         int ch;
@@ -2815,6 +2992,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // Initialize arena (single allocation for all engine memory)
+    BOOT_PROF_BEGIN(TP_EXT_ARENA_INIT);
     {
         uint32_t arena_size = 500 * 1024 * 1024; // 500 MB
         void *arena_mem = malloc(arena_size);
@@ -2832,6 +3010,7 @@ EXPORT int init_externals(const char *project_path) {
     dock = (dock_state *)g_mem->editor.dock;
 
     // Initialize Clay UI — game context (from main arena, for in-game UI: pause menu, HUD)
+    BOOT_PROF_BEGIN(TP_EXT_CLAY_INIT);
     {
         uint64_t clay_mem_size = Clay_MinMemorySize();
         clay_arena_game = arena_alloc_subarena(&g_mem->arena, (uint32_t)clay_mem_size, 16, "clay_game");
@@ -2851,6 +3030,7 @@ EXPORT int init_externals(const char *project_path) {
     g_mem->game.clay_game = clay_context;
 
     // Initialize dock system (single window, three-column layout)
+    BOOT_PROF_BEGIN(TP_EXT_DOCK_INIT);
     if (!dock->initialized) {
         dock_init_default(dock);
     }
@@ -2859,6 +3039,7 @@ EXPORT int init_externals(const char *project_path) {
     g_mem->editor.window = window;  /* editor gets the main window handle for focus/mouse checks */
 
     // Create composite pipeline (draws panel textures into window)
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_COMPOSITE);
     {
         SDL_GPUShader *comp_vs = load_shader_from_spirv(
             g_mem->game.shader_composite_vs, "main", SDL_SHADERCROSS_SHADERSTAGE_VERTEX);
@@ -2934,6 +3115,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // Create grid texture pipeline (same shaders as composite, but with depth stencil
+    BOOT_PROF_BEGIN(TP_EXT_SHADER_GRID);
     // so it can draw inside the profiler render pass which has a depth target)
     {
         SDL_GPUShader *grid_vs = load_shader_from_spirv(
@@ -2999,6 +3181,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // Create pre-rendered tab header textures (once at init)
+    BOOT_PROF_BEGIN(TP_EXT_HEADER_TEXTURES);
     {
         int i;
         for (i = 0; i < PANEL_COUNT; i++) {
@@ -3010,6 +3193,7 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // Allocate rendering sub-arena (draw_commands, mesh_commands, debug_lines, debug_vertices)
+    BOOT_PROF_BEGIN(TP_EXT_RENDERING_ARENA);
     {
         arena *rendering = arena_alloc_subarena(&g_mem->arena, 256 * 1024, 16, "rendering");
 
@@ -3030,9 +3214,11 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     // Allocate gameplay sub-arena (entities, etc.)
+    BOOT_PROF_BEGIN(TP_EXT_GAMEPLAY_ARENA);
     g_mem->game.gameplay = arena_alloc_subarena(&g_mem->arena, 4 * 1024 * 1024, 16, "gameplay");
 
     // Create initial panel textures (dock layout → panel rects → offscreen textures)
+    BOOT_PROF_BEGIN(TP_EXT_PANEL_TEXTURES);
     {
         int win_w, win_h;
         SDL_GetWindowSize(window, &win_w, &win_h);
@@ -3045,6 +3231,12 @@ EXPORT int init_externals(const char *project_path) {
     g_mem->game.dt = 0.0f;
     g_mem->game.play = true;
 
+    /* Wire boot profiler function pointers for engine/editor DLLs */
+    g_mem->game.boot_prof_begin    = _boot_prof_begin_bridge;
+    g_mem->game.boot_prof_end      = _boot_prof_end_bridge;
+    g_mem->game.boot_prof_register = _boot_prof_register_bridge;
+
+    BOOT_PROF_END(TP_INIT_EXTERNALS);
     printf("Externals initialized (SDL3 GPU, docked panels)\n");
     return 1;
 }
@@ -3593,6 +3785,7 @@ EXPORT int update_externals(void) {
     // Editor.dll now does: dock_layout for all windows, game panel size, editor panel
     // rect, profiler Clay layout. Must run BEFORE ensure_panel_textures and ortho.
     // Sync game Clay arena usage so profiler display is accurate
+    BOOT_PROF_BEGIN(TP_FRAME_EDITOR_UPDATE);
     FRAME_CPU_ZONE_BEGIN("editor_update");
     FRAME_CACHE_ZONE_BEGIN("editor_update");
     if (clay_arena_game && clay_context)
@@ -3600,6 +3793,7 @@ EXPORT int update_externals(void) {
     if (g_mem->editor.open && g_editor_update) g_editor_update(&g_mem->game, &g_mem->editor);
     FRAME_CACHE_ZONE_END();
     FRAME_CPU_ZONE_END();
+    BOOT_PROF_END(TP_FRAME_EDITOR_UPDATE);
 
     cpu_prof_capture_paused = (g_mem->editor.cpu_prof_timeline_paused != 0);
     cpu_prof_set_capture_enabled(!cpu_prof_capture_paused);
@@ -3641,14 +3835,17 @@ EXPORT int update_externals(void) {
     FRAME_CPU_ZONE_END();
 
     // --- Call engine update (fills draw_list + updates mesh3d animation) ---
+    BOOT_PROF_BEGIN(TP_FRAME_ENGINE_UPDATE);
     FRAME_CPU_ZONE_BEGIN("engine_update_call");
     FRAME_CACHE_ZONE_BEGIN("engine_update_call");
     cache_prof_frame_reset();
     g_update(&g_mem->game);
     FRAME_CACHE_ZONE_END();
     FRAME_CPU_ZONE_END();
+    BOOT_PROF_END(TP_FRAME_ENGINE_UPDATE);
 
     // --- Render ---
+    BOOT_PROF_BEGIN(TP_FRAME_GPU_RENDER);
     FRAME_CPU_ZONE_BEGIN("gpu_cmd_acquire");
     SDL_GPUCommandBuffer *cmd_buf = SDL_AcquireGPUCommandBuffer(gpu_device);
     FRAME_CPU_ZONE_END();
@@ -4635,9 +4832,19 @@ EXPORT int update_externals(void) {
     }
     FRAME_CPU_ZONE_END();
 
+    BOOT_PROF_END(TP_FRAME_GPU_RENDER);
+    BOOT_PROF_BEGIN(TP_FRAME_GPU_SUBMIT);
     FRAME_CPU_ZONE_BEGIN("gpu_submit");
     SDL_SubmitGPUCommandBuffer(cmd_buf);
     FRAME_CPU_ZONE_END();
+    BOOT_PROF_END(TP_FRAME_GPU_SUBMIT);
+
+    /* End boot profiler after first frame is submitted to GPU */
+    if (g_boot_prof) {
+        BOOT_PROF_END(TP_FIRST_FRAME);
+        BOOT_PROF_END(TP_BOOT);
+        boot_prof_destroy();
+    }
 
     // Release per-frame GPU buffers
     FRAME_CPU_ZONE_BEGIN("release_frame_resources");
@@ -4835,7 +5042,9 @@ EXPORT void end_externals(void) {
 // ---------------------------------------------------------------------------
 
 EXPORT void init_engine(void) {
+    BOOT_PROF_BEGIN(TP_INIT_ENGINE);
     g_init(&g_mem->game);
+    BOOT_PROF_END(TP_INIT_ENGINE);
 }
 
 EXPORT void destroy_engine(void) {
@@ -4859,7 +5068,12 @@ EXPORT void assign_update(engine_update_fn func) {
 // ---------------------------------------------------------------------------
 
 EXPORT void init_editor(void) {
+    BOOT_PROF_BEGIN(TP_INIT_EDITOR);
     if (g_editor_init) g_editor_init(&g_mem->game, &g_mem->editor);
+    BOOT_PROF_END(TP_INIT_EDITOR);
+
+    /* Boot profiler continues into first frame — destroyed in update_externals */
+    BOOT_PROF_BEGIN(TP_FIRST_FRAME);
 }
 
 EXPORT void destroy_editor(void) {

@@ -3,6 +3,16 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+static double _boot_ms(LARGE_INTEGER start) {
+  LARGE_INTEGER now, freq;
+  QueryPerformanceCounter(&now);
+  QueryPerformanceFrequency(&freq);
+  return (double)(now.QuadPart - start.QuadPart) * 1000.0 / (double)freq.QuadPart;
+}
+#endif
+
 static const char *resolve_project_path(int argc, char **argv) {
   int i;
   const char *project_path = NULL;
@@ -26,6 +36,12 @@ static const char *resolve_project_path(int argc, char **argv) {
 int main(int argc, char **argv) {
   const char *project_path = resolve_project_path(argc, argv);
 
+#ifdef _WIN32
+  LARGE_INTEGER t0;
+  QueryPerformanceCounter(&t0);
+  printf("[boot] start\n");
+#endif
+
   while (1) {
     void *lib;
     init_core_func init;
@@ -35,17 +51,26 @@ int main(int argc, char **argv) {
       fprintf(stderr, "Failed to copy externals.dll\n");
       return 1;
     }
+#ifdef _WIN32
+    printf("[boot] copy externals: %.2f ms\n", _boot_ms(t0));
+#endif
 
     if (copylibrary("core", "core_copy") != 0) {
       fprintf(stderr, "Failed to copy core.dll\n");
       return 1;
     }
+#ifdef _WIN32
+    printf("[boot] copy core: %.2f ms\n", _boot_ms(t0));
+#endif
 
     lib = loadlibrary("core_copy");
     if (lib == NULL) {
       fprintf(stderr, "Failed to load core_copy.dll\n");
       return 1;
     }
+#ifdef _WIN32
+    printf("[boot] load core_copy: %.2f ms\n", _boot_ms(t0));
+#endif
 
     init = (init_core_func)getfunction(lib, "init_core");
     if (init == NULL) {
@@ -54,6 +79,9 @@ int main(int argc, char **argv) {
       return 1;
     }
 
+#ifdef _WIN32
+    printf("[boot] calling init_core...\n");
+#endif
     result = init(project_path);
     if (result == 0) {
       /* Normal exit — do NOT FreeLibrary(core_copy.dll).

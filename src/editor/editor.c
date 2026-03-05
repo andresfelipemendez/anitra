@@ -16,6 +16,9 @@
 #include "cache_profiler.h"
 #include "cpu_profiler.h"
 #include "state_migration.gen.h"
+#include "boot_profiler.h"
+
+#define ED_BOOT_PROF(gs, id) do { if ((gs)->boot_prof_begin) (gs)->boot_prof_begin(id); } while(0)
 
 #define PROFILER_MAX_FLAT_RECORDS 65536
 
@@ -3233,6 +3236,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     dock_state *d;
 
     /* ── Migration check ──────────────────────────────────────────── */
+    ED_BOOT_PROF(gs, TP_ED_MIGRATION);
     if (e->mig_hdr && es->editor_arena) {
         uint64_t old_hash = e->mig_hdr->layout_hash;
         uint64_t new_hash = mig_compute_hash(mig_editor_state_fields,
@@ -3278,6 +3282,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     if (e->initialized) return;
 
     /* ── Defaults (conditional to preserve migrated values) ─────── */
+    ED_BOOT_PROF(gs, TP_ED_DEFAULTS);
     if (e->cam_pos.x == 0.0f && e->cam_pos.y == 0.0f && e->cam_pos.z == 0.0f)
         e->cam_pos = VEC3(0.0f, 3.0f, 8.0f);
     if (e->cam_yaw == 0.0f)    e->cam_yaw    = 3.14159265f;

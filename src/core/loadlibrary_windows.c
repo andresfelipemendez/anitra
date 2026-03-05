@@ -8,7 +8,8 @@ void *loadlibrary(const char *libname) {
   snprintf(libpath, sizeof(libpath), "%s.dll", libname);
   HMODULE hLib = LoadLibrary(libpath);
   if (hLib == NULL) {
-    fprintf(stderr, "Failed to load library: %s\n", libpath);
+    DWORD err = GetLastError();
+    fprintf(stderr, "Failed to load library: %s (error %lu)\n", libpath, err);
     return NULL;
   }
   return hLib;

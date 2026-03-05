@@ -418,6 +418,11 @@ typedef struct game_state {
   int project_loaded;
   char project_path[512];
 
+  /* Boot profiler function pointers — set by externals, used by engine/editor */
+  void (*boot_prof_begin)(int id);
+  void (*boot_prof_end)(int id);
+  void (*boot_prof_register)(int id, int level, const char *name);
+
   /* GPU device handle — set by externals, used by engine for asset loading */
   void *gpu_device;
 

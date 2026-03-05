@@ -5,6 +5,10 @@
 #include <math.h>
 #include <ctype.h>
 #include "state_migration.gen.h"
+#include "boot_profiler.h"
+
+#define ENG_BOOT_PROF(gs, id)                do { if ((gs)->boot_prof_begin)    (gs)->boot_prof_begin(id); } while(0)
+#define ENG_BOOT_PROF_REG(gs, id, level, nm) do { if ((gs)->boot_prof_register) (gs)->boot_prof_register(id, level, nm); } while(0)
 
 /* Animation functions (from anim.c, same DLL) */
 void init_pose_from_bind(Skeleton *skel, Vec3 *trans, Quat *rot, Vec3 *scale);
@@ -24,6 +28,9 @@ void apply_movement(game_state *gs);
 GltfModel load_glb(const char *path, arena *a);
 void load_animations_glb(const char *path, GltfModel *model, arena *a);
 void gltf_set_gpu_device(void *dev);
+void gltf_set_boot_profiler(void (*begin_fn)(int));
+void gltf_tex_cache_init(void);
+void gltf_tex_cache_free(void);
 
 #define SCENE_MIN_CAPACITY 32
 #define MODEL_ARENA_BYTES (64 * 1024 * 1024)
@@ -1402,10 +1409,20 @@ static int ensure_mesh3d_pose_buffers(game_state *gs, uint32_t joint_count) {
            gs->mesh3d.world_mats && gs->mesh3d.skin_mats;
 }
 
+/* Extract filename from a path (e.g. "assets/models/foo.glb" → "foo.glb") */
+static const char *asset_filename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    const char *bslash = strrchr(path, '\\');
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+    return slash ? slash + 1 : path;
+}
+
 static void load_scene_model_assets(game_state *gs) {
     int i;
     int needs_load = 0;
+    int tp_id = TP_ASSET_BASE;  /* next available asset timepoint ID */
     arena *model_arena;
+    char prof_name[128];
     if (!gs || !gs->gpu_device || !gs->root_arena) return;
     for (i = 0; i < gs->scene_model_asset_count; i++) {
         if (!gs->scene_model_assets[i].loaded) {
@@ -1422,16 +1439,32 @@ static void load_scene_model_assets(game_state *gs) {
     }
 
     gltf_set_gpu_device(gs->gpu_device);
+    gltf_set_boot_profiler(gs->boot_prof_begin);
+    gltf_tex_cache_init();
 
     for (i = 0; i < gs->scene_model_asset_count; i++) {
         scene_model_asset *asset = &gs->scene_model_assets[i];
         if (asset->loaded) continue;
 
+        /* Profile: load_glb */
+        if (tp_id <= TP_ASSET_MAX) {
+            snprintf(prof_name, sizeof(prof_name), "glb:%s", asset_filename(asset->path));
+            ENG_BOOT_PROF_REG(gs, tp_id, 3, prof_name);
+            ENG_BOOT_PROF(gs, tp_id);
+            tp_id++;
+        }
         asset->model = load_glb(asset->path, model_arena);
         asset->loaded = 1;
         asset->has_skeleton = asset->model.skeleton.joint_count > 0 ? 1 : 0;
 
         if (asset->has_skeleton && asset->has_animation_path && asset->animation_path[0]) {
+            /* Profile: primary animation GLB */
+            if (tp_id <= TP_ASSET_MAX) {
+                snprintf(prof_name, sizeof(prof_name), "anim:%s", asset_filename(asset->animation_path));
+                ENG_BOOT_PROF_REG(gs, tp_id, 3, prof_name);
+                ENG_BOOT_PROF(gs, tp_id);
+                tp_id++;
+            }
             load_animations_glb(asset->animation_path, &asset->model, model_arena);
             /* Also load all other animation assets from the project */
             {
@@ -1440,6 +1473,14 @@ static void load_scene_model_assets(game_state *gs) {
                     if (gs->project.assets[ai].type != ASSET_ANIMATION) continue;
                     if (strcmp(gs->project.assets[ai].path, asset->animation_path) == 0)
                         continue;
+                    /* Profile: extra animation GLB */
+                    if (tp_id <= TP_ASSET_MAX) {
+                        snprintf(prof_name, sizeof(prof_name), "anim:%s",
+                                 asset_filename(gs->project.assets[ai].path));
+                        ENG_BOOT_PROF_REG(gs, tp_id, 3, prof_name);
+                        ENG_BOOT_PROF(gs, tp_id);
+                        tp_id++;
+                    }
                     load_animations_glb(gs->project.assets[ai].path,
                                         &asset->model, model_arena);
                 }
@@ -1450,6 +1491,8 @@ static void load_scene_model_assets(game_state *gs) {
             fprintf(stderr, "Warning: model '%s' has no primitives\n", asset->path);
         }
     }
+
+    gltf_tex_cache_free();
 }
 
 static void sync_primary_mesh3d_asset(game_state *gs) {
@@ -1734,6 +1777,7 @@ EXPORT void init_engine(game_state *gs) {
     if (!gs) return;
 
     /* ── game_state migration check ──────────────────────────────── */
+    ENG_BOOT_PROF(gs, TP_ENG_MIGRATION);
     if (gs->mig_hdr && gs->gameplay) {
         uint64_t old_hash = gs->mig_hdr->layout_hash;
         uint64_t new_hash = mig_compute_hash(mig_game_state_fields,
@@ -1773,6 +1817,7 @@ EXPORT void init_engine(game_state *gs) {
     }
 
     /* ── Register system table (re-register every init for hot-reload) ── */
+    ENG_BOOT_PROF(gs, TP_ENG_REGISTER_SYSTEMS);
     gs->system_count = 0;
     register_system(gs, "clear_draw_lists",     (system_fn)system_clear_draw_lists,         0);
     register_system(gs, "input",                (system_fn)update_input,                    1);
@@ -1796,6 +1841,7 @@ EXPORT void init_engine(game_state *gs) {
         if (target_entities < 8) target_entities = 8;
     }
 
+    ENG_BOOT_PROF(gs, TP_ENG_SCENE_STORAGE);
     {
         error_value err = ensure_scene_storage(gs, target_entities);
         if (!ERRV_IS_OK(err)) { errv_log("ensure_scene_storage", err); return; }
@@ -1804,6 +1850,7 @@ EXPORT void init_engine(game_state *gs) {
     fflush(stderr);
 
     /* Init anim SM pool (arena pointers don't survive hot-reload) */
+    ENG_BOOT_PROF(gs, TP_ENG_ANIM_POOL);
     if (!gs->anim.pool_initialized && gs->gameplay) {
         anim_sm_init_pool(&gs->anim, gs->gameplay);
         fprintf(stderr, "[init_engine] anim pool init: %s\n",
@@ -1820,6 +1867,7 @@ EXPORT void init_engine(game_state *gs) {
 
     clear_scene_storage(gs);
 
+    ENG_BOOT_PROF(gs, TP_ENG_BUILD_SCENE);
     if (gs->project_loaded) {
         fprintf(stderr, "[init_engine] building scene from project...\n"); fflush(stderr);
         build_scene_from_project(gs);
@@ -1834,13 +1882,16 @@ EXPORT void init_engine(game_state *gs) {
     if (gs->mesh3d.camera_near <= 0.0f) gs->mesh3d.camera_near = 0.1f;
     if (gs->mesh3d.camera_far <= gs->mesh3d.camera_near) gs->mesh3d.camera_far = 100.0f;
 
+    ENG_BOOT_PROF(gs, TP_ENG_LOAD_MODEL_ASSETS);
     fprintf(stderr, "[init_engine] loading model assets...\n"); fflush(stderr);
     load_scene_model_assets(gs);
     fprintf(stderr, "[init_engine] model assets loaded, %d assets\n",
             gs->scene_model_asset_count); fflush(stderr);
+    ENG_BOOT_PROF(gs, TP_ENG_SYNC_MESH);
     sync_primary_mesh3d_asset(gs);
     sync_mesh_camera_from_components(gs);
 
+    ENG_BOOT_PROF(gs, TP_ENG_INIT_POSE);
     if (gs->mesh3d.skeleton.joint_count > 0 && gs->mesh3d.skin_mats) {
         init_pose_from_bind(&gs->mesh3d.skeleton,
                             gs->mesh3d.pose_trans, gs->mesh3d.pose_rot, gs->mesh3d.pose_scale);
@@ -1852,6 +1903,7 @@ EXPORT void init_engine(game_state *gs) {
     gs->animation_transition_count = 0;
 
     /* ── Anim SM: set up default states and register entities ──── */
+    ENG_BOOT_PROF(gs, TP_ENG_ANIM_SM_SETUP);
     if (gs->anim.pool_initialized && gs->anim.state_count == 0 &&
         gs->mesh3d.clip_count > 0) {
         int idle_clip = -1, run_clip = -1, attack_clip = -1;

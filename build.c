@@ -677,7 +677,7 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite -Ilib/toml-c"
+        " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
         " src/externals/externals_runtime.c src/externals/externals.c"
         " src/project.c lib/sqlite/sqlite3.c"
         " lib/remotery/Remotery.c lib/remotery/rmt_tcc_compat.c"
@@ -697,7 +697,7 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite -Ilib/toml-c"
+        " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
         " src/externals/externals_runtime.c src/externals/externals.c"
         " src/project.c lib/sqlite/sqlite3.c lib/remotery/Remotery.c"
         " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz"
@@ -710,7 +710,7 @@ static int build_externals(void)
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
         " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
         " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite -Ilib/toml-c"
+        " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
         " src/externals/externals_runtime.c src/externals/externals.c"
         " src/project.c lib/sqlite/sqlite3.c lib/remotery/Remotery.c"
         " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz"
@@ -830,8 +830,9 @@ static int mig_parse_field_line(const char *line) {
 
     p = mig_trim(line);
 
-    /* Skip blank, comments, preprocessor, braces */
+    /* Skip blank, comments, preprocessor, braces, function pointers */
     if (*p == '\0' || *p == '/' || *p == '#' || *p == '{' || *p == '}') return 0;
+    if (strstr(p, "(*") != NULL) return 0; /* function pointer — not migratable */
 
     /* Find semicolon — required for a field */
     semi = strchr(p, ';');
@@ -1954,6 +1955,49 @@ static int build_server(void)
     return 0;
 }
 
+/* ------- nanoprof2chrome (standalone tool) ------------------------------- */
+static int build_nanoprof2chrome(void)
+{
+    char cmd[CMD_MAX];
+    const char *out_exe = DEBUG_DIR "/nanoprof2chrome"
+#ifdef _WIN32
+        ".exe"
+#endif
+    ;
+
+    printf("\n=== Building nanoprof2chrome ===\n");
+
+    if (!needs_rebuild("lib/nanoprof/nanoprof2chrome.c", out_exe) && !force_rebuild) {
+        printf("   nanoprof2chrome is up to date.\n");
+        return 0;
+    }
+
+#ifdef _WIN32
+    snprintf(cmd, sizeof(cmd),
+        ".\\tcc.exe -Blib/tcc-windows"
+        " -o %s"
+        " lib/nanoprof/nanoprof2chrome.c", out_exe);
+#elif defined(__APPLE__)
+    snprintf(cmd, sizeof(cmd),
+        "lib/tcc/macos/tcc -Blib/tcc/macos"
+        " -o %s"
+        " lib/nanoprof/nanoprof2chrome.c", out_exe);
+#else
+    snprintf(cmd, sizeof(cmd),
+        "./tcc -Blib/tcc-linux"
+        " -o %s"
+        " lib/nanoprof/nanoprof2chrome.c", out_exe);
+#endif
+
+    printf(">> %s\n", cmd);
+    if (system(cmd) != 0) {
+        printf("!! nanoprof2chrome build failed.\n");
+        return 1;
+    }
+    printf("   Built: %s\n", out_exe);
+    return 0;
+}
+
 /* ------- all ------------------------------------------------------------ */
 static int build_all(void)
 {
@@ -2093,6 +2137,9 @@ int main(int argc, char **argv)
     }
     if (argc > 1 && strcmp(argv[1], "test") == 0) {
         return build_test();
+    }
+    if (argc > 1 && strcmp(argv[1], "nanoprof2chrome") == 0) {
+        return build_nanoprof2chrome();
     }
 
     return build_all();

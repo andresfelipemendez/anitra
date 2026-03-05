@@ -1,10 +1,13 @@
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
+#include "boot_profiler.h"  /* for TP_SUB_* enum IDs only (no IMPL) */
 #include "gltf_types.h"
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_SIMD
 #include "stb_image.h"
+#define STB_DS_IMPLEMENTATION
+#include "stb_ds.h"
 #include <SDL3/SDL_gpu.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +20,68 @@ static SDL_GPUDevice *s_gpu_device;
 
 void gltf_set_gpu_device(void *dev) {
     s_gpu_device = (SDL_GPUDevice *)dev;
+}
+
+/* Boot profiler — set via gltf_set_boot_profiler() before loading */
+static void (*s_prof_begin)(int id);
+
+void gltf_set_boot_profiler(void (*begin_fn)(int)) {
+    s_prof_begin = begin_fn;
+}
+
+#define GLTF_PROF(id) do { if (s_prof_begin) s_prof_begin(id); } while(0)
+
+/* ── texture cache (dedup identical images across GLBs) ──────── */
+
+typedef struct {
+    uint64_t key;           /* FNV-1a fingerprint of compressed image bytes */
+    SDL_GPUTexture *value;
+} TexCacheEntry;
+
+static TexCacheEntry *s_tex_cache = NULL;
+static int s_tex_cache_hits = 0;
+
+/* FNV-1a fingerprint: hash compressed image size + first 256 bytes */
+static uint64_t tex_fingerprint(cgltf_image *image) {
+    uint64_t hash = 14695981039346656037ULL; /* FNV-1a offset basis */
+    size_t i, n;
+
+    if (image->buffer_view) {
+        const uint8_t *data = (const uint8_t *)image->buffer_view->buffer->data
+                            + image->buffer_view->offset;
+        size_t size = image->buffer_view->size;
+        /* mix in total size */
+        for (i = 0; i < 8; i++) {
+            hash ^= (size >> (i * 8)) & 0xFF;
+            hash *= 1099511628211ULL;
+        }
+        /* hash first 256 bytes of compressed image data */
+        n = size < 256 ? size : 256;
+        for (i = 0; i < n; i++) {
+            hash ^= data[i];
+            hash *= 1099511628211ULL;
+        }
+    } else if (image->uri) {
+        const char *s = image->uri;
+        while (*s) {
+            hash ^= (uint8_t)*s++;
+            hash *= 1099511628211ULL;
+        }
+    }
+    return hash;
+}
+
+void gltf_tex_cache_init(void) {
+    s_tex_cache = NULL;
+    s_tex_cache_hits = 0;
+}
+
+void gltf_tex_cache_free(void) {
+    int total = hmlen(s_tex_cache);
+    printf("[tex_cache] %d unique textures, %d cache hits (skipped)\n",
+           total, s_tex_cache_hits);
+    hmfree(s_tex_cache);
+    s_tex_cache = NULL;
 }
 
 /* ── helpers ──────────────────────────────────────────────────── */
@@ -114,6 +179,18 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, const char *asset_dir
     SDL_GPUCopyPass *copy;
     SDL_GPUTextureTransferInfo src = {0};
     SDL_GPUTextureRegion dst_region = {0};
+    uint64_t fp;
+
+    /* check texture cache — skip decode+upload if we already have this image */
+    fp = tex_fingerprint(image);
+    {
+        ptrdiff_t idx = hmgeti(s_tex_cache, fp);
+        if (idx >= 0) {
+            s_tex_cache_hits++;
+            return s_tex_cache[idx].value;
+        }
+    }
+
     if (image->buffer_view) {
         /* embedded image in GLB */
         const uint8_t *buf = (const uint8_t *)image->buffer_view->buffer->data;
@@ -172,6 +249,9 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, const char *asset_dir
     SDL_EndGPUCopyPass(copy);
     SDL_SubmitGPUCommandBuffer(cmd);
     SDL_ReleaseGPUTransferBuffer(s_gpu_device, transfer);
+
+    /* store in texture cache for future lookups */
+    hmput(s_tex_cache, fp, texture);
 
     return texture;
 }
@@ -310,6 +390,7 @@ static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, const ch
         out->vertex_count = vert_count;
 
         /* build interleaved vertex array */
+        GLTF_PROF(TP_SUB_VTX);
         verts = (SkinnedVertex *)malloc(vert_count * sizeof(SkinnedVertex));
         memset(verts, 0, vert_count * sizeof(SkinnedVertex));
 
@@ -361,6 +442,7 @@ static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, const ch
         free(verts);
 
         /* indices */
+        GLTF_PROF(TP_SUB_IDX);
         if (prim->indices) {
             uint32_t idx_count = (uint32_t)prim->indices->count;
             uint16_t *indices;
@@ -377,6 +459,7 @@ static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, const ch
         }
 
         /* texture from material */
+        GLTF_PROF(TP_SUB_TEX);
         if (prim->material &&
             prim->material->has_pbr_metallic_roughness &&
             prim->material->pbr_metallic_roughness.base_color_texture.texture) {
@@ -581,6 +664,7 @@ GltfModel load_glb(const char *path, arena *ar) {
 
     path_get_dirname(path, asset_dir, sizeof(asset_dir));
 
+    GLTF_PROF(TP_SUB_PARSE);
     result = cgltf_parse_file(&options, path, &data);
     if (result != cgltf_result_success) {
         fprintf(stderr, "Failed to parse GLB: %s\n", path);
@@ -609,6 +693,7 @@ GltfModel load_glb(const char *path, arena *ar) {
             total_prims += (uint32_t)data->nodes[ni].mesh->primitives_count;
     }
 
+    GLTF_PROF(TP_SUB_MESHES);
     if (total_prims > 0) {
         float inv_skel_world[16];
         float bb_min[3] = { 1e30f, 1e30f, 1e30f };
@@ -702,10 +787,12 @@ GltfModel load_glb(const char *path, arena *ar) {
         }
     }
 
+    GLTF_PROF(TP_SUB_SKELETON);
     if (skin) {
         model.skeleton = extract_skeleton(skin, ar);
     }
 
+    GLTF_PROF(TP_SUB_CLIPS);
     if (data->animations_count > 0 && skin) {
         uint32_t i;
         model.clip_count = (uint32_t)data->animations_count;
@@ -732,6 +819,7 @@ void load_animations_glb(const char *path, GltfModel *model, arena *ar) {
     uint32_t remap_misses = 0;
     uint32_t ai;
 
+    GLTF_PROF(TP_SUB_PARSE);
     result = cgltf_parse_file(&options, path, &data);
     if (result != cgltf_result_success) {
         fprintf(stderr, "Failed to parse anim GLB: %s\n", path);
@@ -761,6 +849,7 @@ void load_animations_glb(const char *path, GltfModel *model, arena *ar) {
      * The two files may store joints in different order within their skins.
      * We match by joint node NAME to get the correct mapping.
      */
+    GLTF_PROF(TP_SUB_REMAP);
     anim_jc = (uint32_t)skin->joints_count;
     char_jc = model->skeleton.joint_count;
     remap = (uint16_t *)malloc(anim_jc * sizeof(uint16_t));
@@ -782,6 +871,7 @@ void load_animations_glb(const char *path, GltfModel *model, arena *ar) {
     }
     printf("  Joint remap: %u anim -> %u char (%u misses)\n", anim_jc, char_jc, remap_misses);
 
+    GLTF_PROF(TP_SUB_CLIPS);
     if (data->animations_count > 0) {
         uint32_t i;
         uint32_t old_count = model->clip_count;
