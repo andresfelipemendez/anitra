@@ -81,6 +81,13 @@
     " -Isrc -Isrc/collab" \
     " tests/test_collab_ot.c"
 
+#define TCC_TEST_GYM_SCENE_CMD \
+    ".\\tcc.exe -Blib/tcc-windows -g" \
+    " -o build/Debug/test_gym_scene.exe" \
+    " -Isrc -Isrc/engine -Isrc/editor" \
+    " -Ilib/SDL3/include -Ilib/cgltf -Ilib/toml-c" \
+    " tests/test_gym_scene.c"
+
 /* test_editor.dll: real editor.c with SDL/externals stubs compiled in */
 #define TCC_TEST_DLL_EDITOR_CMD \
     ".\\tcc.exe -Blib/tcc-windows -g -shared" \

@@ -125,10 +125,25 @@ typedef struct rigid_body_component {
     int use_gravity;
 } rigid_body_component;
 
+typedef enum InputButton {
+    INPUT_A = 1 << 0,
+    INPUT_B = 1 << 1,
+    INPUT_X = 1 << 2,
+    INPUT_Y = 1 << 3,
+} InputButton;
+
+typedef struct input_state {
+    float horizontal;
+    float vertical;
+    int input_mask;
+} input_state;
+
 typedef struct character_controller_component {
     int entity_index;
     float move_speed;
     float jump_speed;
+    input_state own_input;  /* per-entity input; overrides gs->input when use_own_input != 0 */
+    int use_own_input;
 } character_controller_component;
 
 typedef struct health_component {
@@ -184,7 +199,19 @@ typedef struct camera_component {
     Vec3 up;
 } camera_component;
 
-typedef enum { TRIGGER_PICKUP, TRIGGER_DOOR, TRIGGER_WEAPON_PICKUP } trigger_type;
+/* Bot behaviors — drive cc->own_input each frame for autonomous movement */
+#define BOT_BEHAVIOR_IDLE         0
+#define BOT_BEHAVIOR_WALK_FORWARD 1
+#define BOT_BEHAVIOR_CIRCLE       2
+#define BOT_BEHAVIOR_PATROL       3
+
+typedef struct bot_component {
+    int entity_index;
+    int behavior;   /* BOT_BEHAVIOR_* */
+    float phase;    /* angular offset, used by BOT_BEHAVIOR_CIRCLE */
+} bot_component;
+
+typedef enum { TRIGGER_PICKUP, TRIGGER_DOOR, TRIGGER_WEAPON_PICKUP, TRIGGER_ZONE } trigger_type;
 
 typedef struct trigger_component {
     int entity_index;
@@ -192,6 +219,7 @@ typedef struct trigger_component {
     int target_entity;
     float radius;
     int activated;
+    int activated_by_entity; /* entity that activated this trigger (-1 = none) */
     char joint_name[64];
 } trigger_component;
 
@@ -203,18 +231,6 @@ typedef struct bone_attach_component {
     Quat offset_rot;
 } bone_attach_component;
 
-typedef enum InputButton {
-    INPUT_A = 1 << 0,
-    INPUT_B = 1 << 1,
-    INPUT_X = 1 << 2,
-    INPUT_Y = 1 << 3,
-} InputButton;
-
-typedef struct input_state {
-    float horizontal;
-    float vertical;
-    int input_mask;
-} input_state;
 
 typedef struct camera {
     vec2 position;
@@ -318,6 +334,7 @@ typedef struct game_state {
   int width;
   int height;
   float dt;
+  float elapsed_time; /* total accumulated play-mode simulation time (seconds) */
 
   /* ── System table (data-driven update pipeline) ── */
   engine_system systems[ENGINE_MAX_SYSTEMS];
@@ -378,6 +395,9 @@ typedef struct game_state {
   trigger_component *trigger_components;
   int trigger_component_count;
   int trigger_component_capacity;
+  bot_component *bot_components;
+  int bot_component_count;
+  int bot_component_capacity;
   bone_attach_component *bone_attach_components;
   int bone_attach_component_count;
   int bone_attach_component_capacity;
@@ -400,6 +420,7 @@ typedef struct game_state {
   int animation_transition_index[PROJECT_COMP_MAX];
   int camera_index[PROJECT_COMP_MAX];
   int trigger_index[PROJECT_COMP_MAX];
+  int bot_index[PROJECT_COMP_MAX];
   int bone_attach_index[PROJECT_COMP_MAX];
 
   /* Per-frame visibility cache: 0=unknown, 1=visible, -1=hidden */

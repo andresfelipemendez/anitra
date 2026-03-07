@@ -65,6 +65,7 @@ typedef struct { int entity; float half_extents[3]; } project_box_collider;
 typedef struct { int entity; float radius; float half_height; } project_capsule_collider;
 typedef struct { int entity; float fov; float near_plane; float far_plane; float target[3]; float up[3]; } project_cam;
 typedef struct { int entity; char type_str[16]; int target; float radius; char joint[64]; } project_trigger;
+typedef struct { int entity; char behavior[32]; float phase; } project_bot;
 
 typedef enum { ASSET_MODEL, ASSET_ANIMATION, ASSET_DUNGEON_PIECE, ASSET_SPRITE } project_asset_type;
 
@@ -79,6 +80,7 @@ typedef struct {
 typedef struct project_data {
     char name[128];
     int version;
+    int autoplay;  /* 1 = enter play mode automatically on load */
     project_camera camera;
     int has_camera;
     project_lighting lighting;
@@ -127,6 +129,8 @@ typedef struct project_data {
     int camera_count;
     project_trigger triggers[PROJECT_COMP_MAX];
     int trigger_count;
+    project_bot bots[PROJECT_COMP_MAX];
+    int bot_count;
 } project_data;
 
 const project_mesh *project_find_mesh(const project_data *p, int entity);

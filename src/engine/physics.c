@@ -457,7 +457,7 @@ void collision(game_state* gs) {
 }
 
 static float collider_half_height(box_collider_component *bc, capsule_collider_component *cc) {
-    if (cc) return cc->half_height;
+    if (cc) return cc->half_height + cc->radius;
     if (bc) return bc->half_height;
     return 0.5f;
 }
@@ -466,8 +466,7 @@ static int y_ranges_overlap(float y1, float hh1, float y2, float hh2) {
     return (y1 - hh1 < y2 + hh2) && (y1 + hh1 > y2 - hh2);
 }
 
-void apply_movement(game_state* gs) {
-    physics_actor_view actor;
+static void apply_movement_single(game_state *gs, physics_actor_view *actor) {
     collider_target_view obstacles[PHYSICS_QUERY_MAX_RESULTS];
     int obstacle_count;
     int i;
@@ -476,101 +475,118 @@ void apply_movement(game_state* gs) {
     Vec3 actor_parent_offset;
     float actor_hh;
     const float gravity = -18.0f;
-    if (!gs || gs->scene_entity_count <= 0) return;
 
-    if (!query_primary_actor(gs, &actor)) return;
-    actor_world = resolve_world_position(gs, actor.entity_index);
-    actor_parent_offset = resolve_parent_world_offset(gs, actor.entity_index);
-    actor_hh = collider_half_height(actor.box_collider, actor.capsule_collider);
+    actor_world        = resolve_world_position(gs, actor->entity_index);
+    actor_parent_offset = resolve_parent_world_offset(gs, actor->entity_index);
+    actor_hh           = collider_half_height(actor->box_collider, actor->capsule_collider);
 
-    if (actor.rigid_body && actor.rigid_body->use_gravity) {
-        actor.velocity->velocity.y += gravity * gs->dt;
-    }
+    if (actor->rigid_body && actor->rigid_body->use_gravity)
+        actor->velocity->velocity.y += gravity * gs->dt;
 
-    obstacle_count = query_movement_obstacles(gs, actor.entity_index,
+    obstacle_count = query_movement_obstacles(gs, actor->entity_index,
                                               obstacles, PHYSICS_QUERY_MAX_RESULTS);
 
-    /* Horizontal collision with wall sliding (separate-axis).
-       Test X and Z independently — blocked axis zeroes out,
-       free axis slides through.  v_slide = v - dot(v,n)*n
-       simplifies to this for axis-aligned boxes. */
+    /* Horizontal collision — separate-axis (X then Z) */
     {
-        float move_x = actor.velocity->velocity.x * gs->dt;
-        float move_z = actor.velocity->velocity.z * gs->dt;
+        float move_x = actor->velocity->velocity.x * gs->dt;
+        float move_z = actor->velocity->velocity.z * gs->dt;
 
-        /* Test X axis alone */
         {
             vec2 test_xz = { actor_world.x + move_x, actor_world.z };
-            sync_collider_to_pos(actor.box_collider, actor.capsule_collider, test_xz);
+            sync_collider_to_pos(actor->box_collider, actor->capsule_collider, test_xz);
             for (i = 0; i < obstacle_count; i++) {
                 collider_target_view *ob = &obstacles[i];
                 Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
                 float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
                 sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
                                      (vec2){ob_world.x, ob_world.z});
-                if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
+                if (bbox_collide(collider_rect_ptr(actor->box_collider, actor->capsule_collider),
                                  collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
                     y_ranges_overlap(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
-                    move_x = 0.0f;
-                    break;
+                    move_x = 0.0f; break;
                 }
             }
         }
-
-        /* Test Z axis (from resolved X) */
         {
             vec2 test_xz = { actor_world.x + move_x, actor_world.z + move_z };
-            sync_collider_to_pos(actor.box_collider, actor.capsule_collider, test_xz);
+            sync_collider_to_pos(actor->box_collider, actor->capsule_collider, test_xz);
             for (i = 0; i < obstacle_count; i++) {
                 collider_target_view *ob = &obstacles[i];
                 Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
                 float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
                 sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
                                      (vec2){ob_world.x, ob_world.z});
-                if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
+                if (bbox_collide(collider_rect_ptr(actor->box_collider, actor->capsule_collider),
                                  collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
                     y_ranges_overlap(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
-                    move_z = 0.0f;
-                    break;
+                    move_z = 0.0f; break;
                 }
             }
         }
 
-        actor.transform->position.x += move_x;
-        actor.transform->position.z += move_z;
+        actor->transform->position.x += move_x;
+        actor->transform->position.z += move_z;
     }
 
     /* Vertical collision — gravity / jump */
     {
         vec2 current_xz = { actor_world.x, actor_world.z };
-        float predicted_y = actor_world.y + actor.velocity->velocity.y * gs->dt;
+        float predicted_y = actor_world.y + actor->velocity->velocity.y * gs->dt;
 
-        sync_collider_to_pos(actor.box_collider, actor.capsule_collider, current_xz);
+        sync_collider_to_pos(actor->box_collider, actor->capsule_collider, current_xz);
 
         for (i = 0; i < obstacle_count; i++) {
             collider_target_view *ob = &obstacles[i];
             Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
             float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
-
             sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
                                  (vec2){ob_world.x, ob_world.z});
-
-            if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
+            if (bbox_collide(collider_rect_ptr(actor->box_collider, actor->capsule_collider),
                              collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
                 y_ranges_overlap(predicted_y, actor_hh, ob_world.y, ob_hh)) {
-                vertical_collision = 1;
-                break;
+                vertical_collision = 1; break;
             }
         }
     }
 
     if (!vertical_collision) {
-        float new_y = actor_world.y + actor.velocity->velocity.y * gs->dt;
-        actor.transform->position.y = new_y - actor_parent_offset.y;
-    } else if (actor.velocity->velocity.y < 0.0f) {
-        actor.velocity->velocity.y = 0.0f;
+        float new_y = actor_world.y + actor->velocity->velocity.y * gs->dt;
+        actor->transform->position.y = new_y - actor_parent_offset.y;
+    } else if (actor->velocity->velocity.y < 0.0f) {
+        actor->velocity->velocity.y = 0.0f;
     }
 
-    actor.velocity->velocity.x = 0.0f;
-    actor.velocity->velocity.z = 0.0f;
+    actor->velocity->velocity.x = 0.0f;
+    actor->velocity->velocity.z = 0.0f;
+}
+
+void apply_movement(game_state* gs) {
+    int i;
+    if (!gs || gs->scene_entity_count <= 0) return;
+
+    if (gs->character_controller_component_count > 0) {
+        /* Multi-actor: run physics for every character controller entity */
+        for (i = 0; i < gs->character_controller_component_count; i++) {
+            character_controller_component *cc = &gs->character_controller_components[i];
+            physics_actor_view actor;
+            int entity = cc->entity_index;
+            if (entity < 0 || entity >= gs->scene_entity_count) continue;
+            actor.entity_index    = entity;
+            actor.ent             = &gs->scene_entities[entity];
+            actor.transform       = find_transform_component(gs, entity);
+            actor.velocity        = find_velocity_component(gs, entity);
+            actor.rigid_body      = find_rigid_body_component(gs, entity);
+            actor.health          = find_health_component(gs, entity);
+            actor.box_collider    = find_box_collider_component(gs, entity);
+            actor.capsule_collider = find_capsule_collider_component(gs, entity);
+            if (!actor.transform || !actor.velocity) continue;
+            if (!actor.box_collider && !actor.capsule_collider) continue;
+            apply_movement_single(gs, &actor);
+        }
+    } else {
+        /* Fallback: single primary actor (scenes without explicit CC components) */
+        physics_actor_view actor;
+        if (query_primary_actor(gs, &actor))
+            apply_movement_single(gs, &actor);
+    }
 }

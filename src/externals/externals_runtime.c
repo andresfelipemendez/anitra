@@ -2401,6 +2401,8 @@ EXPORT int init_externals(const char *project_path) {
         if (project_load(project_path, &loaded_project) == 0) {
             g_mem->game.project = loaded_project;
             g_mem->game.project_loaded = 1;
+            if (loaded_project.autoplay)
+                g_mem->game.editor_play_mode = 1;
 
             /* Override camera from project */
             if (g_mem->game.project.has_camera) {
@@ -3702,6 +3704,8 @@ EXPORT int update_externals(void) {
     if (dtd < 0.0) dtd = 0.0;
     if (dtd > 0.1) dtd = 0.1;
     g_mem->game.dt = (float)dtd;
+    if (g_mem->game.editor_play_mode)
+        g_mem->game.elapsed_time += g_mem->game.dt;
 
     // --- Events ---
     {

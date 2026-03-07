@@ -77,6 +77,7 @@
 #define OBJ_SHADERCROSS_DIR "build/obj/shadercross"
 #define PROJECT_INCLUDE_FILE "project.txt"
 #define DEFAULT_PROJECT_TOML "dungeon1/project.toml"
+#define GYM_SCENE_TOML       "tests/gym_scene.toml"
 
 /* Common include paths used by externals, core, engine, and exe targets */
 #define COMMON_INCLUDES \
@@ -1054,6 +1055,13 @@ static int build_test(void)
         return 1;
     }
 
+    printf(">> " TCC_TEST_GYM_SCENE_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_GYM_SCENE_CMD) != 0) {
+        printf("!! test_gym_scene build failed.\n");
+        return 1;
+    }
+
     printf("\n=== Running tests ===\n");
     fflush(stdout);
 #ifdef _WIN32
@@ -1094,6 +1102,14 @@ static int build_test(void)
     if (system("build/Debug/test_collab_ot") != 0) {
 #endif
         printf("!! test_collab_ot failed.\n");
+        failed = 1;
+    }
+#ifdef _WIN32
+    if (system("build\\Debug\\test_gym_scene.exe") != 0) {
+#else
+    if (system("build/Debug/test_gym_scene") != 0) {
+#endif
+        printf("!! test_gym_scene failed.\n");
         failed = 1;
     }
 
@@ -1989,6 +2005,52 @@ static int build_and_run(void)
 #endif
 }
 
+/* ------- play_test (build + launch gym scene, no watch) ----------------- */
+static int build_play_test(void)
+{
+    printf("=== Building play test ===\n\n");
+    if (build_all() != 0) return 1;
+
+    printf("\n=== Launching gym scene ===\n");
+
+#ifdef _WIN32
+    {
+        STARTUPINFOA si = {0};
+        PROCESS_INFORMATION pi = {0};
+        char engine_path[PATH_SIZE];
+        char engine_cmdline[CMD_MAX];
+        si.cb = sizeof(si);
+        snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine.exe", DEBUG_DIR);
+        snprintf(engine_cmdline, sizeof(engine_cmdline),
+                 "\"%s\" --include \"%s\"", engine_path, GYM_SCENE_TOML);
+        if (!CreateProcessA(engine_path, engine_cmdline,
+                            NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            printf("!! Failed to launch engine (error %lu)\n", GetLastError());
+            return 1;
+        }
+        printf("   Engine launched (PID: %lu) — press Play in the editor to start\n",
+               (unsigned long)pi.dwProcessId);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return 0;
+    }
+#else
+    {
+        pid_t pid = fork();
+        if (pid < 0) { printf("!! Failed to fork\n"); return 1; }
+        if (pid == 0) {
+            char engine_path[PATH_SIZE];
+            snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
+            execl(engine_path, "AnitraEngine", "--include", GYM_SCENE_TOML, NULL);
+            printf("!! Failed to exec engine\n");
+            _exit(1);
+        }
+        printf("   Engine launched (PID: %d) — press Play in the editor to start\n", pid);
+        return 0;
+    }
+#endif
+}
+
 /* ------- collab (server + 2 editors + watch) ----------------------------- */
 static int build_collab(void)
 {
@@ -2317,6 +2379,9 @@ int main(int argc, char **argv)
     }
     if (argc > 1 && strcmp(argv[1], "test") == 0) {
         return build_test();
+    }
+    if (argc > 1 && strcmp(argv[1], "play_test") == 0) {
+        return build_play_test();
     }
     if (argc > 1 && strcmp(argv[1], "nanoprof2chrome") == 0) {
         return build_nanoprof2chrome();

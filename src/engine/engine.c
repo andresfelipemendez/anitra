@@ -450,11 +450,14 @@ static void run_character_controller_system(game_state *gs) {
         move_speed = cc->move_speed > 0.01f ? cc->move_speed : 5.0f;
         jump_speed = cc->jump_speed > 0.01f ? cc->jump_speed : 8.5f;
 
+        {
+        input_state eff = cc->use_own_input ? cc->own_input : gs->input;
+
         if (rb && rb->use_gravity) {
             Vec3 move_forward = camera_forward;
             Vec3 move_dir;
-            if (rc && fabsf(gs->input.horizontal) > deadzone) {
-                rc->rotation_y_deg -= gs->input.horizontal * turn_speed_deg * gs->dt;
+            if (rc && fabsf(eff.horizontal) > deadzone) {
+                rc->rotation_y_deg -= eff.horizontal * turn_speed_deg * gs->dt;
                 if (rc->rotation_y_deg > 180.0f) rc->rotation_y_deg -= 360.0f;
                 if (rc->rotation_y_deg < -180.0f) rc->rotation_y_deg += 360.0f;
             }
@@ -465,24 +468,26 @@ static void run_character_controller_system(game_state *gs) {
                     move_forward = vec3_normalize(world_forward);
                 }
             }
-            move_dir = vec3_scale(move_forward, gs->input.vertical);
+            move_dir = vec3_scale(move_forward, eff.vertical);
             vc->velocity.x = move_dir.x * move_speed;
             vc->velocity.z = move_dir.z * move_speed;
-            if ((gs->input.input_mask & INPUT_A) && fabsf(vc->velocity.y) < 0.001f) {
+            if ((eff.input_mask & INPUT_A) && fabsf(vc->velocity.y) < 0.001f) {
                 vc->velocity.y = jump_speed;
             }
         } else {
-            vc->velocity.x = gs->input.horizontal * move_speed;
-            vc->velocity.y = gs->input.vertical * move_speed;
+            /* use_gravity=false: horizontal → X (strafe), vertical → Z (forward) */
+            vc->velocity.x = eff.horizontal * move_speed;
+            vc->velocity.z = eff.vertical   * move_speed;
             if (rc) {
-                float move_h = gs->input.horizontal;
-                float move_v = gs->input.vertical;
+                float move_h = eff.horizontal;
+                float move_v = eff.vertical;
                 if (fabsf(move_h) <= deadzone && fabsf(move_v) <= deadzone) continue;
                 {
                     float yaw_rad = atan2f(move_h, move_v);
                     rc->rotation_y_deg = -yaw_rad * (180.0f / 3.14159265f);
                 }
             }
+        }
         }
     }
 }
@@ -757,6 +762,11 @@ static error_value ensure_scene_storage(game_state *gs, int needed_entities) {
         sizeof(trigger_component), "trigger_components");
     if (!ERRV_IS_OK(err)) return err;
 
+    err = reserve_array(gs->gameplay, (void **)&gs->bot_components,
+        &gs->bot_component_capacity, needed_entities,
+        sizeof(bot_component), "bot_components");
+    if (!ERRV_IS_OK(err)) return err;
+
     err = reserve_array(gs->gameplay, (void **)&gs->bone_attach_components,
         &gs->bone_attach_component_capacity, needed_entities,
         sizeof(bone_attach_component), "bone_attach_components");
@@ -851,6 +861,7 @@ static void clear_scene_storage(game_state *gs) {
     memset(gs->animation_transition_index, 0xFF, sizeof(gs->animation_transition_index));
     memset(gs->camera_index, 0xFF, sizeof(gs->camera_index));
     memset(gs->trigger_index, 0xFF, sizeof(gs->trigger_index));
+    memset(gs->bot_index, 0xFF, sizeof(gs->bot_index));
     memset(gs->bone_attach_index, 0xFF, sizeof(gs->bone_attach_index));
 
     gs->scene_entity_count = 0;
@@ -871,6 +882,7 @@ static void clear_scene_storage(game_state *gs) {
     gs->animation_transition_count = 0;
     gs->camera_component_count = 0;
     gs->trigger_component_count = 0;
+    gs->bot_component_count = 0;
     gs->bone_attach_component_count = 0;
     /* Keep registered model assets so scene resets can reuse loaded meshes/animations. */
     gs->scene_primary_skinned_entity = -1;
@@ -1056,6 +1068,50 @@ static void push_trigger_component(game_state *gs, int entity_index,
         strncpy(gs->trigger_components[i].joint_name, joint_name,
                 sizeof(gs->trigger_components[i].joint_name) - 1);
     gs->trigger_index[entity_index] = i;
+}
+
+static void push_bot_component(game_state *gs, int entity_index,
+                               int behavior, float phase) {
+    int i;
+    if (!gs) return;
+    if (gs->bot_component_count >= gs->bot_component_capacity) return;
+    if (entity_index < 0 || entity_index >= gs->scene_entity_count) return;
+    i = gs->bot_component_count++;
+    gs->bot_components[i].entity_index = entity_index;
+    gs->bot_components[i].behavior     = behavior;
+    gs->bot_components[i].phase        = phase;
+    gs->bot_index[entity_index]        = i;
+}
+
+static void run_bot_system(game_state *gs) {
+    int i;
+    float t;
+    if (!gs || !gs->editor_play_mode) return;
+    t = gs->elapsed_time;
+    for (i = 0; i < gs->bot_component_count; i++) {
+        bot_component *bot = &gs->bot_components[i];
+        int idx = gs->character_controller_index[bot->entity_index];
+        character_controller_component *cc;
+        input_state inp;
+        if (idx < 0) continue;
+        cc = &gs->character_controller_components[idx];
+        memset(&inp, 0, sizeof(inp));
+        switch (bot->behavior) {
+        case BOT_BEHAVIOR_WALK_FORWARD:
+            inp.vertical = 1.0f;
+            break;
+        case BOT_BEHAVIOR_CIRCLE:
+            inp.horizontal = cosf(t + bot->phase);
+            inp.vertical   = sinf(t + bot->phase);
+            break;
+        case BOT_BEHAVIOR_PATROL:
+            inp.vertical = sinf(t * 0.5f + bot->phase) > 0.0f ? 1.0f : -1.0f;
+            break;
+        default: /* BOT_BEHAVIOR_IDLE */ break;
+        }
+        cc->own_input    = inp;
+        cc->use_own_input = 1;
+    }
 }
 
 static void push_bone_attach_component(game_state *gs, int entity_index,
@@ -1352,12 +1408,22 @@ static void build_scene_from_project(game_state *gs) {
         gs->scene_camera_entity = c->entity;
     }
 
+    for (i = 0; i < project->bot_count; i++) {
+        const project_bot *b = &project->bots[i];
+        int beh = BOT_BEHAVIOR_IDLE;
+        if (strcmp(b->behavior, "walk_forward") == 0) beh = BOT_BEHAVIOR_WALK_FORWARD;
+        else if (strcmp(b->behavior, "circle")   == 0) beh = BOT_BEHAVIOR_CIRCLE;
+        else if (strcmp(b->behavior, "patrol")   == 0) beh = BOT_BEHAVIOR_PATROL;
+        push_bot_component(gs, b->entity, beh, b->phase);
+    }
+
     for (i = 0; i < project->trigger_count; i++) {
         const project_trigger *tr = &project->triggers[i];
         trigger_type ttype = TRIGGER_DOOR;
         if (tr->entity >= gs->scene_entity_count) continue;
         if (strcmp(tr->type_str, "pickup") == 0) ttype = TRIGGER_PICKUP;
         else if (strcmp(tr->type_str, "weapon_pickup") == 0) ttype = TRIGGER_WEAPON_PICKUP;
+        else if (strcmp(tr->type_str, "zone") == 0) ttype = TRIGGER_ZONE;
         push_trigger_component(gs, tr->entity, ttype, tr->target, tr->radius,
                                tr->joint[0] ? tr->joint : NULL);
         fprintf(stderr, "[build_scene] trigger: entity=%d type='%s' ttype=%d target=%d radius=%.1f joint='%s'\n",
@@ -1898,6 +1964,7 @@ EXPORT void init_engine(game_state *gs) {
     gs->system_count = 0;
     register_system(gs, "clear_draw_lists",     (system_fn)system_clear_draw_lists,         0);
     register_system(gs, "input",                (system_fn)update_input,                    1);
+    register_system(gs, "bots",                 (system_fn)run_bot_system,                  1);
     register_system(gs, "character_controller",  (system_fn)run_character_controller_system, 1);
     register_system(gs, "animation_sm",         (system_fn)system_animation_sm,             1);
     register_system(gs, "bone_attachments",     (system_fn)update_bone_attachments,         0);
@@ -2495,6 +2562,27 @@ static void update_triggers(game_state *gs) {
             }
 
             swap_and_pop_trigger(gs, i);
+            continue;
+        }
+
+        /* TRIGGER_ZONE: fires when any CC entity enters radius; stays in list */
+        if (trig->type == TRIGGER_ZONE) {
+            int j;
+            if (!trig->activated) {
+                trig_pos = resolve_world_position(gs, trig->entity_index);
+                for (j = 0; j < gs->character_controller_component_count; j++) {
+                    int ce = gs->character_controller_components[j].entity_index;
+                    Vec3 ce_pos = resolve_world_position(gs, ce);
+                    dx = ce_pos.x - trig_pos.x;
+                    dz = ce_pos.z - trig_pos.z;
+                    if (dx * dx + dz * dz < trig->radius * trig->radius) {
+                        trig->activated = 1;
+                        trig->activated_by_entity = ce;
+                        break;
+                    }
+                }
+            }
+            i++;
             continue;
         }
 
