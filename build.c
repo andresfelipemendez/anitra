@@ -79,17 +79,6 @@
 #define DEFAULT_PROJECT_TOML "dungeon1/project.toml"
 
 /* Common include paths used by externals, core, engine, and exe targets */
-#ifdef _WIN32
-#define COMMON_INCLUDES \
-    "/Isrc /Isrc/core /Isrc/engine /Isrc/editor /Isrc/externals /Iinclude " \
-    "/Ilib/SDL3/include /Ilib/SDL_shadercross/include " \
-    "/Ilib/SDL_shadercross/external/SPIRV-Cross " \
-    "/Ilib/SDL_shadercross/external/prebuilt/inc " \
-    "/Ilib/remotery " \
-    "/Ilib/harfbuzz-src/src " \
-    "/Ilib/clay " \
-    "/Ilib/cgltf"
-#else
 #define COMMON_INCLUDES \
     "-Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals -Iinclude " \
     "-Ilib/SDL3/include -Ilib/SDL_shadercross/include " \
@@ -99,15 +88,13 @@
     "-Ilib/harfbuzz-src/src " \
     "-Ilib/clay " \
     "-Ilib/cgltf"
-#endif
 
 /* Tool paths */
 #ifdef _WIN32
-static char tool_cc[PATH_SIZE];
-static char tool_cxx[PATH_SIZE];
-static char tool_link[PATH_SIZE];
-static char tool_ar[PATH_SIZE];
-static int msvc_tools_ready = 0;
+static const char *tool_cc   = ".\\zig\\zig.exe cc";
+static const char *tool_cxx  = ".\\zig\\zig.exe c++";
+static const char *tool_link = ".\\zig\\zig.exe cc";
+static const char *tool_ar   = ".\\zig\\zig.exe ar";
 #else
 static const char *tool_cc  = "cc";
 static const char *tool_cxx = "c++";
@@ -120,161 +107,14 @@ static const char *tool_ar  = "ar";
 /* ========================================================================= */
 
 #ifdef _WIN32
-static int find_msvc_tools(void)
-{
-    /*
-     * Strategy:
-     *  1. Try PATH first (fast path when running from Dev Command Prompt).
-     *  2. If cl.exe not in PATH, use vswhere to find VS, then run vcvarsall
-     *     to set up the full environment (INCLUDE, LIB, PATH, etc.).
-     */
-    char cl_path[PATH_SIZE];
-    char x64_path[PATH_SIZE];
-    char *last_sep;
-    char *arch_pos;
-    DWORD len;
-
-    len = SearchPathA(NULL, "cl.exe", NULL, PATH_SIZE, cl_path, NULL);
-
-    if (len == 0) {
-        /* cl.exe not in PATH -- try to set up MSVC environment automatically */
-        char cmd[CMD_MAX];
-        FILE *fp;
-        char vs_path[PATH_SIZE];
-        char vcvarsall[PATH_SIZE];
-
-        /* Use vswhere to find VS installation */
-        fp = _popen(
-            "\"C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe\" "
-            "-latest -property installationPath 2>nul", "r");
-        if (!fp) {
-            printf("!! cl.exe not found and vswhere.exe not available.\n");
-            printf("!! Install Visual Studio or run from VS Developer Command Prompt.\n");
-            return 1;
-        }
-        if (!fgets(vs_path, PATH_SIZE, fp)) {
-            _pclose(fp);
-            printf("!! vswhere.exe found no Visual Studio installation.\n");
-            return 1;
-        }
-        _pclose(fp);
-
-        /* Strip trailing newline */
-        {
-            size_t slen = strlen(vs_path);
-            while (slen > 0 && (vs_path[slen-1] == '\n' || vs_path[slen-1] == '\r'))
-                vs_path[--slen] = '\0';
-        }
-
-        snprintf(vcvarsall, PATH_SIZE, "%s\\VC\\Auxiliary\\Build\\vcvarsall.bat", vs_path);
-        if (GetFileAttributesA(vcvarsall) == INVALID_FILE_ATTRIBUTES) {
-            printf("!! vcvarsall.bat not found at: %s\n", vcvarsall);
-            return 1;
-        }
-
-        /*
-         * Run vcvarsall, dump the resulting environment into a temp file,
-         * then parse it to set our process environment.
-         */
-        {
-            char tmp_file[PATH_SIZE];
-            char line[8192];
-            FILE *env_fp;
-
-            GetTempPathA(PATH_SIZE, tmp_file);
-            strcat(tmp_file, "anitra_env.txt");
-
-            snprintf(cmd, sizeof(cmd),
-                "cmd /C \"call \"%s\" x64 >nul 2>&1 && set > \"%s\"\"",
-                vcvarsall, tmp_file);
-            if (system(cmd) != 0) {
-                printf("!! vcvarsall.bat failed.\n");
-                return 1;
-            }
-
-            env_fp = fopen(tmp_file, "r");
-            if (!env_fp) {
-                printf("!! failed to read environment from vcvarsall.\n");
-                return 1;
-            }
-
-            while (fgets(line, sizeof(line), env_fp)) {
-                /* Strip trailing newline */
-                size_t slen = strlen(line);
-                while (slen > 0 && (line[slen-1] == '\n' || line[slen-1] == '\r'))
-                    line[--slen] = '\0';
-                /* Only import vars that matter for compilation */
-                if (strncmp(line, "PATH=", 5) == 0 ||
-                    strncmp(line, "Path=", 5) == 0 ||
-                    strncmp(line, "LIB=", 4) == 0 ||
-                    strncmp(line, "LIBPATH=", 8) == 0 ||
-                    strncmp(line, "INCLUDE=", 8) == 0 ||
-                    strncmp(line, "WindowsSdkDir=", 14) == 0 ||
-                    strncmp(line, "WindowsSDKVersion=", 18) == 0 ||
-                    strncmp(line, "UCRTVersion=", 12) == 0 ||
-                    strncmp(line, "VCToolsInstallDir=", 18) == 0) {
-                    _putenv(line);
-                }
-            }
-            fclose(env_fp);
-            DeleteFileA(tmp_file);
-        }
-
-        printf("   MSVC environment set up via vcvarsall.bat\n");
-
-        /* Now cl.exe should be in PATH */
-        len = SearchPathA(NULL, "cl.exe", NULL, PATH_SIZE, cl_path, NULL);
-        if (len == 0) {
-            printf("!! cl.exe still not found after running vcvarsall.\n");
-            return 1;
-        }
-    }
-
-    /*
-     * If PATH found the x86 cl.exe (path contains \Hostx86\x86\ or
-     * \Hostx64\x86\), try to use the x64 target instead by replacing
-     * the last \x86\ with \x64\.
-     */
-    arch_pos = strstr(cl_path, "\\x86\\cl.exe");
-    if (arch_pos) {
-        strncpy(x64_path, cl_path, arch_pos - cl_path);
-        x64_path[arch_pos - cl_path] = '\0';
-        strcat(x64_path, "\\x64\\cl.exe");
-        if (GetFileAttributesA(x64_path) != INVALID_FILE_ATTRIBUTES) {
-            strcpy(cl_path, x64_path);
-            printf("   Using x64 toolchain: %s\n", cl_path);
-        }
-    }
-
-    /* Strip "cl.exe" to get the directory */
-    last_sep = strrchr(cl_path, '\\');
-    if (!last_sep) {
-        printf("!! unexpected cl.exe path: %s\n", cl_path);
-        return 1;
-    }
-    last_sep[1] = '\0';
-
-    snprintf(tool_cc,   PATH_SIZE, "%scl.exe", cl_path);
-    snprintf(tool_cxx,  PATH_SIZE, "%scl.exe", cl_path);
-    snprintf(tool_link, PATH_SIZE, "%slink.exe", cl_path);
-    snprintf(tool_ar,   PATH_SIZE, "%slib.exe", cl_path);
-
-    return 0;
-}
-
-/* Lazy init: only run vcvarsall when an MSVC target actually needs recompiling */
-static int ensure_msvc_tools(void)
-{
-    if (msvc_tools_ready) return 0;
-    if (find_msvc_tools() != 0) return 1;
-    msvc_tools_ready = 1;
-    return 0;
-}
-
 static int find_tools(void)
 {
-    /* On Windows, MSVC tools are set up lazily by ensure_msvc_tools().
-       This is a no-op so main() can call it unconditionally. */
+    /* On Windows, verify that zig compiler exists */
+    if (GetFileAttributesA("zig\\zig.exe") == INVALID_FILE_ATTRIBUTES) {
+        printf("!! zig\\zig.exe not found. Ensure the zig directory is in the repo.\n");
+        return 1;
+    }
+    printf("   Using Zig C/C++ compiler: .\\zig\\zig.exe\n");
     return 0;
 }
 #else
@@ -491,13 +331,11 @@ static int build_harfbuzz(void)
     if (needs_rebuild("lib/harfbuzz-src/src/harfbuzz.cc",
                        OBJ_EXT_DIR "/harfbuzz" OBJ_EXT)) {
 #ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
-            "\"%s\" /std:c++17 /EHsc /MD /Zi /Od /nologo /c "
-            "/DHAVE_DIRECTWRITE /DHB_DLL_EXPORT "
-            "/Ilib/harfbuzz-src/src "
-            "/Fo" OBJ_EXT_DIR "/harfbuzz" OBJ_EXT " "
-            "/Fd" OBJ_EXT_DIR "/harfbuzz.pdb "
+            "%s -std=c++17 -g -O0 -c "
+            "-DHAVE_DIRECTWRITE -DHB_DLL_EXPORT "
+            "-Ilib/harfbuzz-src/src "
+            "-o " OBJ_EXT_DIR "/harfbuzz" OBJ_EXT " "
             "lib/harfbuzz-src/src/harfbuzz.cc",
             tool_cxx);
 #else
@@ -517,19 +355,13 @@ static int build_harfbuzz(void)
         needs_rebuild(OBJ_EXT_DIR "/harfbuzz" OBJ_EXT,
                       DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT)) {
 #ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
-        {
-            char pdb_suffix[9];
-            rand_hex(pdb_suffix, 8);
-            snprintf(cmd, sizeof(cmd),
-                "\"%s\" /nologo /DLL /DEBUG "
-                "/PDB:" DEBUG_DIR "/harfbuzz_%s.pdb "
-                "/OUT:" DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT " "
-                "/IMPLIB:" DEBUG_DIR "/harfbuzz" LIB_EXT " "
-                OBJ_EXT_DIR "/harfbuzz" OBJ_EXT " "
-                "dwrite.lib",
-                tool_link, pdb_suffix);
-        }
+        snprintf(cmd, sizeof(cmd),
+            "%s -shared -g "
+            "-o " DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT " "
+            OBJ_EXT_DIR "/harfbuzz" OBJ_EXT " "
+            "-ldwrite -lc++ "
+            "-Wl,--out-implib," DEBUG_DIR "/harfbuzz" LIB_EXT,
+            tool_link);
 #elif defined(__APPLE__)
         snprintf(cmd, sizeof(cmd),
             "%s -shared -o " DEBUG_DIR "/" DLL_PREFIX "harfbuzz" DLL_EXT " "
@@ -1532,10 +1364,6 @@ static int build_sdl3(void)
         if (!needs_rebuild(src, obj))
             continue;
 
-#ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
-#endif
-
         /* Detect C++ and Objective-C by extension */
         ext = strrchr(src, '.');
         is_cpp = (ext && strcmp(ext, ".cpp") == 0);
@@ -1543,22 +1371,22 @@ static int build_sdl3(void)
 #ifdef _WIN32
         if (is_cpp) {
             snprintf(cmd, sizeof(cmd),
-                "\"%s\" /std:c++20 /EHsc /MD /O2 /nologo /c "
-                "/DSDL_BUILDING_SDL3 /DDLL_EXPORT /D_WINDOWS /DWIN32 "
-                "/Ilib/SDL3/include /Ilib/SDL3/include/build_config "
-                "/Ilib/SDL3/src /Ilib/SDL3/src/video/khronos "
-                "/Fo%s "
-                "/Fd" OBJ_SDL3_DIR "/sdl3.pdb "
+                "%s -std=c++20 -O2 -c "
+                "-DSDL_BUILDING_SDL3 -DDLL_EXPORT -D_WINDOWS -DWIN32 "
+                "-include lib/SDL3/include/build_config/SDL_build_config_zig.h "
+                "-Ilib/SDL3/include -Ilib/SDL3/include/build_config "
+                "-Ilib/SDL3/src -Ilib/SDL3/src/video/khronos "
+                "-o %s "
                 "%s",
                 tool_cxx, obj, src);
         } else {
             snprintf(cmd, sizeof(cmd),
-                "\"%s\" /TC /MD /O2 /nologo /c "
-                "/DSDL_BUILDING_SDL3 /DDLL_EXPORT /D_WINDOWS /DWIN32 "
-                "/Ilib/SDL3/include /Ilib/SDL3/include/build_config "
-                "/Ilib/SDL3/src /Ilib/SDL3/src/video/khronos "
-                "/Fo%s "
-                "/Fd" OBJ_SDL3_DIR "/sdl3.pdb "
+                "%s -O2 -c "
+                "-DSDL_BUILDING_SDL3 -DDLL_EXPORT -D_WINDOWS -DWIN32 "
+                "-include lib/SDL3/include/build_config/SDL_build_config_zig.h "
+                "-Ilib/SDL3/include -Ilib/SDL3/include/build_config "
+                "-Ilib/SDL3/src -Ilib/SDL3/src/video/khronos "
+                "-o %s "
                 "%s",
                 tool_cc, obj, src);
         }
@@ -1620,15 +1448,14 @@ static int build_sdl3(void)
         fclose(rsp);
 
 #ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /DLL /DEBUG "
-            "/OUT:" DEBUG_DIR "/SDL3" DLL_EXT " "
-            "/IMPLIB:" DEBUG_DIR "/SDL3" LIB_EXT " "
+            "%s -shared -g "
+            "-o " DEBUG_DIR "/SDL3" DLL_EXT " "
             "@" OBJ_SDL3_DIR "/sdl3_objs.txt "
-            "user32.lib gdi32.lib winmm.lib imm32.lib "
-            "ole32.lib oleaut32.lib version.lib advapi32.lib "
-            "setupapi.lib shell32.lib cfgmgr32.lib",
+            "-luser32 -lgdi32 -lwinmm -limm32 "
+            "-lole32 -loleaut32 -lversion -ladvapi32 "
+            "-lsetupapi -lshell32 -lcfgmgr32 -lhid "
+            "-Wl,--out-implib," DEBUG_DIR "/SDL3" LIB_EXT,
             tool_link);
 #elif defined(__APPLE__)
         snprintf(cmd, sizeof(cmd),
@@ -1719,18 +1546,16 @@ static int build_spirvcross(void)
             continue;
 
 #ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
-            "\"%s\" /std:c++17 /EHsc /MD /O2 /nologo /c "
-            "/DSPVC_EXPORT_SYMBOLS "
-            "/DSPIRV_CROSS_C_API_GLSL=1 "
-            "/DSPIRV_CROSS_C_API_HLSL=1 "
-            "/DSPIRV_CROSS_C_API_MSL=1 "
-            "/DSPIRV_CROSS_C_API_CPP=1 "
-            "/DSPIRV_CROSS_C_API_REFLECT=1 "
-            "/Ilib/SDL_shadercross/external/SPIRV-Cross "
-            "/Fo%s "
-            "/Fd" OBJ_SPIRVCROSS_DIR "/spirvcross.pdb "
+            "%s -std=c++17 -O2 -c "
+            "-DSPVC_EXPORT_SYMBOLS "
+            "-DSPIRV_CROSS_C_API_GLSL=1 "
+            "-DSPIRV_CROSS_C_API_HLSL=1 "
+            "-DSPIRV_CROSS_C_API_MSL=1 "
+            "-DSPIRV_CROSS_C_API_CPP=1 "
+            "-DSPIRV_CROSS_C_API_REFLECT=1 "
+            "-Ilib/SDL_shadercross/external/SPIRV-Cross "
+            "-o %s "
             "%s",
             tool_cxx, objs[i], sources[i]);
 #else
@@ -1770,12 +1595,12 @@ static int build_spirvcross(void)
         fclose(rsp);
 
 #ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /DLL /DEBUG "
-            "/OUT:" DEBUG_DIR "/spirv-cross-c-shared" DLL_EXT " "
-            "/IMPLIB:" DEBUG_DIR "/spirv-cross-c-shared" LIB_EXT " "
-            "@" OBJ_SPIRVCROSS_DIR "/spirvcross_objs.txt",
+            "%s -shared -g "
+            "-o " DEBUG_DIR "/spirv-cross-c-shared" DLL_EXT " "
+            "@" OBJ_SPIRVCROSS_DIR "/spirvcross_objs.txt "
+            "-lc++ "
+            "-Wl,--out-implib," DEBUG_DIR "/spirv-cross-c-shared" LIB_EXT,
             tool_link);
 #else
         snprintf(cmd, sizeof(cmd),
@@ -1803,17 +1628,15 @@ static int build_shadercross(void)
     if (needs_rebuild("lib/SDL_shadercross/src/SDL_shadercross.c",
                       OBJ_SHADERCROSS_DIR "/SDL_shadercross" OBJ_EXT)) {
 #ifdef _WIN32
-        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
-            "\"%s\" /TC /MD /O2 /nologo /c "
-            "/DDLL_EXPORT "
-            "/DSDL_SHADERCROSS_DXC "
-            "/Ilib/SDL_shadercross/include "
-            "/Ilib/SDL3/include "
-            "/Ilib/SDL_shadercross/external/SPIRV-Cross "
-            "/Ilib/SDL_shadercross/external/prebuilt/inc "
-            "/Fo" OBJ_SHADERCROSS_DIR "/SDL_shadercross" OBJ_EXT " "
-            "/Fd" OBJ_SHADERCROSS_DIR "/shadercross.pdb "
+            "%s -O2 -c "
+            "-DDLL_EXPORT "
+            "-DSDL_SHADERCROSS_DXC "
+            "-Ilib/SDL_shadercross/include "
+            "-Ilib/SDL3/include "
+            "-Ilib/SDL_shadercross/external/SPIRV-Cross "
+            "-Ilib/SDL_shadercross/external/prebuilt/inc "
+            "-o " OBJ_SHADERCROSS_DIR "/SDL_shadercross" OBJ_EXT " "
             "lib/SDL_shadercross/src/SDL_shadercross.c",
             tool_cc);
 #else
@@ -1836,15 +1659,13 @@ static int build_shadercross(void)
 #ifdef _WIN32
         needs_rebuild(OBJ_SHADERCROSS_DIR "/SDL_shadercross" OBJ_EXT,
                       DEBUG_DIR "/SDL3_shadercross" DLL_EXT)) {
-        if (ensure_msvc_tools() != 0) return 1;
         snprintf(cmd, sizeof(cmd),
-            "\"%s\" /nologo /DLL /DEBUG "
-            "/OUT:" DEBUG_DIR "/SDL3_shadercross" DLL_EXT " "
-            "/IMPLIB:" DEBUG_DIR "/SDL3_shadercross" LIB_EXT " "
+            "%s -shared -g "
+            "-o " DEBUG_DIR "/SDL3_shadercross" DLL_EXT " "
             OBJ_SHADERCROSS_DIR "/SDL_shadercross" OBJ_EXT " "
-            DEBUG_DIR "/SDL3" LIB_EXT " "
-            DEBUG_DIR "/spirv-cross-c-shared" LIB_EXT " "
-            "lib/SDL_shadercross/external/prebuilt/lib/x64/dxcompiler.lib",
+            "-L" DEBUG_DIR " -lSDL3 -lspirv-cross-c-shared "
+            "lib/SDL_shadercross/external/prebuilt/lib/x64/dxcompiler.lib "
+            "-Wl,--out-implib," DEBUG_DIR "/SDL3_shadercross" LIB_EXT,
             tool_link);
         if (run_cmd(cmd) != 0) return 1;
 
@@ -1965,14 +1786,13 @@ static int build_server(void)
     printf("=== Building collab server ===\n\n");
 
 #ifdef _WIN32
-    /* Use MSVC (cl.exe) for the server binary */
-    ensure_msvc_tools();
     snprintf(cmd, sizeof(cmd),
-        "cl /nologo /O2 /Fe:" DEBUG_DIR "/collab_server.exe"
-        " /Isrc /Ilib/toml-c"
-        " server/collab_server.c src/project.c"
-        " ws2_32.lib"
-        " /link /INCREMENTAL:NO");
+        "%s -O2 "
+        "-o " DEBUG_DIR "/collab_server.exe "
+        "-Isrc -Ilib/toml-c "
+        "server/collab_server.c src/project.c "
+        "-lws2_32",
+        tool_cc);
 #else
     snprintf(cmd, sizeof(cmd),
         "cc -O2 -o " DEBUG_DIR "/collab_server"
@@ -2350,6 +2170,125 @@ static int build_collab(void)
 #endif
 }
 
+/* ------- profile -------------------------------------------------------- */
+#ifdef _WIN32
+#define AMDUPROF_CLI "C:\\Program Files\\AMD\\AMDuProf\\bin\\AMDuProfCLI.exe"
+#define PROFILE_DIR  "profiling/cache_run"
+
+static int run_uprof(const char *cmdline)
+{
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+    char buf[CMD_MAX];
+    DWORD exitCode;
+
+    si.cb = sizeof(si);
+    snprintf(buf, sizeof(buf), "%s", cmdline);
+    printf(">> %s\n", buf);
+    fflush(stdout);
+
+    if (!CreateProcessA(AMDUPROF_CLI, buf, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        printf("!! Failed to launch AMDuProfCLI (error %lu)\n", GetLastError());
+        return 1;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (int)exitCode;
+}
+
+static int build_and_profile(void)
+{
+    char project_path[PATH_SIZE];
+    const char *project_include;
+    char cmd[CMD_MAX];
+
+    printf("=== Building and profiling (AMD uProf cache misses) ===\n\n");
+
+    if (build_all() != 0) return 1;
+
+    /* Resolve project path */
+    project_include = NULL;
+    project_path[0] = '\0';
+    if (read_project_include_path(project_path, sizeof(project_path))) {
+        project_include = project_path;
+    } else if (file_exists_regular(DEFAULT_PROJECT_TOML)) {
+        snprintf(project_path, sizeof(project_path), "%s", DEFAULT_PROJECT_TOML);
+        project_include = project_path;
+    }
+
+    /* Clean previous profiling data */
+    system("rmdir /s /q " PROFILE_DIR " 2>nul");
+
+    /* Launch with AMD uProf collecting cache events */
+    if (project_include) {
+        snprintf(cmd, sizeof(cmd),
+            "\"" AMDUPROF_CLI "\" collect"
+            " -e L1_DC_ACCESSES_ALL"
+            " -e L1_DC_REFILLS_ALL"
+            " -e L2_CACHE_ACCESS_FROM_L1_DC_MISS"
+            " -e L2_CACHE_MISS_FROM_L1_DC_MISS"
+            " -e IC_TAG_IC_MISS"
+            " -e RETIRED_INST"
+            " -o " PROFILE_DIR
+            " -d 30"
+            " %s/AnitraEngine.exe --include \"%s\"",
+            DEBUG_DIR, project_include);
+    } else {
+        snprintf(cmd, sizeof(cmd),
+            "\"" AMDUPROF_CLI "\" collect"
+            " -e L1_DC_ACCESSES_ALL"
+            " -e L1_DC_REFILLS_ALL"
+            " -e L2_CACHE_ACCESS_FROM_L1_DC_MISS"
+            " -e L2_CACHE_MISS_FROM_L1_DC_MISS"
+            " -e IC_TAG_IC_MISS"
+            " -e RETIRED_INST"
+            " -o " PROFILE_DIR
+            " -d 30"
+            " %s/AnitraEngine.exe",
+            DEBUG_DIR);
+    }
+
+    printf("\n=== Collecting cache profile for 30 seconds ===\n");
+    if (run_uprof(cmd) != 0) {
+        fprintf(stderr, "!! AMD uProf collection failed\n");
+        return 1;
+    }
+
+    /* Find the generated data directory and produce a report */
+    {
+        WIN32_FIND_DATAA fd;
+        HANDLE hFind;
+        char search[PATH_SIZE];
+        char data_dir[PATH_SIZE];
+
+        snprintf(search, sizeof(search), "%s\\AMDuProf-*", PROFILE_DIR);
+        hFind = FindFirstFileA(search, &fd);
+        if (hFind == INVALID_HANDLE_VALUE) {
+            fprintf(stderr, "!! Could not find profiling data\n");
+            return 1;
+        }
+        snprintf(data_dir, sizeof(data_dir), "%s/%s", PROFILE_DIR, fd.cFileName);
+        FindClose(hFind);
+
+        snprintf(cmd, sizeof(cmd),
+            "\"" AMDUPROF_CLI "\" report -i \"%s\"",
+            data_dir);
+
+        printf("\n=== Generating report ===\n");
+        if (run_uprof(cmd) != 0) {
+            fprintf(stderr, "!! Report generation failed\n");
+            return 1;
+        }
+
+        printf("\n=== Report: %s/report.csv ===\n", data_dir);
+    }
+
+    return 0;
+}
+#endif
+
 /* ========================================================================= */
 /* main                                                                       */
 /* ========================================================================= */
@@ -2373,6 +2312,11 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "nanoprof2chrome") == 0) {
         return build_nanoprof2chrome();
     }
+#ifdef _WIN32
+    if (argc > 1 && strcmp(argv[1], "profile") == 0) {
+        return build_and_profile();
+    }
+#endif
 
     return build_all();
 }

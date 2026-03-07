@@ -66,6 +66,9 @@ int main(int argc, char **argv) {
       fprintf(stderr, "Failed to copy externals.dll\n");
       return 1;
     }
+    /* core.dll and editor.dll import "externals_copy.dll" (baked via .def),
+       so also copy under that fixed name for the PE import to resolve. */
+    copylibrary("externals", "externals_copy");
 #ifdef _WIN32
     printf("[boot] copy externals: %.2f ms\n", _boot_ms(t0));
 #endif

@@ -1,0 +1,705 @@
+{
+    "auxiliary": {
+        "availablePages": "9990 MB",
+        "availableRam": "12443 MB",
+        "availableVirtualMemory": "134213423 MB",
+        "cores": 16,
+        "cpuAgentCount": 0,
+        "cpuFamily": 25,
+        "cpuModel": 80,
+        "cpuModelName": "AMD Ryzen 7 5800H with Radeon Graphics",
+        "cpuTopology": [
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                1,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                2,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                3,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                4,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                5,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                6,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                7,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                8,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                9,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                10,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                11,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                12,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                13,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                14,
+                0,
+                0,
+                0,
+                0
+            ],
+            [
+                0,
+                15,
+                0,
+                0,
+                0,
+                0
+            ]
+        ],
+        "eventColumnIds": [
+            {
+                "category": 1,
+                "categoryName": "CPU PROFILE",
+                "events": [
+                    {
+                        "callstack": false,
+                        "category": 1,
+                        "cmask": 0,
+                        "description": "The number of instructions retired from execution. This count includes exceptions and interrupts. Each exception or interrupt is counted as one instruction.",
+                        "encodedId": 50331840,
+                        "eventCategory": 0,
+                        "expression": "",
+                        "fetchL3MissOnly": false,
+                        "frequency": 0,
+                        "hwEventId": 192,
+                        "interval": 1000000,
+                        "invCmask": false,
+                        "isFrequencyMode": false,
+                        "isRawEvent": true,
+                        "isTimeSeriesData": true,
+                        "name": "RETIRED_INST",
+                        "opDispatchedCount": false,
+                        "opL3MissOnly": false,
+                        "osMode": true,
+                        "samples": 0,
+                        "smcSource": 0,
+                        "threshold": 0,
+                        "traceMode": 0,
+                        "unit": "",
+                        "unitMask": 0,
+                        "usrMode": true
+                    },
+                    {
+                        "callstack": false,
+                        "category": 1,
+                        "cmask": 0,
+                        "description": "The number of load and store ops dispatched to LS unit. This counts the dispatch of single op that performs a memory load, dispatch of single op that performs a memory store, dispatch of a single op that performs a load from and store to the same memory address.",
+                        "encodedId": 50790441,
+                        "eventCategory": 0,
+                        "expression": "",
+                        "fetchL3MissOnly": false,
+                        "frequency": 0,
+                        "hwEventId": 41,
+                        "interval": 1000000,
+                        "invCmask": false,
+                        "isFrequencyMode": false,
+                        "isRawEvent": true,
+                        "isTimeSeriesData": true,
+                        "name": "L1_DC_ACCESSES_ALL",
+                        "opDispatchedCount": false,
+                        "opL3MissOnly": false,
+                        "osMode": true,
+                        "samples": 0,
+                        "smcSource": 0,
+                        "threshold": 0,
+                        "traceMode": 0,
+                        "unit": "",
+                        "unitMask": 7,
+                        "usrMode": true
+                    },
+                    {
+                        "callstack": false,
+                        "category": 1,
+                        "cmask": 0,
+                        "description": "Count all the L2 Cache Misses that Misses in L1 Data Cache Miss.",
+                        "encodedId": 50856036,
+                        "eventCategory": 0,
+                        "expression": "",
+                        "fetchL3MissOnly": false,
+                        "frequency": 0,
+                        "hwEventId": 100,
+                        "interval": 1000000,
+                        "invCmask": false,
+                        "isFrequencyMode": false,
+                        "isRawEvent": true,
+                        "isTimeSeriesData": true,
+                        "name": "L2_CACHE_MISS_FROM_L1_DC_MISS",
+                        "opDispatchedCount": false,
+                        "opL3MissOnly": false,
+                        "osMode": true,
+                        "samples": 0,
+                        "smcSource": 0,
+                        "threshold": 0,
+                        "traceMode": 0,
+                        "unit": "",
+                        "unitMask": 8,
+                        "usrMode": true
+                    },
+                    {
+                        "callstack": false,
+                        "category": 1,
+                        "cmask": 0,
+                        "description": "IC Tag Instruction Cache Miss",
+                        "encodedId": 51904910,
+                        "eventCategory": 0,
+                        "expression": "",
+                        "fetchL3MissOnly": false,
+                        "frequency": 0,
+                        "hwEventId": 398,
+                        "interval": 1000000,
+                        "invCmask": false,
+                        "isFrequencyMode": false,
+                        "isRawEvent": true,
+                        "isTimeSeriesData": true,
+                        "name": "IC_TAG_IC_MISS",
+                        "opDispatchedCount": false,
+                        "opL3MissOnly": false,
+                        "osMode": true,
+                        "samples": 0,
+                        "smcSource": 0,
+                        "threshold": 0,
+                        "traceMode": 0,
+                        "unit": "",
+                        "unitMask": 24,
+                        "usrMode": true
+                    },
+                    {
+                        "callstack": false,
+                        "category": 1,
+                        "cmask": 0,
+                        "description": "The  Data Cache fills from all the data sources.",
+                        "encodedId": 56557636,
+                        "eventCategory": 0,
+                        "expression": "",
+                        "fetchL3MissOnly": false,
+                        "frequency": 0,
+                        "hwEventId": 68,
+                        "interval": 1000000,
+                        "invCmask": false,
+                        "isFrequencyMode": false,
+                        "isRawEvent": true,
+                        "isTimeSeriesData": true,
+                        "name": "L1_DC_REFILLS_ALL",
+                        "opDispatchedCount": false,
+                        "opL3MissOnly": false,
+                        "osMode": true,
+                        "samples": 0,
+                        "smcSource": 0,
+                        "threshold": 0,
+                        "traceMode": 0,
+                        "unit": "",
+                        "unitMask": 95,
+                        "usrMode": true
+                    },
+                    {
+                        "callstack": false,
+                        "category": 1,
+                        "cmask": 0,
+                        "description": "The L2 cache access requests due to L1 data cache misses. This also counts hardware and software prefetches",
+                        "encodedId": 65536096,
+                        "eventCategory": 0,
+                        "expression": "",
+                        "fetchL3MissOnly": false,
+                        "frequency": 0,
+                        "hwEventId": 96,
+                        "interval": 1000000,
+                        "invCmask": false,
+                        "isFrequencyMode": false,
+                        "isRawEvent": true,
+                        "isTimeSeriesData": true,
+                        "name": "L2_CACHE_ACCESS_FROM_L1_DC_MISS",
+                        "opDispatchedCount": false,
+                        "opL3MissOnly": false,
+                        "osMode": true,
+                        "samples": 0,
+                        "smcSource": 0,
+                        "threshold": 0,
+                        "traceMode": 0,
+                        "unit": "",
+                        "unitMask": 232,
+                        "usrMode": true
+                    }
+                ]
+            }
+        ],
+        "guest": false,
+        "guestKallsyms": "",
+        "guestKmodules": "",
+        "guestPid": 0,
+        "guestSymPaths": "",
+        "host": false,
+        "hypervisorEnabled": true,
+        "hypervisorVendor": "Microsoft Hyper-V",
+        "ibsIdentifiers": 0,
+        "ibsOpSampling": false,
+        "isCacheline": false,
+        "isFreqMode": false,
+        "issmtEnabled": true,
+        "onlineCores": 16,
+        "osName": "Win1125H2-64",
+        "p0Freq": 0,
+        "profScope": "Single Application",
+        "profiledPids": "22464;",
+        "totalPages": "39532 MB",
+        "totalRam": "32620 MB",
+        "totalVirtualMemory": "134217727 MB"
+    },
+    "categoriesCollected": [
+        "cpu"
+    ],
+    "collectCommand": "AMDuProfCLI.exe collect -e L1_DC_ACCESSES_ALL -e L1_DC_REFILLS_ALL -e L2_CACHE_ACCESS_FROM_L1_DC_MISS -e L2_CACHE_MISS_FROM_L1_DC_MISS -e IC_TAG_IC_MISS -e RETIRED_INST -o profiling/cache_run -d 30 build/Debug/AnitraEngine.exe --include dungeon1/project.toml",
+    "collection": {
+        "branch-filter": 511,
+        "callstack": {
+            "callstackSize": 0,
+            "fpo": false,
+            "interval": 0,
+            "scope": 0,
+            "unwindDepth": 0
+        },
+        "customProfileEventMap": {
+            "keys": null,
+            "values": null
+        },
+        "dataBufferCount": 0,
+        "events": {
+            "configName": "Custom Profile",
+            "configType": 1,
+            "cpuTraceSourceMask": 0,
+            "ibsEvents": {
+                "cacheAnalysis": false,
+                "fetch": false,
+                "fetchCallstack": true,
+                "fetchInterval": 0,
+                "fetchL3Miss": false,
+                "loadStoreOnly": false,
+                "op": false,
+                "opCallstack": true,
+                "opCycleCount": false,
+                "opInterval": 0,
+                "opL3Miss": false,
+                "opLoadLatency": 0,
+                "randomize": true
+            },
+            "pmcEvents": {
+                "pmcEventList": [
+                    {
+                        "cntMask": 0,
+                        "collectCallstack": false,
+                        "encodedEventId": 50790441,
+                        "guest": false,
+                        "host": false,
+                        "hwId": 41,
+                        "interval": 1000000,
+                        "intx": false,
+                        "intxcp": false,
+                        "invertCntMask": false,
+                        "isEdgeDetect": false,
+                        "isFrequencyMode": false,
+                        "isSampling": true,
+                        "mask": 7,
+                        "os": true,
+                        "user": true
+                    },
+                    {
+                        "cntMask": 0,
+                        "collectCallstack": false,
+                        "encodedEventId": 56557636,
+                        "guest": false,
+                        "host": false,
+                        "hwId": 68,
+                        "interval": 1000000,
+                        "intx": false,
+                        "intxcp": false,
+                        "invertCntMask": false,
+                        "isEdgeDetect": false,
+                        "isFrequencyMode": false,
+                        "isSampling": true,
+                        "mask": 95,
+                        "os": true,
+                        "user": true
+                    },
+                    {
+                        "cntMask": 0,
+                        "collectCallstack": false,
+                        "encodedEventId": 65536096,
+                        "guest": false,
+                        "host": false,
+                        "hwId": 96,
+                        "interval": 1000000,
+                        "intx": false,
+                        "intxcp": false,
+                        "invertCntMask": false,
+                        "isEdgeDetect": false,
+                        "isFrequencyMode": false,
+                        "isSampling": true,
+                        "mask": 232,
+                        "os": true,
+                        "user": true
+                    },
+                    {
+                        "cntMask": 0,
+                        "collectCallstack": false,
+                        "encodedEventId": 50856036,
+                        "guest": false,
+                        "host": false,
+                        "hwId": 100,
+                        "interval": 1000000,
+                        "intx": false,
+                        "intxcp": false,
+                        "invertCntMask": false,
+                        "isEdgeDetect": false,
+                        "isFrequencyMode": false,
+                        "isSampling": true,
+                        "mask": 8,
+                        "os": true,
+                        "user": true
+                    },
+                    {
+                        "cntMask": 0,
+                        "collectCallstack": false,
+                        "encodedEventId": 51904910,
+                        "guest": false,
+                        "host": false,
+                        "hwId": 398,
+                        "interval": 1000000,
+                        "intx": false,
+                        "intxcp": false,
+                        "invertCntMask": false,
+                        "isEdgeDetect": false,
+                        "isFrequencyMode": false,
+                        "isSampling": true,
+                        "mask": 24,
+                        "os": true,
+                        "user": true
+                    },
+                    {
+                        "cntMask": 0,
+                        "collectCallstack": false,
+                        "encodedEventId": 50331840,
+                        "guest": false,
+                        "host": false,
+                        "hwId": 192,
+                        "interval": 1000000,
+                        "intx": false,
+                        "intxcp": false,
+                        "invertCntMask": false,
+                        "isEdgeDetect": false,
+                        "isFrequencyMode": false,
+                        "isSampling": true,
+                        "mask": 0,
+                        "os": true,
+                        "user": true
+                    }
+                ]
+            },
+            "predefinedProfileType": 4,
+            "samplingModeMask": 1
+        },
+        "flags": {
+            "collectSysModules": false,
+            "cssDefaultValues": false,
+            "defaultBranchAnalysis": false,
+            "hasCallstack": false,
+            "isThreadConcurrency": false,
+            "maxDataFileSize": 0,
+            "perEventCSSDefault": false,
+            "profileMpi": false,
+            "profileSamplinModeBpf": false,
+            "pythonTraceOptions": false,
+            "traceMpi": false,
+            "traceMpiMode": 0,
+            "traceOpenmp": false,
+            "traceOpenmpMode": 0,
+            "traceOpenmpType": 0
+        },
+        "globalFrequency": 0,
+        "globalSamplingInterval": 0,
+        "hostP0Freqs": [
+            {
+                "host": "DESKTOP-J4J7VGE",
+                "p0Freq": 3201.0
+            }
+        ],
+        "hotspotsProfilingSignal": -1,
+        "lbr": false,
+        "livePower": null,
+        "metadataSource": 0,
+        "mmapBuffer": 0,
+        "profileChildren": true,
+        "schedule": {
+            "categoryDurations": [
+                {
+                    "category": 1,
+                    "categoryName": "CPU PROFILE",
+                    "end": 7138039917400,
+                    "start": 7108001930700,
+                    "type": 0
+                }
+            ],
+            "elapsed": 30038,
+            "end": 7138039917400,
+            "endTs": "Fri Mar  6 21:42:26 2026",
+            "hostDurations": [
+                {
+                    "end": 7138039917400,
+                    "host": "DESKTOP-J4J7VGE",
+                    "start": 7108001930700
+                }
+            ],
+            "profileCollectionDataLimitType": 0,
+            "profileDuration": 30,
+            "start": 7108001930700,
+            "startDelay": 0,
+            "startTs": "Fri Mar  6 21:41:56 2026",
+            "type": 2
+        },
+        "sessionVersion": 9,
+        "target": {
+            "appArgs": "--include dungeon1/project.toml ",
+            "coreAffinity": "FFFF",
+            "coreMask": "FFFF",
+            "gpuCollectAgentVersion": 0,
+            "gpuFamily": "",
+            "gpuRocprofVersion": 0,
+            "launchApp": "build/Debug/AnitraEngine.exe",
+            "profileCores": false,
+            "systemWide": false,
+            "terminateApp": false,
+            "workingDir": "C:\\Users\\andres\\Developer\\anitra"
+        }
+    },
+    "deviceInfo": {
+        "keys": [
+            0
+        ],
+        "values": [
+            {
+                "keys": [
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15
+                ],
+                "values": [
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ],
+                    [
+                        0,
+                        3201000000
+                    ]
+                ]
+            }
+        ]
+    },
+    "generatedDBs": [
+        {
+            "category": 8192,
+            "categoryName": "callstack",
+            "databaseName": "callstack"
+        },
+        {
+            "category": 1,
+            "categoryName": "cpu",
+            "databaseName": "cpu"
+        }
+    ],
+    "generatedReports": [
+        {
+            "category": 0,
+            "name": "C:\\Users\\andres\\Developer\\anitra\\profiling\\cache_run\\AMDuProf-AnitraEngine-Custom_Mar-06-2026_21-41-55\\report.csv"
+        },
+        {
+            "category": 0,
+            "name": "C:\\Users\\andres\\Developer\\anitra\\profiling\\cache_run\\AMDuProf-AnitraEngine-Custom_Mar-06-2026_21-41-55\\report.csv"
+        }
+    ],
+    "hpc": {
+        "hostName": "DESKTOP-J4J7VGE"
+    },
+    "profileType": 1,
+    "reportCommand": "AMDuProfCLI.exe report -i profiling/cache_run/AMDuProf-AnitraEngine-Custom_Mar-06-2026_21-41-55",
+    "translateCommand": "",
+    "translation": [
+        {
+            "aggregateCoreLevel": false,
+            "aggregateInst": true,
+            "aggregateInterval": 1,
+            "asciiFlags": 0,
+            "cachePath": "",
+            "category": 1,
+            "categoryNames": "CPU PROFILE",
+            "dataCoarsenessLevel": 1,
+            "debugSymbolsPath": "",
+            "hostName": "",
+            "mpiInputDir": "C:\\Users\\andres\\Developer\\anitra\\profiling\\cache_run\\AMDuProf-AnitraEngine-Custom_Mar-06-2026_21-41-55\\cpu",
+            "processInlineFunctions": false,
+            "showPyIntrepFrames": false,
+            "summaryTimelineSz": 5000,
+            "symbolServerDirs": "",
+            "useLegacySymbolDowloader": false
+        }
+    ]
+}

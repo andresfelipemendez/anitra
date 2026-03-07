@@ -17,7 +17,7 @@
 /* ------- TCC commands --------------------------------------------------- */
 
 #define TCC_COMPILE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -shared" \
+    ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/engine.dll" \
     " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf -Ilib/toml-c" \
     " src/engine/engine.c" \
@@ -28,7 +28,7 @@
     " src/project.c" \
     " build/Debug/SDL3.def"
 #define TCC_EDITOR_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -shared" \
+    ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/editor.dll" \
     " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
@@ -43,7 +43,7 @@
     " lib/tcc-windows/lib/ws2_32.def"
 
 #define TCC_CORE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -shared" \
+    ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/core.dll" \
     " -Isrc -Isrc/core -Isrc/externals" \
     " src/core/core.c" \
@@ -51,7 +51,7 @@
     " build/Debug/externals.def"
 
 #define TCC_EXE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
+    ".\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/AnitraEngine.exe" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
     " -Ilib/SDL3/include" \
@@ -59,19 +59,19 @@
     " src/core/loadlibrary_windows.c"
 
 #define TCC_TEST_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
+    ".\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_dock.exe" \
     " -Isrc -Isrc/editor" \
     " tests/test_dock.c"
 
 #define TCC_TEST_INSPECTOR_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
+    ".\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_inspector.exe" \
     " -Isrc -Isrc/editor" \
     " tests/test_inspector.c"
 
 #define TCC_TEST_HOTRELOAD_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
+    ".\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_hotreload.exe" \
     " -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/editor -Ilib/clay" \
@@ -79,7 +79,7 @@
 
 /* test_editor.dll: real editor.c with SDL/externals stubs compiled in */
 #define TCC_TEST_DLL_EDITOR_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -shared" \
+    ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/test_editor.dll" \
     " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
@@ -89,7 +89,7 @@
 
 /* test_hotreload_dll.exe: exercises real DLL load/unload/reload */
 #define TCC_TEST_DLL_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
+    ".\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_hotreload_dll.exe" \
     " -Isrc -Isrc/editor -Isrc/engine" \
     " tests/test_hotreload_dll.c"
