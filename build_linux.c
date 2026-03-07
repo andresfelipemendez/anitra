@@ -21,7 +21,7 @@
 #define TCC_EDITOR_CMD \
     "./tcc -Blib/tcc-linux -shared" \
     " -o build/Debug/editor.so" \
-    " -DCLAY_DISABLE_SIMD" \
+    " -DCLAY_DISABLE_SIMD -DCPU_PROF_USE_FPTRS" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay" \
     " src/editor/editor.c" \
@@ -63,6 +63,12 @@
     " -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/editor -Ilib/clay" \
     " tests/test_hotreload.c"
+
+#define TCC_TEST_COLLAB_OT_CMD \
+    "./tcc -Blib/tcc-linux" \
+    " -o build/Debug/test_collab_ot" \
+    " -Isrc -Isrc/collab" \
+    " tests/test_collab_ot.c"
 
 /* ------- SDL3 platform sources ------------------------------------------ */
 

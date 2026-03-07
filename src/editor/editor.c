@@ -174,7 +174,21 @@ static const char *insp_comp_names[INSP_COMP_COUNT] = {
 #define UI_ICON_ARROW_UP        "\xEF\x85\x88" /* U+F148 */
 
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
-/* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
+
+/* Wire CPU profiler function pointers from externals.dll (set by core.c at load time) */
+EXPORT void assign_cpu_prof_fns(
+    void (*czb)(const char *), void (*cze)(void),
+    int (*gce)(void),
+    void *gfao, uint64_t (*gfiao)(uint16_t),
+    int (*ghc)(void))
+{
+    cpu_zone_begin = czb;
+    cpu_zone_end = cze;
+    cpu_prof_get_capture_enabled = gce;
+    cpu_prof_get_frame_at_offset = (cpu_prof_frame *(*)(uint16_t))gfao;
+    cpu_prof_get_frame_id_at_offset = gfiao;
+    cpu_prof_get_history_count = ghc;
+}
 
 /* Memory profiler colors (one per allocation slot) */
 static const Clay_Color profiler_colors[] = {

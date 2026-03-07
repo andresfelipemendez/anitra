@@ -1,6 +1,5 @@
 #include "core.h"
 #include "loadlibrary.h"
-#include <externals.h>
 #include <stdio.h>
 
 #ifdef _WIN32
@@ -11,17 +10,36 @@
 #endif
 
 
-/* Profiler zone wrappers exported from externals.dll */
-extern void ext_cache_zone_begin(const char *name);
-extern void ext_cache_zone_end(void);
-extern void ext_cpu_zone_begin(const char *name);
-extern void ext_cpu_zone_end(void);
-
 static volatile int reloadFlag = 0;
 static volatile int editorReloadFlag = 0;
 static volatile int shutdownRequested = 0;
 static void *engine_lib = NULL;
 static void *editor_lib = NULL;
+static void *externals_lib = NULL;
+
+/* Function pointer table for externals.dll — resolved at runtime via
+   copylibrary + loadlibrary + getfunction (PID-based naming, like engine/editor). */
+static struct {
+    int  (*init)(const char *project_path);
+    int  (*update)(void);
+    void (*end)(void);
+    void (*init_engine)(void);
+    void (*destroy_engine)(void);
+    void (*init_editor)(void);
+    void (*destroy_editor)(void);
+    void (*reload_project)(void);
+    void (*assign_init)(engine_init_fn);
+    void (*assign_destroy)(engine_destroy_fn);
+    void (*assign_update)(engine_update_fn);
+    void (*assign_editor_init)(editor_init_fn);
+    void (*assign_editor_destroy)(editor_destroy_fn);
+    void (*assign_editor_update)(editor_update_fn);
+    void (*assign_editor_handle_event)(editor_handle_event_fn);
+    void (*cache_zone_begin)(const char *name);
+    void (*cache_zone_end)(void);
+    void (*cpu_zone_begin)(const char *name);
+    void (*cpu_zone_end)(void);
+} ext = {0};
 
 #ifndef _WIN32
 #define ENGINE_RELOAD_SIGNAL_FILE "build/Debug/.reload-signal"
@@ -78,6 +96,48 @@ static DWORD WINAPI waitforeditorreloadsignal(LPVOID param) {
 /* PID-based copy names — built once, used for initial load + hot-reload */
 static char engine_copy_name[64];
 static char editor_copy_name[64];
+static char ext_copy_name[64];
+
+/* Load externals DLL: copy to PID-based name, loadlibrary, resolve all function pointers */
+static int load_externals(void) {
+    copylibrary("externals", ext_copy_name);
+    externals_lib = loadlibrary(ext_copy_name);
+    if (!externals_lib) {
+        fprintf(stderr, "Failed to load %s\n", ext_copy_name);
+        return -1;
+    }
+
+    ext.init           = (int(*)(const char*))getfunction(externals_lib, "init_externals");
+    ext.update         = (int(*)(void))getfunction(externals_lib, "update_externals");
+    ext.end            = (void(*)(void))getfunction(externals_lib, "end_externals");
+    ext.init_engine    = (void(*)(void))getfunction(externals_lib, "init_engine");
+    ext.destroy_engine = (void(*)(void))getfunction(externals_lib, "destroy_engine");
+    ext.init_editor    = (void(*)(void))getfunction(externals_lib, "init_editor");
+    ext.destroy_editor = (void(*)(void))getfunction(externals_lib, "destroy_editor");
+    ext.reload_project = (void(*)(void))getfunction(externals_lib, "reload_project");
+
+    ext.assign_init               = (void(*)(engine_init_fn))getfunction(externals_lib, "assign_init");
+    ext.assign_destroy            = (void(*)(engine_destroy_fn))getfunction(externals_lib, "assign_destroy");
+    ext.assign_update             = (void(*)(engine_update_fn))getfunction(externals_lib, "assign_update");
+    ext.assign_editor_init        = (void(*)(editor_init_fn))getfunction(externals_lib, "assign_editor_init");
+    ext.assign_editor_destroy     = (void(*)(editor_destroy_fn))getfunction(externals_lib, "assign_editor_destroy");
+    ext.assign_editor_update      = (void(*)(editor_update_fn))getfunction(externals_lib, "assign_editor_update");
+    ext.assign_editor_handle_event = (void(*)(editor_handle_event_fn))getfunction(externals_lib, "assign_editor_handle_event");
+
+    ext.cache_zone_begin = (void(*)(const char*))getfunction(externals_lib, "ext_cache_zone_begin");
+    ext.cache_zone_end   = (void(*)(void))getfunction(externals_lib, "ext_cache_zone_end");
+    ext.cpu_zone_begin   = (void(*)(const char*))getfunction(externals_lib, "ext_cpu_zone_begin");
+    ext.cpu_zone_end     = (void(*)(void))getfunction(externals_lib, "ext_cpu_zone_end");
+
+    if (!ext.init || !ext.update || !ext.end || !ext.init_engine || !ext.destroy_engine) {
+        fprintf(stderr, "Failed to resolve required externals functions\n");
+        unloadlibrary(externals_lib);
+        externals_lib = NULL;
+        return -1;
+    }
+
+    return 0;
+}
 
 EXPORT int init_core(const char *project_path) {
   int reload;
@@ -89,6 +149,7 @@ EXPORT int init_core(const char *project_path) {
     unsigned long pid = (unsigned long)GetCurrentProcessId();
     snprintf(engine_copy_name, sizeof(engine_copy_name), "engine_%lu", pid);
     snprintf(editor_copy_name, sizeof(editor_copy_name), "editor_%lu", pid);
+    snprintf(ext_copy_name, sizeof(ext_copy_name), "externals_%lu", pid);
   }
 
   HANDLE hEngineEvent = CreateEvent(NULL, TRUE, FALSE, HOTRELOAD_EVENT_NAME);
@@ -107,10 +168,14 @@ EXPORT int init_core(const char *project_path) {
     int pid = (int)getpid();
     snprintf(engine_copy_name, sizeof(engine_copy_name), "engine_%d", pid);
     snprintf(editor_copy_name, sizeof(editor_copy_name), "editor_%d", pid);
+    snprintf(ext_copy_name, sizeof(ext_copy_name), "externals_%d", pid);
   }
   /* Avoid stale file signals causing immediate reload after launch */
   clear_reload_signal_files();
 #endif
+
+  /* Load externals DLL (copy first so externals.dll stays unlocked) */
+  if (load_externals() != 0) return 1;
 
   /* Load engine DLL (copy first so engine.dll stays unlocked) */
   copylibrary("engine", engine_copy_name);
@@ -131,16 +196,16 @@ EXPORT int init_core(const char *project_path) {
       return 1;
     }
 
-    assign_init(init_e);
-    assign_destroy(destroy_e);
-    assign_update(update_e);
+    ext.assign_init(init_e);
+    ext.assign_destroy(destroy_e);
+    ext.assign_update(update_e);
   }
 
   /* Wire profiler zone functions: externals -> engine */
   {
       typedef void (*assign_profiler_fns_t)(void(*)(const char*), void(*)(void), void(*)(const char*), void(*)(void));
       assign_profiler_fns_t assign_pfns = (assign_profiler_fns_t)getfunction(engine_lib, "assign_profiler_fns");
-      if (assign_pfns) assign_pfns(ext_cache_zone_begin, ext_cache_zone_end, ext_cpu_zone_begin, ext_cpu_zone_end);
+      if (assign_pfns) assign_pfns(ext.cache_zone_begin, ext.cache_zone_end, ext.cpu_zone_begin, ext.cpu_zone_end);
   }
 
   /* Load editor DLL (copy first so editor.dll stays unlocked) */
@@ -157,16 +222,30 @@ EXPORT int init_core(const char *project_path) {
       unloadlibrary(editor_lib);
       editor_lib = NULL;
     } else {
-      assign_editor_init(init_ed);
-      assign_editor_destroy(destroy_ed);
-      assign_editor_update(update_ed);
-      assign_editor_handle_event(handle_ev);
+      ext.assign_editor_init(init_ed);
+      ext.assign_editor_destroy(destroy_ed);
+      ext.assign_editor_update(update_ed);
+      ext.assign_editor_handle_event(handle_ev);
+
+      /* Wire CPU profiler functions: externals -> editor */
+      {
+          typedef void (*assign_cpu_prof_fns_t)(
+              void(*)(const char*), void(*)(void), int(*)(void),
+              void*, void*, int(*)(void));
+          assign_cpu_prof_fns_t assign_cpu = (assign_cpu_prof_fns_t)getfunction(editor_lib, "assign_cpu_prof_fns");
+          if (assign_cpu) assign_cpu(
+              ext.cpu_zone_begin, ext.cpu_zone_end,
+              (int(*)(void))getfunction(externals_lib, "cpu_prof_get_capture_enabled"),
+              getfunction(externals_lib, "cpu_prof_get_frame_at_offset"),
+              getfunction(externals_lib, "cpu_prof_get_frame_id_at_offset"),
+              (int(*)(void))getfunction(externals_lib, "cpu_prof_get_history_count"));
+      }
     }
   }
 
-  init_externals(project_path);
-  init_engine();
-  init_editor();
+  ext.init(project_path);
+  ext.init_engine();
+  ext.init_editor();
 
   /* Reset state for fresh load */
   shutdownRequested = 0;
@@ -201,14 +280,22 @@ EXPORT int init_core(const char *project_path) {
 #endif
 
   /* Teardown */
-  destroy_editor();
-  destroy_engine();
-  end_externals();
+  ext.destroy_editor();
+  ext.destroy_engine();
+  ext.end();
 
   unloadlibrary(engine_lib);
   unloadlibrary(editor_lib);
   engine_lib = NULL;
   editor_lib = NULL;
+
+  /* Unload externals LAST — engine/editor may reference its memory during teardown.
+     Do NOT unload on normal exit (reload==0); the OS reclaims everything, and
+     DllMain destructors can deadlock on the loader lock. */
+  if (reload && externals_lib) {
+    unloadlibrary(externals_lib);
+    externals_lib = NULL;
+  }
 
   return reload;
 }
@@ -236,7 +323,7 @@ int begin_game_loop(void) {
         continue;
       }
 
-      destroy_engine();
+      ext.destroy_engine();
       printf("Reloading engine...\n");
 
       unloadlibrary(engine_lib);
@@ -258,22 +345,22 @@ int begin_game_loop(void) {
           continue;
         }
 
-        assign_init(new_init);
-        assign_destroy(new_destroy);
-        assign_update(new_update);
+        ext.assign_init(new_init);
+        ext.assign_destroy(new_destroy);
+        ext.assign_update(new_update);
       }
 
       /* Re-wire profiler zone functions after engine reload */
       {
           typedef void (*assign_profiler_fns_t)(void(*)(const char*), void(*)(void), void(*)(const char*), void(*)(void));
           assign_profiler_fns_t assign_pfns = (assign_profiler_fns_t)getfunction(engine_lib, "assign_profiler_fns");
-          if (assign_pfns) assign_pfns(ext_cache_zone_begin, ext_cache_zone_end, ext_cpu_zone_begin, ext_cpu_zone_end);
+          if (assign_pfns) assign_pfns(ext.cache_zone_begin, ext.cache_zone_end, ext.cpu_zone_begin, ext.cpu_zone_end);
       }
 
       /* Reload project.toml from disk so TOML edits take effect on hot-reload */
-      reload_project();
+      ext.reload_project();
 
-      init_engine();
+      ext.init_engine();
     }
 
     if (editorReloadFlag) {
@@ -285,7 +372,7 @@ int begin_game_loop(void) {
         continue;
       }
 
-      destroy_editor();
+      ext.destroy_editor();
       printf("Reloading editor...\n");
 
       unloadlibrary(editor_lib);
@@ -309,12 +396,26 @@ int begin_game_loop(void) {
           continue;
         }
 
-        assign_editor_init(new_init_ed);
-        assign_editor_destroy(new_destroy_ed);
-        assign_editor_update(new_update_ed);
-        assign_editor_handle_event(new_handle_ev);
+        ext.assign_editor_init(new_init_ed);
+        ext.assign_editor_destroy(new_destroy_ed);
+        ext.assign_editor_update(new_update_ed);
+        ext.assign_editor_handle_event(new_handle_ev);
+
+        /* Re-wire CPU profiler functions after editor reload */
+        {
+            typedef void (*assign_cpu_prof_fns_t)(
+                void(*)(const char*), void(*)(void), int(*)(void),
+                void*, void*, int(*)(void));
+            assign_cpu_prof_fns_t assign_cpu = (assign_cpu_prof_fns_t)getfunction(editor_lib, "assign_cpu_prof_fns");
+            if (assign_cpu) assign_cpu(
+                ext.cpu_zone_begin, ext.cpu_zone_end,
+                (int(*)(void))getfunction(externals_lib, "cpu_prof_get_capture_enabled"),
+                getfunction(externals_lib, "cpu_prof_get_frame_at_offset"),
+                getfunction(externals_lib, "cpu_prof_get_frame_id_at_offset"),
+                (int(*)(void))getfunction(externals_lib, "cpu_prof_get_history_count"));
+        }
       }
-      init_editor();
+      ext.init_editor();
     }
 
     /* Core reload: poll with 0ms timeout (non-blocking) */
@@ -332,7 +433,7 @@ int begin_game_loop(void) {
     }
 #endif
 
-    if (!update_externals()) break;
+    if (!ext.update()) break;
   }
 
 #ifdef _WIN32

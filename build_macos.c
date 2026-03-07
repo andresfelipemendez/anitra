@@ -27,7 +27,7 @@
     "lib/tcc/macos/tcc -Blib/tcc/macos -shared" \
     TCC_MACOS_DEFS \
     " -o build/Debug/libeditor.dylib" \
-    " -DCLAY_DISABLE_SIMD" \
+    " -DCLAY_DISABLE_SIMD -DCPU_PROF_USE_FPTRS" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay" \
     " src/editor/editor.c" \
@@ -42,8 +42,7 @@
     " -Ilib/SDL3/include -Ilib/toml-c" \
     " src/core/core.c" \
     " src/core/loadlibrary_macos.c" \
-    " src/project.c" \
-    " -Lbuild/Debug -lexternals"
+    " src/project.c"
 
 #define TCC_EXE_CMD \
     "lib/tcc/macos/tcc -Blib/tcc/macos" \
@@ -72,6 +71,12 @@
     " -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/editor -Ilib/clay" \
     " tests/test_hotreload.c"
+
+#define TCC_TEST_COLLAB_OT_CMD \
+    "lib/tcc/macos/tcc -Blib/tcc/macos" \
+    " -o build/Debug/test_collab_ot" \
+    " -Isrc -Isrc/collab" \
+    " tests/test_collab_ot.c"
 
 /* ------- SDL3 platform sources ------------------------------------------ */
 

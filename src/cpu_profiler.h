@@ -76,6 +76,24 @@ typedef struct {
 
 /* ── API Declarations ───────────────────────────────────────────────────── */
 
+#if defined(CPU_PROF_USE_FPTRS) && !defined(CPU_PROF_IMPL)
+/* Function-pointer mode: DLLs that don't own profiler state (e.g. editor.dll)
+   use these static pointers, wired at runtime via cpu_prof_assign_fns().
+   Identifiers match the regular API so call sites need no changes. */
+static void            (*cpu_prof_init)(void);
+static void            (*cpu_prof_shutdown)(void);
+static void            (*cpu_zone_begin)(const char *name);
+static void            (*cpu_zone_end)(void);
+static void            (*cpu_prof_frame_end)(void);
+static void            (*cpu_prof_clear_current_frame)(void);
+static void            (*cpu_prof_set_capture_enabled)(int enabled);
+static int             (*cpu_prof_get_capture_enabled)(void);
+static cpu_prof_frame *(*cpu_prof_get_frame)(void);
+static cpu_prof_frame *(*cpu_prof_get_frame_at_offset)(uint16_t frames_back);
+static uint64_t        (*cpu_prof_get_frame_id_at_offset)(uint16_t frames_back);
+static int             (*cpu_prof_get_history_count)(void);
+static void            (*cpu_prof_sort_zones)(void);
+#else
 CPU_PROF_API void            cpu_prof_init(void);
 CPU_PROF_API void            cpu_prof_shutdown(void);
 CPU_PROF_API void            cpu_zone_begin(const char *name);
@@ -89,6 +107,7 @@ CPU_PROF_API cpu_prof_frame *cpu_prof_get_frame_at_offset(uint16_t frames_back);
 CPU_PROF_API uint64_t        cpu_prof_get_frame_id_at_offset(uint16_t frames_back);
 CPU_PROF_API int             cpu_prof_get_history_count(void);
 CPU_PROF_API void            cpu_prof_sort_zones(void);
+#endif
 
 #define CPU_PROF_INVALID_PARENT 0xFFFFu
 

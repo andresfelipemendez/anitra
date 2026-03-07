@@ -150,6 +150,26 @@ static inline int collab_snapshot_max_size(void) {
     return 512 * 1024;
 }
 
+/* ── OT: Operational Transform for SET operations ── */
+
+/* Sentinel: marks an op as no-op after transformation.
+   Values >= OP_COUNT are ignored by collab_op_apply (default: break). */
+#define OP_NOOP  ((uint32_t)0xFFFF)
+
+/* Transform a remote op against a local pending op.
+   If they target the same (entity_index, type), remote_op becomes OP_NOOP.
+   The pending_local_op is never modified.
+   Returns 1 if remote_op was no-op'd, 0 otherwise. */
+static inline int collab_op_transform(collab_op *remote_op,
+                                       const collab_op *pending_local_op) {
+    if (remote_op->entity_index == pending_local_op->entity_index &&
+        remote_op->type == pending_local_op->type) {
+        remote_op->type = OP_NOOP;
+        return 1;
+    }
+    return 0;
+}
+
 /* ── Functions that require game.h (implemented in collab_ops.c) ── */
 
 /* Apply a single operation to game_state. */

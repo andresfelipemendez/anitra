@@ -6,6 +6,7 @@
 /* ── Client State ── */
 
 #define COLLAB_SEND_QUEUE_MAX  64
+#define COLLAB_PENDING_MAX     64
 #define COLLAB_RECV_BUF_SIZE   65536
 #define COLLAB_SEND_BUF_SIZE   65536
 
@@ -31,6 +32,11 @@ typedef struct collab_state {
     /* Send queue — operations coalesced per (entity, type) */
     collab_op send_queue[COLLAB_SEND_QUEUE_MAX];
     int send_queue_count;
+
+    /* OT: pending ops — sent to server, awaiting ACK (FIFO).
+       TCP guarantees ACKs arrive in send order, so we always pop [0]. */
+    collab_op pending_ops[COLLAB_PENDING_MAX];
+    int pending_count;
 
     /* Raw send buffer for partially-sent data */
     uint8_t send_raw[COLLAB_SEND_BUF_SIZE];

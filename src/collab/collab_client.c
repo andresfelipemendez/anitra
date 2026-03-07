@@ -33,6 +33,7 @@ void collab_init(collab_state *cs) {
     cs->connected = 0;
     cs->connecting = 0;
     cs->snapshot_received = 0;
+    cs->pending_count = 0;
     {
         int i;
         for (i = 0; i < COLLAB_MAX_CLIENTS; i++) {
@@ -153,6 +154,7 @@ void collab_disconnect(collab_state *cs) {
     cs->recv_len = 0;
     cs->send_raw_len = 0;
     cs->send_queue_count = 0;
+    cs->pending_count = 0;
     {
         int i;
         for (i = 0; i < COLLAB_MAX_CLIENTS; i++) {
@@ -222,6 +224,10 @@ static void collab_flush_queue(collab_state *cs) {
         if (bytes > 0) {
             send(COLLAB_SOCK(cs->socket), (const char *)msg_buf, bytes, 0);
         }
+        /* OT: track sent ops as pending until ACKed */
+        if (cs->pending_count < COLLAB_PENDING_MAX) {
+            cs->pending_ops[cs->pending_count++] = cs->send_queue[i];
+        }
     }
     cs->send_queue_count = 0;
 }
@@ -247,6 +253,8 @@ static void collab_process_message(collab_state *cs, collab_msg_type type,
     case MSG_SNAPSHOT: {
         if (collab_snapshot_deserialize(gs, payload, payload_len) == 0) {
             cs->snapshot_received = 1;
+            cs->pending_count = 0;
+            cs->send_queue_count = 0;
             snprintf(cs->status_msg, sizeof(cs->status_msg),
                      "Connected - synced (%d entities)", gs->scene_entity_count);
         }
@@ -255,15 +263,31 @@ static void collab_process_message(collab_state *cs, collab_msg_type type,
     case MSG_OP: {
         collab_op op;
         if (collab_op_from_msg(&op, payload, payload_len) == 0) {
-            /* Skip operations we originated — already applied locally */
             if (op.client_id != cs->client_id) {
-                collab_op_apply(&op, gs);
+                /* OT: transform remote op against all pending local ops.
+                   If it conflicts with any pending op (same entity+type),
+                   skip it — our pending op will take effect when ACKed. */
+                int i;
+                for (i = 0; i < cs->pending_count; i++) {
+                    if (collab_op_transform(&op, &cs->pending_ops[i]))
+                        break;
+                }
+                if (op.type != OP_NOOP) {
+                    collab_op_apply(&op, gs);
+                }
             }
         }
         break;
     }
     case MSG_ACK: {
-        /* Currently unused — could track confirmed ops for rollback */
+        /* OT: pop the oldest pending op (FIFO — TCP preserves order) */
+        if (cs->pending_count > 0) {
+            cs->pending_count--;
+            if (cs->pending_count > 0) {
+                memmove(&cs->pending_ops[0], &cs->pending_ops[1],
+                        (size_t)cs->pending_count * sizeof(collab_op));
+            }
+        }
         break;
     }
     case MSG_CURSOR: {

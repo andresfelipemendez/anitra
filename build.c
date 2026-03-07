@@ -556,12 +556,6 @@ static int build_externals(void)
         return 1;
     }
 
-#ifdef _WIN32
-    /* Generate .def for TCC linking (core.dll needs it) */
-    generate_def_from_dll(DEBUG_DIR "/externals.dll",
-                          DEBUG_DIR "/externals.def", "externals_copy.dll");
-#endif
-
     return 0;
 }
 
@@ -1053,6 +1047,13 @@ static int build_test(void)
         return 1;
     }
 
+    printf(">> " TCC_TEST_COLLAB_OT_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_COLLAB_OT_CMD) != 0) {
+        printf("!! test_collab_ot build failed.\n");
+        return 1;
+    }
+
     printf("\n=== Running tests ===\n");
     fflush(stdout);
 #ifdef _WIN32
@@ -1085,6 +1086,14 @@ static int build_test(void)
     if (system("build/Debug/test_hotreload_dll") != 0) {
 #endif
         printf("!! test_hotreload_dll failed.\n");
+        failed = 1;
+    }
+#ifdef _WIN32
+    if (system("build\\Debug\\test_collab_ot.exe") != 0) {
+#else
+    if (system("build/Debug/test_collab_ot") != 0) {
+#endif
+        printf("!! test_collab_ot failed.\n");
         failed = 1;
     }
 

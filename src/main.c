@@ -38,13 +38,12 @@ static const char *resolve_project_path(int argc, char **argv) {
 int main(int argc, char **argv) {
   const char *project_path = resolve_project_path(argc, argv);
 
-  /* Build PID-based copy names so multiple instances don't collide */
-  char ext_copy[64], core_copy[64];
+  /* Build PID-based copy name so multiple instances don't collide */
+  char core_copy[64];
 #ifdef _WIN32
   LARGE_INTEGER t0;
   {
     unsigned long pid = (unsigned long)GetCurrentProcessId();
-    snprintf(ext_copy, sizeof(ext_copy), "externals_%lu", pid);
     snprintf(core_copy, sizeof(core_copy), "core_%lu", pid);
   }
   QueryPerformanceCounter(&t0);
@@ -52,7 +51,6 @@ int main(int argc, char **argv) {
 #else
   {
     int pid = (int)getpid();
-    snprintf(ext_copy, sizeof(ext_copy), "externals_%d", pid);
     snprintf(core_copy, sizeof(core_copy), "core_%d", pid);
   }
 #endif
@@ -61,17 +59,6 @@ int main(int argc, char **argv) {
     void *lib;
     init_core_func init;
     int result;
-
-    if (copylibrary("externals", ext_copy) != 0) {
-      fprintf(stderr, "Failed to copy externals.dll\n");
-      return 1;
-    }
-    /* core.dll and editor.dll import "externals_copy.dll" (baked via .def),
-       so also copy under that fixed name for the PE import to resolve. */
-    copylibrary("externals", "externals_copy");
-#ifdef _WIN32
-    printf("[boot] copy externals: %.2f ms\n", _boot_ms(t0));
-#endif
 
     if (copylibrary("core", core_copy) != 0) {
       fprintf(stderr, "Failed to copy core.dll\n");

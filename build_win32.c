@@ -30,7 +30,7 @@
 #define TCC_EDITOR_CMD \
     ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/editor.dll" \
-    " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL" \
+    " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL -DCPU_PROF_USE_FPTRS" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay -Ilib/toml-c -Ilib/sqlite" \
     " src/editor/editor.c" \
@@ -39,7 +39,6 @@
     " src/project.c" \
     " lib/sqlite/sqlite3.c" \
     " build/Debug/SDL3.def" \
-    " build/Debug/externals.def" \
     " lib/tcc-windows/lib/ws2_32.def"
 
 #define TCC_CORE_CMD \
@@ -47,8 +46,7 @@
     " -o build/Debug/core.dll" \
     " -Isrc -Isrc/core -Isrc/externals" \
     " src/core/core.c" \
-    " src/core/loadlibrary_windows.c" \
-    " build/Debug/externals.def"
+    " src/core/loadlibrary_windows.c"
 
 #define TCC_EXE_CMD \
     ".\\tcc.exe -Blib/tcc-windows -g" \
@@ -77,11 +75,17 @@
     " -Isrc -Isrc/editor -Ilib/clay" \
     " tests/test_hotreload.c"
 
+#define TCC_TEST_COLLAB_OT_CMD \
+    ".\\tcc.exe -Blib/tcc-windows" \
+    " -o build/Debug/test_collab_ot.exe" \
+    " -Isrc -Isrc/collab" \
+    " tests/test_collab_ot.c"
+
 /* test_editor.dll: real editor.c with SDL/externals stubs compiled in */
 #define TCC_TEST_DLL_EDITOR_CMD \
     ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/test_editor.dll" \
-    " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL" \
+    " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL -DCPU_PROF_USE_FPTRS" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay -Ilib/toml-c -Ilib/sqlite" \
     " src/editor/editor.c" \
