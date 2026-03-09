@@ -49,7 +49,7 @@
     " src/core/loadlibrary_windows.c"
 
 #define TCC_EXE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g" \
+    ".\\tcc.exe -Blib/tcc-windows" \
     " -o build/Debug/AnitraEngine.exe" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
     " -Ilib/SDL3/include" \

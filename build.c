@@ -75,6 +75,8 @@
 #define OBJ_SDL3_DIR        "build/obj/sdl3"
 #define OBJ_SPIRVCROSS_DIR  "build/obj/spirvcross"
 #define OBJ_SHADERCROSS_DIR "build/obj/shadercross"
+#define REMOTE_DIR          "build/remote"
+#define REMOTE_CONFIG_FILE  ".anitra-remote.toml"
 #define PROJECT_INCLUDE_FILE "project.txt"
 #define DEFAULT_PROJECT_TOML "dungeon1/project.toml"
 #define GYM_SCENE_TOML       "tests/gym_scene.toml"
@@ -213,6 +215,7 @@ static int ensure_dirs(void)
     if (ensure_dir(OBJ_SDL3_DIR))       return 1;
     if (ensure_dir(OBJ_SPIRVCROSS_DIR)) return 1;
     if (ensure_dir(OBJ_SHADERCROSS_DIR)) return 1;
+    if (ensure_dir(REMOTE_DIR))         return 1;
     return 0;
 }
 
@@ -1882,6 +1885,261 @@ static int build_nanoprof2chrome(void)
     return 0;
 }
 
+/* ------- remote (cross-compile + deploy + run on Raspberry Pi) ---------- */
+
+typedef struct {
+    char host[256];
+    char user[128];
+    char deploy_path[PATH_SIZE];
+} remote_config;
+
+static int read_remote_config(remote_config *cfg)
+{
+    FILE *fp;
+    char line[512];
+
+    memset(cfg, 0, sizeof(*cfg));
+    fp = fopen(REMOTE_CONFIG_FILE, "r");
+    if (!fp) {
+        printf("!! Could not open %s\n", REMOTE_CONFIG_FILE);
+        return 1;
+    }
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line;
+        char *eq;
+        char *val_start, *val_end;
+
+        /* skip whitespace */
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '[' || *p == '\0' || *p == '\n') continue;
+
+        eq = strchr(p, '=');
+        if (!eq) continue;
+
+        /* extract key (trim trailing spaces before '=') */
+        {
+            char *key_end = eq - 1;
+            while (key_end > p && (*key_end == ' ' || *key_end == '\t')) key_end--;
+            *(key_end + 1) = '\0';
+        }
+
+        /* extract value (trim spaces, quotes, newline) */
+        val_start = eq + 1;
+        while (*val_start == ' ' || *val_start == '\t') val_start++;
+        if (*val_start == '"') val_start++;
+        val_end = val_start + strlen(val_start);
+        while (val_end > val_start &&
+               (val_end[-1] == '\n' || val_end[-1] == '\r' ||
+                val_end[-1] == '"' || val_end[-1] == ' '))
+            val_end--;
+        *val_end = '\0';
+
+        if (strcmp(p, "host") == 0)
+            snprintf(cfg->host, sizeof(cfg->host), "%s", val_start);
+        else if (strcmp(p, "user") == 0)
+            snprintf(cfg->user, sizeof(cfg->user), "%s", val_start);
+        else if (strcmp(p, "deploy_path") == 0)
+            snprintf(cfg->deploy_path, sizeof(cfg->deploy_path), "%s", val_start);
+    }
+
+    fclose(fp);
+
+    if (!cfg->host[0] || !cfg->user[0] || !cfg->deploy_path[0]) {
+        printf("!! %s must define host, user, and deploy_path\n", REMOTE_CONFIG_FILE);
+        return 1;
+    }
+    return 0;
+}
+
+static int build_remote_compile(void)
+{
+    char cmd[CMD_MAX];
+
+    printf("\n=== Cross-compiling for aarch64-linux-gnu ===\n");
+
+    if (ensure_dir(REMOTE_DIR)) return 1;
+
+    /* 1. externals.so */
+    snprintf(cmd, sizeof(cmd),
+        "%s --target aarch64-linux-gnu -shared"
+        " -o " REMOTE_DIR "/libexternals.so"
+        " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
+        " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD"
+        " " COMMON_INCLUDES
+        " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
+        " src/externals/externals_runtime.c src/externals/externals.c"
+        " src/project.c lib/sqlite/sqlite3.c"
+        " lib/remotery/Remotery.c"
+        " -Wl,--allow-shlib-undefined"
+        " -lpthread -ldl -lm",
+        tool_cc);
+    if (run_cmd(cmd) != 0) { printf("!! externals cross-compile failed\n"); return 1; }
+
+    /* 2. core.so */
+    snprintf(cmd, sizeof(cmd),
+        "%s --target aarch64-linux-gnu -shared"
+        " -o " REMOTE_DIR "/core.so"
+        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
+        " -Ilib/SDL3/include"
+        " src/core/core.c"
+        " src/core/loadlibrary_linux.cpp",
+        tool_cc);
+    if (run_cmd(cmd) != 0) { printf("!! core cross-compile failed\n"); return 1; }
+
+    /* 3. engine.so */
+    snprintf(cmd, sizeof(cmd),
+        "%s --target aarch64-linux-gnu -shared"
+        " -o " REMOTE_DIR "/engine.so"
+        " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf"
+        " src/engine/anim.c src/engine/debug_render.c src/engine/engine.c"
+        " src/engine/gltf_loader.c src/engine/physics.c",
+        tool_cc);
+    if (run_cmd(cmd) != 0) { printf("!! engine cross-compile failed\n"); return 1; }
+
+    /* 4. editor.so */
+    snprintf(cmd, sizeof(cmd),
+        "%s --target aarch64-linux-gnu -shared"
+        " -o " REMOTE_DIR "/editor.so"
+        " -DCLAY_DISABLE_SIMD -DCPU_PROF_USE_FPTRS"
+        " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab"
+        " -Ilib/SDL3/include -Ilib/clay"
+        " src/editor/editor.c"
+        " src/collab/collab_ops.c"
+        " src/collab/collab_client.c",
+        tool_cc);
+    if (run_cmd(cmd) != 0) { printf("!! editor cross-compile failed\n"); return 1; }
+
+    /* 5. AnitraEngine (exe) */
+    snprintf(cmd, sizeof(cmd),
+        "%s --target aarch64-linux-gnu"
+        " -o " REMOTE_DIR "/AnitraEngine"
+        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
+        " -Ilib/SDL3/include"
+        " src/main.c"
+        " src/core/loadlibrary_linux.cpp"
+        " -ldl",
+        tool_cc);
+    if (run_cmd(cmd) != 0) { printf("!! exe cross-compile failed\n"); return 1; }
+
+    printf("   Cross-compilation complete.\n");
+    return 0;
+}
+
+static int build_remote_deploy(const remote_config *cfg, const char *project_dir)
+{
+    char cmd[CMD_MAX];
+
+    printf("\n=== Deploying to %s@%s:%s ===\n", cfg->user, cfg->host, cfg->deploy_path);
+
+    /* Create remote directory structure */
+    snprintf(cmd, sizeof(cmd),
+        "ssh %s@%s \"mkdir -p %s/build/Debug %s/assets/shaders/compiled %s/assets/fonts\"",
+        cfg->user, cfg->host,
+        cfg->deploy_path, cfg->deploy_path, cfg->deploy_path);
+    if (run_cmd(cmd) != 0) { printf("!! Failed to create remote dirs\n"); return 1; }
+
+    /* Copy binaries */
+    snprintf(cmd, sizeof(cmd),
+        "scp"
+        " " REMOTE_DIR "/AnitraEngine"
+        " " REMOTE_DIR "/libexternals.so"
+        " " REMOTE_DIR "/core.so"
+        " " REMOTE_DIR "/engine.so"
+        " " REMOTE_DIR "/editor.so"
+        " %s@%s:%s/build/Debug/",
+        cfg->user, cfg->host, cfg->deploy_path);
+    if (run_cmd(cmd) != 0) { printf("!! Failed to deploy binaries\n"); return 1; }
+
+    /* Copy shaders */
+    snprintf(cmd, sizeof(cmd),
+        "scp -r assets/shaders/compiled"
+        " %s@%s:%s/assets/shaders/",
+        cfg->user, cfg->host, cfg->deploy_path);
+    if (run_cmd(cmd) != 0) { printf("!! Failed to deploy shaders\n"); return 1; }
+
+    /* Copy fonts */
+    snprintf(cmd, sizeof(cmd),
+        "scp -r assets/fonts"
+        " %s@%s:%s/assets/",
+        cfg->user, cfg->host, cfg->deploy_path);
+    if (run_cmd(cmd) != 0) { printf("!! Failed to deploy fonts\n"); return 1; }
+
+    /* Copy project directory if available */
+    if (project_dir && project_dir[0]) {
+        /* Extract the top-level directory name (e.g. "dungeon1" from "dungeon1/project.toml") */
+        char proj_dir_name[PATH_SIZE];
+        const char *slash = strchr(project_dir, '/');
+        if (!slash) slash = strchr(project_dir, '\\');
+        if (slash) {
+            size_t len = (size_t)(slash - project_dir);
+            if (len >= sizeof(proj_dir_name)) len = sizeof(proj_dir_name) - 1;
+            memcpy(proj_dir_name, project_dir, len);
+            proj_dir_name[len] = '\0';
+        } else {
+            snprintf(proj_dir_name, sizeof(proj_dir_name), "%s", project_dir);
+        }
+
+        snprintf(cmd, sizeof(cmd),
+            "scp -r %s %s@%s:%s/",
+            proj_dir_name, cfg->user, cfg->host, cfg->deploy_path);
+        if (run_cmd(cmd) != 0) { printf("!! Failed to deploy project files\n"); return 1; }
+    }
+
+    printf("   Deploy complete.\n");
+    return 0;
+}
+
+static int build_remote_run(const remote_config *cfg, const char *project_include)
+{
+    char cmd[CMD_MAX];
+
+    printf("\n=== Running on %s ===\n", cfg->host);
+
+    if (project_include && project_include[0]) {
+        snprintf(cmd, sizeof(cmd),
+            "ssh %s@%s \"cd %s && DISPLAY=:0 ./build/Debug/AnitraEngine --include %s\"",
+            cfg->user, cfg->host, cfg->deploy_path, project_include);
+    } else {
+        snprintf(cmd, sizeof(cmd),
+            "ssh %s@%s \"cd %s && DISPLAY=:0 ./build/Debug/AnitraEngine\"",
+            cfg->user, cfg->host, cfg->deploy_path);
+    }
+    return run_cmd(cmd);
+}
+
+static int build_remote(void)
+{
+    remote_config cfg;
+    char project_path[PATH_SIZE];
+    const char *project_include = NULL;
+
+    printf("=== Building remote (Raspberry Pi) ===\n");
+
+    if (read_remote_config(&cfg) != 0) return 1;
+
+    /* Resolve project path */
+    project_path[0] = '\0';
+    if (read_project_include_path(project_path, sizeof(project_path))) {
+        project_include = project_path;
+    } else if (file_exists_regular(DEFAULT_PROJECT_TOML)) {
+        snprintf(project_path, sizeof(project_path), "%s", DEFAULT_PROJECT_TOML);
+        project_include = project_path;
+    }
+
+    /* Compile shaders (SPIR-V is platform-agnostic) */
+    if (build_shaders() != 0) return 1;
+
+    /* Cross-compile for aarch64 */
+    if (build_remote_compile() != 0) return 1;
+
+    /* Deploy to Pi */
+    if (build_remote_deploy(&cfg, project_include) != 0) return 1;
+
+    /* Run on Pi */
+    return build_remote_run(&cfg, project_include);
+}
+
 /* ------- all ------------------------------------------------------------ */
 static int build_all(void)
 {
@@ -2385,6 +2643,9 @@ int main(int argc, char **argv)
     }
     if (argc > 1 && strcmp(argv[1], "nanoprof2chrome") == 0) {
         return build_nanoprof2chrome();
+    }
+    if (argc > 1 && strcmp(argv[1], "remote") == 0) {
+        return build_remote();
     }
 #ifdef _WIN32
     if (argc > 1 && strcmp(argv[1], "profile") == 0) {

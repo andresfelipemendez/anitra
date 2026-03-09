@@ -42,7 +42,8 @@ enum {
     EDITOR_TOOLBAR_ACTION_FRONT,
     EDITOR_TOOLBAR_ACTION_SIDE,
     EDITOR_TOOLBAR_ACTION_TOP,
-    EDITOR_TOOLBAR_ACTION_PLAY_MODE
+    EDITOR_TOOLBAR_ACTION_PLAY_MODE,
+    EDITOR_TOOLBAR_ACTION_PLAY_REMOTE
 };
 
 enum {
@@ -61,6 +62,7 @@ enum {
     FILE_MENU_ACTION_NEW_PROJECT,
     FILE_MENU_ACTION_COLLAB_CONNECT,
     FILE_MENU_ACTION_COLLAB_DISCONNECT,
+    FILE_MENU_ACTION_OPEN_TEXT_EDITOR,
     FILE_MENU_ACTION_COUNT
 };
 
@@ -172,6 +174,7 @@ static const char *insp_comp_names[INSP_COMP_COUNT] = {
 #define UI_ICON_ARROW_RIGHT     "\xEF\x84\xB8" /* U+F138 */
 #define UI_ICON_ARROW_DOWN      "\xEF\x84\xA8" /* U+F128 */
 #define UI_ICON_ARROW_UP        "\xEF\x85\x88" /* U+F148 */
+#define UI_ICON_DISPLAY         "\xEF\x85\xA8" /* U+F168 bi-display */
 
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 
@@ -2201,6 +2204,31 @@ static void editor_dispatch_file_menu_action(game_state *gs, editor_state *es, i
         collab_disconnect(&es->collab);
         fprintf(stderr, "Collab: disconnected\n");
         break;
+    case FILE_MENU_ACTION_OPEN_TEXT_EDITOR:
+#ifdef _WIN32
+        {
+            STARTUPINFOA si = {0};
+            PROCESS_INFORMATION pi = {0};
+            si.cb = sizeof(si);
+            if (CreateProcessA(NULL, "zed .", NULL, NULL, FALSE,
+                               CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi)) {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            } else {
+                fprintf(stderr, "Failed to launch Zed\n");
+            }
+        }
+#else
+        {
+            pid_t pid = fork();
+            if (pid == 0) {
+                execl("/usr/bin/zed", "zed", ".", NULL);
+                execlp("zed", "zed", ".", NULL);
+                _exit(1);
+            }
+        }
+#endif
+        break;
     default:
         break;
     }
@@ -2809,6 +2837,35 @@ static void editor_set_play_mode(game_state *gs, editor_state *e, int enabled) {
     }
 }
 
+static void editor_launch_remote(game_state *gs, editor_state *e) {
+    (void)gs; (void)e;
+#ifdef _WIN32
+    {
+        STARTUPINFOA si = {0};
+        PROCESS_INFORMATION pi = {0};
+        si.cb = sizeof(si);
+        if (CreateProcessA(NULL, "build.exe remote", NULL, NULL, FALSE,
+                           CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            fprintf(stderr, "Play Remote: build.exe remote launched\n");
+        } else {
+            fprintf(stderr, "Play Remote: failed to launch build.exe remote\n");
+        }
+    }
+#else
+    {
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl("./builder", "builder", "remote", NULL);
+            _exit(1);
+        } else if (pid > 0) {
+            fprintf(stderr, "Play Remote: builder remote launched (PID %d)\n", pid);
+        }
+    }
+#endif
+}
+
 static void editor_apply_toolbar_action(game_state *gs, editor_state *e, int action) {
     if (!e) return;
 
@@ -2836,6 +2893,9 @@ static void editor_apply_toolbar_action(game_state *gs, editor_state *e, int act
         break;
     case EDITOR_TOOLBAR_ACTION_PLAY_MODE:
         editor_set_play_mode(gs, e, !editor_is_play_mode(gs));
+        break;
+    case EDITOR_TOOLBAR_ACTION_PLAY_REMOTE:
+        editor_launch_remote(gs, e);
         break;
     default:
         break;
@@ -3484,7 +3544,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
         if (clay_sub) {
             Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
             Clay_ErrorHandler err = {0};
-            e->menu_bar_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){1600, MENU_BAR_HEIGHT}, err);
+            e->menu_bar_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){1600, 900}, err);
             Clay_SetCurrentContext((Clay_Context *)e->menu_bar_clay_ctx);
             Clay_SetMeasureTextFunction(profiler_measure_text, e);
         }
@@ -5452,7 +5512,8 @@ static const char *file_menu_action_labels[FILE_MENU_ACTION_COUNT] = {
     "Open Project",
     "New Project",
     "Connect (collab)",
-    "Disconnect (collab)"
+    "Disconnect (collab)",
+    "Open in Zed"
 };
 
 static void menu_bar_layout(game_state *gs, editor_state *es) {
@@ -5477,8 +5538,9 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
     if (win_h < 1) win_h = 1;
 
     Clay_SetCurrentContext(ctx);
-    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)MENU_BAR_HEIGHT});
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
     Clay_SetPointerState((Clay_Vector2){e->menu_mouse_x, e->menu_mouse_y}, (bool)e->menu_click);
+    Clay_SetDebugModeEnabled(true);
     Clay_BeginLayout();
 
     CLAY(CLAY_ID("MenuBarRoot"), {
@@ -5561,7 +5623,7 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
 
                             {
                                 Clay_String item_label = {
-                                    false,
+                                    true,
                                     (int32_t)strlen(file_menu_action_labels[i]),
                                     file_menu_action_labels[i]
                                 };
@@ -5661,6 +5723,36 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
                 const char *text_label = play_mode ? "Stop" : "Play";
                 Clay_String icon_text = { false, (int32_t)strlen(icon_label), icon_label };
                 Clay_String word_text = { false, (int32_t)strlen(text_label), text_label };
+
+                CLAY_TEXT(icon_text, CLAY_TEXT_CONFIG({
+                    .textColor = {238, 242, 248, 255},
+                    .fontSize = UI_FONT_BODY
+                }));
+                CLAY_TEXT(word_text, CLAY_TEXT_CONFIG({
+                    .textColor = {238, 242, 248, 255},
+                    .fontSize = UI_FONT_BODY
+                }));
+            }
+        }
+
+        CLAY(CLAY_ID("MenuPlayRemote"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
+                .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+                .childGap = UI_SPACE_SM,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+            },
+            .backgroundColor = (Clay_Color){56, 100, 140, 240},
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            if (Clay_Hovered() && e->menu_click) {
+                editor_launch_remote(gs, e);
+                menu_click_handled = 1;
+            }
+            {
+                Clay_String icon_text = { false, (int32_t)strlen(UI_ICON_DISPLAY), UI_ICON_DISPLAY };
+                Clay_String word_text = CLAY_STRING("Remote");
 
                 CLAY_TEXT(icon_text, CLAY_TEXT_CONFIG({
                     .textColor = {238, 242, 248, 255},
