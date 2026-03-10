@@ -10,6 +10,9 @@
 
 #include <sys/inotify.h>
 
+/* Forward declaration */
+static int watch_and_rebuild(void);
+
 /* ------- TCC commands --------------------------------------------------- */
 
 #define TCC_COMPILE_CMD \
@@ -212,6 +215,217 @@ static const char *sdl3_sources_platform[] = {
     "lib/SDL3/src/video/x11/SDL_x11xtest.c",
     "lib/SDL3/src/video/x11/xsettings-client.c"
 };
+
+/* ------- test (compile and run unit tests) ------------------------------- */
+
+static int build_test(void)
+{
+    int failed = 0;
+    printf("\n=== Building tests ===\n");
+    if (ensure_dirs() != 0) return 1;
+
+    printf(">> " TCC_TEST_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_CMD) != 0) {
+        printf("!! test_dock build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_INSPECTOR_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_INSPECTOR_CMD) != 0) {
+        printf("!! test_inspector build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_HOTRELOAD_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_HOTRELOAD_CMD) != 0) {
+        printf("!! test_hotreload build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_COLLAB_OT_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_COLLAB_OT_CMD) != 0) {
+        printf("!! test_collab_ot build failed.\n");
+        return 1;
+    }
+
+    printf("\n=== Running tests ===\n");
+    fflush(stdout);
+    if (system("build/Debug/test_dock") != 0) {
+        printf("!! test_dock failed.\n");
+        failed = 1;
+    }
+    if (system("build/Debug/test_inspector") != 0) {
+        printf("!! test_inspector failed.\n");
+        failed = 1;
+    }
+    if (system("build/Debug/test_hotreload") != 0) {
+        printf("!! test_hotreload failed.\n");
+        failed = 1;
+    }
+    if (system("build/Debug/test_collab_ot") != 0) {
+        printf("!! test_collab_ot failed.\n");
+        failed = 1;
+    }
+
+    if (failed) {
+        printf("!! some tests failed.\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* ------- run (build + launch + watch) ----------------------------------- */
+
+static pid_t g_engine_pid;
+
+static int build_and_run(void)
+{
+    char project_path[PATH_SIZE];
+    const char *project_include;
+    pid_t pid;
+
+    printf("=== Building and running engine ===\n\n");
+    if (build_all() != 0) return 1;
+
+    project_include = resolve_project(project_path, sizeof(project_path));
+    if (project_include) {
+        printf("   Using project include: %s\n", project_include);
+    } else {
+        printf("   No project include found (checked %s and %s)\n",
+               PROJECT_INCLUDE_FILE, DEFAULT_PROJECT_TOML);
+    }
+
+    printf("\n=== Launching engine and starting watch mode ===\n");
+
+    pid = fork();
+    if (pid < 0) {
+        printf("!! Failed to fork\n");
+        return 1;
+    }
+
+    if (pid == 0) {
+        char engine_path[PATH_SIZE];
+        snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
+        if (project_include) {
+            execl(engine_path, "AnitraEngine", "--include", project_include, NULL);
+        } else {
+            execl(engine_path, "AnitraEngine", NULL);
+        }
+        printf("!! Failed to exec engine\n");
+        exit(1);
+    }
+
+    printf("   Engine launched (PID: %d)\n", pid);
+    g_engine_pid = pid;
+    return watch_and_rebuild();
+}
+
+/* ------- play_test (build + launch gym scene, no watch) ----------------- */
+
+static int build_play_test(void)
+{
+    pid_t pid;
+
+    printf("=== Building play test ===\n\n");
+    if (build_all() != 0) return 1;
+
+    printf("\n=== Launching gym scene ===\n");
+
+    pid = fork();
+    if (pid < 0) { printf("!! Failed to fork\n"); return 1; }
+    if (pid == 0) {
+        char engine_path[PATH_SIZE];
+        snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
+        execl(engine_path, "AnitraEngine", "--include", GYM_SCENE_TOML, NULL);
+        printf("!! Failed to exec engine\n");
+        _exit(1);
+    }
+    printf("   Engine launched (PID: %d) — press Play in the editor to start\n", pid);
+    return 0;
+}
+
+/* ------- collab (server + 2 editors + watch) ----------------------------- */
+
+static int build_collab(void)
+{
+    char project_path[PATH_SIZE];
+    const char *project_include;
+    pid_t server_pid, editor2_pid;
+    char engine_path[PATH_SIZE];
+    char server_path[PATH_SIZE];
+
+    printf("=== Building collab (server + 2 editors) ===\n\n");
+    if (build_all() != 0) return 1;
+    if (build_server() != 0) return 1;
+
+    project_include = resolve_project(project_path, sizeof(project_path));
+
+    printf("\n=== Launching collab server + 2 editors ===\n");
+    setenv("ANITRA_COLLAB", "1", 1);
+
+    snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
+    snprintf(server_path, PATH_SIZE, "%s/collab_server", DEBUG_DIR);
+
+    /* 1. Fork collab server */
+    server_pid = fork();
+    if (server_pid < 0) { printf("!! Failed to fork server\n"); return 1; }
+    if (server_pid == 0) {
+        if (project_include)
+            execl(server_path, "collab_server",
+                  "--port", "7777", "--project", project_include, NULL);
+        else
+            execl(server_path, "collab_server", "--port", "7777", NULL);
+        printf("!! Failed to exec server\n");
+        exit(1);
+    }
+    printf("   Server launched (PID: %d)\n", server_pid);
+    usleep(500000);
+
+    /* 2. Fork editor 1 */
+    {
+        pid_t pid = fork();
+        if (pid < 0) { printf("!! Failed to fork editor 1\n");
+                       kill(server_pid, SIGTERM); return 1; }
+        if (pid == 0) {
+            if (project_include)
+                execl(engine_path, "AnitraEngine",
+                      "--include", project_include, NULL);
+            else
+                execl(engine_path, "AnitraEngine", NULL);
+            printf("!! Failed to exec editor 1\n");
+            exit(1);
+        }
+        printf("   Editor 1 launched (PID: %d)\n", pid);
+        g_engine_pid = pid;
+    }
+
+    /* 3. Fork editor 2 */
+    editor2_pid = fork();
+    if (editor2_pid < 0) { printf("!! Failed to fork editor 2\n");
+                           kill(server_pid, SIGTERM); return 1; }
+    if (editor2_pid == 0) {
+        if (project_include)
+            execl(engine_path, "AnitraEngine",
+                  "--include", project_include, NULL);
+        else
+            execl(engine_path, "AnitraEngine", NULL);
+        printf("!! Failed to exec editor 2\n");
+        exit(1);
+    }
+    printf("   Editor 2 launched (PID: %d)\n", editor2_pid);
+
+    {
+        int rc = watch_and_rebuild();
+        printf("\n--- Stopping collab session... ---\n");
+        kill(server_pid, SIGTERM);
+        kill(editor2_pid, SIGTERM);
+        return rc;
+    }
+}
 
 /* ------- watch (forge) — Linux inotify ---------------------------------- */
 

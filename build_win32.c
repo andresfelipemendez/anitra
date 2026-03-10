@@ -8,6 +8,9 @@
  *   - watch_and_rebuild() using ReadDirectoryChangesW
  */
 
+/* Forward declaration */
+static int watch_and_rebuild(void);
+
 /* ------- hot-reload event names ----------------------------------------- */
 
 #define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
@@ -253,9 +256,454 @@ static const char *sdl3_sources_platform[] = {
     "lib/SDL3/src/gpu/d3d12/SDL_gpu_d3d12.c"
 };
 
-/* ------- watch (forge) — Windows ReadDirectoryChangesW ------------------ */
+/* ------- test (compile and run unit tests) ------------------------------- */
+
+static int build_test(void)
+{
+    int failed = 0;
+    printf("\n=== Building tests ===\n");
+    if (ensure_dirs() != 0) return 1;
+
+    printf(">> " TCC_TEST_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_CMD) != 0) {
+        printf("!! test_dock build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_INSPECTOR_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_INSPECTOR_CMD) != 0) {
+        printf("!! test_inspector build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_HOTRELOAD_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_HOTRELOAD_CMD) != 0) {
+        printf("!! test_hotreload build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_DLL_EDITOR_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_DLL_EDITOR_CMD) != 0) {
+        printf("!! test_editor.dll build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_DLL_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_DLL_CMD) != 0) {
+        printf("!! test_hotreload_dll build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_COLLAB_OT_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_COLLAB_OT_CMD) != 0) {
+        printf("!! test_collab_ot build failed.\n");
+        return 1;
+    }
+
+    printf(">> " TCC_TEST_GYM_SCENE_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_TEST_GYM_SCENE_CMD) != 0) {
+        printf("!! test_gym_scene build failed.\n");
+        return 1;
+    }
+
+    printf("\n=== Running tests ===\n");
+    fflush(stdout);
+    if (system("build\\Debug\\test_dock.exe") != 0) {
+        printf("!! test_dock failed.\n");
+        failed = 1;
+    }
+    if (system("build\\Debug\\test_inspector.exe") != 0) {
+        printf("!! test_inspector failed.\n");
+        failed = 1;
+    }
+    if (system("build\\Debug\\test_hotreload.exe") != 0) {
+        printf("!! test_hotreload failed.\n");
+        failed = 1;
+    }
+    if (system("build\\Debug\\test_hotreload_dll.exe") != 0) {
+        printf("!! test_hotreload_dll failed.\n");
+        failed = 1;
+    }
+    if (system("build\\Debug\\test_collab_ot.exe") != 0) {
+        printf("!! test_collab_ot failed.\n");
+        failed = 1;
+    }
+    if (system("build\\Debug\\test_gym_scene.exe") != 0) {
+        printf("!! test_gym_scene failed.\n");
+        failed = 1;
+    }
+
+    if (failed) {
+        printf("!! some tests failed.\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* ------- run (build + launch + watch) ----------------------------------- */
 
 static HANDLE g_engine_process = NULL;
+
+static int build_and_run(void)
+{
+    char project_path[PATH_SIZE];
+    const char *project_include;
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+    char engine_path[PATH_SIZE];
+    char engine_cmdline[CMD_MAX];
+
+    printf("=== Building and running engine ===\n\n");
+    if (build_all() != 0) return 1;
+
+    project_include = resolve_project(project_path, sizeof(project_path));
+    if (project_include) {
+        printf("   Using project include: %s\n", project_include);
+    } else {
+        printf("   No project include found (checked %s and %s)\n",
+               PROJECT_INCLUDE_FILE, DEFAULT_PROJECT_TOML);
+    }
+
+    printf("\n=== Launching engine and starting watch mode ===\n");
+
+    si.cb = sizeof(si);
+    snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine.exe", DEBUG_DIR);
+    if (project_include) {
+        snprintf(engine_cmdline, sizeof(engine_cmdline),
+                 "\"%s\" --include \"%s\"",
+                 engine_path, project_include);
+    } else {
+        snprintf(engine_cmdline, sizeof(engine_cmdline),
+                 "\"%s\"", engine_path);
+    }
+
+    if (!CreateProcessA(
+            engine_path, engine_cmdline,
+            NULL, NULL, FALSE, 0, NULL, NULL,
+            &si, &pi)) {
+        printf("!! Failed to launch engine (error %lu)\n", GetLastError());
+        return 1;
+    }
+
+    printf("   Engine launched (PID: %lu)\n", (unsigned long)pi.dwProcessId);
+    CloseHandle(pi.hThread);
+    g_engine_process = pi.hProcess;
+
+    {
+        int rc = watch_and_rebuild();
+        CloseHandle(g_engine_process);
+        g_engine_process = NULL;
+        return rc;
+    }
+}
+
+/* ------- play_test (build + launch gym scene, no watch) ----------------- */
+
+static int build_play_test(void)
+{
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+    char engine_path[PATH_SIZE];
+    char engine_cmdline[CMD_MAX];
+
+    printf("=== Building play test ===\n\n");
+    if (build_all() != 0) return 1;
+
+    printf("\n=== Launching gym scene ===\n");
+
+    si.cb = sizeof(si);
+    snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine.exe", DEBUG_DIR);
+    snprintf(engine_cmdline, sizeof(engine_cmdline),
+             "\"%s\" --include \"%s\"", engine_path, GYM_SCENE_TOML);
+    if (!CreateProcessA(engine_path, engine_cmdline,
+                        NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        printf("!! Failed to launch engine (error %lu)\n", GetLastError());
+        return 1;
+    }
+    printf("   Engine launched (PID: %lu) — press Play in the editor to start\n",
+           (unsigned long)pi.dwProcessId);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 0;
+}
+
+/* ------- collab (server + 2 editors + watch) ----------------------------- */
+
+static int build_collab(void)
+{
+    char project_path[PATH_SIZE];
+    const char *project_include;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi_server = {0}, pi_editor1 = {0}, pi_editor2 = {0};
+    char cmdline[CMD_MAX];
+
+    printf("=== Building collab (server + 2 editors) ===\n\n");
+    if (build_all() != 0) return 1;
+    if (build_server() != 0) return 1;
+
+    project_include = resolve_project(project_path, sizeof(project_path));
+
+    printf("\n=== Launching collab server + 2 editors ===\n");
+    SetEnvironmentVariableA("ANITRA_COLLAB", "1");
+
+    /* 1. Launch collab server */
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    if (project_include) {
+        snprintf(cmdline, sizeof(cmdline),
+                 "\"%s/collab_server.exe\" --port 7777 --project \"%s\"",
+                 DEBUG_DIR, project_include);
+    } else {
+        snprintf(cmdline, sizeof(cmdline),
+                 "\"%s/collab_server.exe\" --port 7777", DEBUG_DIR);
+    }
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0,
+                        NULL, NULL, &si, &pi_server)) {
+        printf("!! Failed to launch collab server (error %lu)\n", GetLastError());
+        return 1;
+    }
+    printf("   Server launched (PID: %lu)\n", (unsigned long)pi_server.dwProcessId);
+    CloseHandle(pi_server.hThread);
+    Sleep(500);
+
+    /* 2. Launch editor 1 */
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    if (project_include) {
+        snprintf(cmdline, sizeof(cmdline),
+                 "\"%s/AnitraEngine.exe\" --include \"%s\"",
+                 DEBUG_DIR, project_include);
+    } else {
+        snprintf(cmdline, sizeof(cmdline),
+                 "\"%s/AnitraEngine.exe\"", DEBUG_DIR);
+    }
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0,
+                        NULL, NULL, &si, &pi_editor1)) {
+        printf("!! Failed to launch editor 1 (error %lu)\n", GetLastError());
+        TerminateProcess(pi_server.hProcess, 0);
+        CloseHandle(pi_server.hProcess);
+        return 1;
+    }
+    printf("   Editor 1 launched (PID: %lu)\n", (unsigned long)pi_editor1.dwProcessId);
+    CloseHandle(pi_editor1.hThread);
+
+    /* 3. Launch editor 2 */
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0,
+                        NULL, NULL, &si, &pi_editor2)) {
+        printf("!! Failed to launch editor 2 (error %lu)\n", GetLastError());
+        TerminateProcess(pi_server.hProcess, 0);
+        CloseHandle(pi_server.hProcess);
+        CloseHandle(pi_editor1.hProcess);
+        return 1;
+    }
+    printf("   Editor 2 launched (PID: %lu)\n", (unsigned long)pi_editor2.dwProcessId);
+    CloseHandle(pi_editor2.hThread);
+
+    g_engine_process = pi_editor1.hProcess;
+    {
+        int rc = watch_and_rebuild();
+        printf("\n--- Stopping collab session... ---\n");
+        TerminateProcess(pi_server.hProcess, 0);
+        TerminateProcess(pi_editor2.hProcess, 0);
+        CloseHandle(pi_server.hProcess);
+        CloseHandle(pi_editor1.hProcess);
+        CloseHandle(pi_editor2.hProcess);
+        g_engine_process = NULL;
+        return rc;
+    }
+}
+
+/* ------- profile (AMD uProf) -------------------------------------------- */
+
+#define AMDUPROF_CLI "C:\\Program Files\\AMD\\AMDuProf\\bin\\AMDuProfCLI.exe"
+#define PROFILE_DIR  "profiling/cache_run"
+
+static int run_uprof(const char *cmdline)
+{
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+    char buf[CMD_MAX];
+    DWORD exitCode;
+
+    si.cb = sizeof(si);
+    snprintf(buf, sizeof(buf), "%s", cmdline);
+    printf(">> %s\n", buf);
+    fflush(stdout);
+
+    if (!CreateProcessA(AMDUPROF_CLI, buf, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        printf("!! Failed to launch AMDuProfCLI (error %lu)\n", GetLastError());
+        return 1;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (int)exitCode;
+}
+
+static int build_and_profile(void)
+{
+    char project_path[PATH_SIZE];
+    const char *project_include;
+    char cmd[CMD_MAX];
+
+    printf("=== Building and profiling (AMD uProf cache misses) ===\n\n");
+    if (build_all() != 0) return 1;
+
+    project_include = resolve_project(project_path, sizeof(project_path));
+
+    system("rmdir /s /q " PROFILE_DIR " 2>nul");
+
+    if (project_include) {
+        snprintf(cmd, sizeof(cmd),
+            "\"" AMDUPROF_CLI "\" collect"
+            " -e L1_DC_ACCESSES_ALL"
+            " -e L1_DC_REFILLS_ALL"
+            " -e L2_CACHE_ACCESS_FROM_L1_DC_MISS"
+            " -e L2_CACHE_MISS_FROM_L1_DC_MISS"
+            " -e IC_TAG_IC_MISS"
+            " -e RETIRED_INST"
+            " -o " PROFILE_DIR
+            " -d 30"
+            " %s/AnitraEngine.exe --include \"%s\"",
+            DEBUG_DIR, project_include);
+    } else {
+        snprintf(cmd, sizeof(cmd),
+            "\"" AMDUPROF_CLI "\" collect"
+            " -e L1_DC_ACCESSES_ALL"
+            " -e L1_DC_REFILLS_ALL"
+            " -e L2_CACHE_ACCESS_FROM_L1_DC_MISS"
+            " -e L2_CACHE_MISS_FROM_L1_DC_MISS"
+            " -e IC_TAG_IC_MISS"
+            " -e RETIRED_INST"
+            " -o " PROFILE_DIR
+            " -d 30"
+            " %s/AnitraEngine.exe",
+            DEBUG_DIR);
+    }
+
+    printf("\n=== Collecting cache profile for 30 seconds ===\n");
+    if (run_uprof(cmd) != 0) {
+        fprintf(stderr, "!! AMD uProf collection failed\n");
+        return 1;
+    }
+
+    {
+        WIN32_FIND_DATAA fd;
+        HANDLE hFind;
+        char search[PATH_SIZE];
+        char data_dir[PATH_SIZE];
+
+        snprintf(search, sizeof(search), "%s\\AMDuProf-*", PROFILE_DIR);
+        hFind = FindFirstFileA(search, &fd);
+        if (hFind == INVALID_HANDLE_VALUE) {
+            fprintf(stderr, "!! Could not find profiling data\n");
+            return 1;
+        }
+        snprintf(data_dir, sizeof(data_dir), "%s/%s", PROFILE_DIR, fd.cFileName);
+        FindClose(hFind);
+
+        snprintf(cmd, sizeof(cmd),
+            "\"" AMDUPROF_CLI "\" report -i \"%s\"",
+            data_dir);
+
+        printf("\n=== Generating report ===\n");
+        if (run_uprof(cmd) != 0) {
+            fprintf(stderr, "!! Report generation failed\n");
+            return 1;
+        }
+
+        printf("\n=== Report: %s/report.csv ===\n", data_dir);
+    }
+
+    return 0;
+}
+
+/* ------- debug (raddbg) ------------------------------------------------- */
+
+#define RADDBG_PROJECT "raddbg/anitra.raddbg_project"
+
+static void write_raddbg_project(const char *project_include)
+{
+    char cwd[PATH_SIZE];
+    FILE *f;
+
+    GetCurrentDirectoryA(sizeof(cwd), cwd);
+
+    f = fopen(RADDBG_PROJECT, "w");
+    if (!f) {
+        printf("!! Could not write %s\n", RADDBG_PROJECT);
+        return;
+    }
+
+    fprintf(f, "/// auto-generated by build.c\n");
+    fprintf(f, "target:\n{\n");
+    fprintf(f, "  executable: \"%s/%s/AnitraEngine.exe\"\n", cwd, DEBUG_DIR);
+    fprintf(f, "  working_directory: \"%s\"\n", cwd);
+    if (project_include) {
+        fprintf(f, "  arguments: \"--include %s\"\n", project_include);
+    }
+    fprintf(f, "  enabled: 1\n");
+    fprintf(f, "}\n\n");
+
+    fprintf(f, "file_path_map: { src: \"%s/src\" }\n", cwd);
+    fprintf(f, "file_path_map: { include: \"%s/include\" }\n", cwd);
+
+    fclose(f);
+    printf("   Wrote %s\n", RADDBG_PROJECT);
+}
+
+static int build_and_debug(void)
+{
+    char project_path[PATH_SIZE];
+    const char *project_include;
+    char cmd[CMD_MAX];
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+
+    printf("=== Building and launching under RAD Debugger ===\n\n");
+    if (build_all() != 0) return 1;
+
+    project_include = resolve_project(project_path, sizeof(project_path));
+    write_raddbg_project(project_include);
+
+    snprintf(cmd, sizeof(cmd),
+        "raddbg\\raddbg.exe --project:%s --auto_run",
+        RADDBG_PROJECT);
+
+    printf("   %s\n\n", cmd);
+
+    si.cb = sizeof(si);
+    if (!CreateProcessA(
+            "raddbg\\raddbg.exe", cmd,
+            NULL, NULL, FALSE, 0, NULL, NULL,
+            &si, &pi)) {
+        printf("!! Failed to launch raddbg (error %lu)\n", GetLastError());
+        return 1;
+    }
+
+    printf("   RAD Debugger launched (PID: %lu)\n", (unsigned long)pi.dwProcessId);
+    CloseHandle(pi.hThread);
+    g_engine_process = pi.hProcess;
+
+    {
+        int rc = watch_and_rebuild();
+        CloseHandle(g_engine_process);
+        g_engine_process = NULL;
+        return rc;
+    }
+}
+
+/* ------- watch (forge) — Windows ReadDirectoryChangesW ------------------ */
 
 static int watch_and_rebuild(void)
 {
