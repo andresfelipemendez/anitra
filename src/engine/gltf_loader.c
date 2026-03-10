@@ -492,17 +492,18 @@ static GltfMesh extract_mesh(cgltf_mesh *mesh, const float *node_world, const ch
         }
     }
 
-    /* compute bounding sphere from accumulated AABB */
+    /* compute bounding sphere + AABB half-extents from accumulated AABB */
     if (total_verts > 0) {
+        float dx = bb_max[0] - bb_min[0];
+        float dy = bb_max[1] - bb_min[1];
+        float dz = bb_max[2] - bb_min[2];
         result.bounds_center[0] = (bb_min[0] + bb_max[0]) * 0.5f;
         result.bounds_center[1] = (bb_min[1] + bb_max[1]) * 0.5f;
         result.bounds_center[2] = (bb_min[2] + bb_max[2]) * 0.5f;
-        {
-            float dx = bb_max[0] - bb_min[0];
-            float dy = bb_max[1] - bb_min[1];
-            float dz = bb_max[2] - bb_min[2];
-            result.bounds_radius = sqrtf(dx*dx + dy*dy + dz*dz) * 0.5f;
-        }
+        result.bounds_radius = sqrtf(dx*dx + dy*dy + dz*dz) * 0.5f;
+        result.bounds_half_extents[0] = dx * 0.5f;
+        result.bounds_half_extents[1] = dy * 0.5f;
+        result.bounds_half_extents[2] = dz * 0.5f;
     }
 
     return result;
@@ -778,13 +779,10 @@ GltfModel load_glb(const char *path, arena *ar) {
 
             sub = extract_mesh(node->mesh, mesh_to_skel, asset_dir, ar);
             if (sub.primitive_count > 0) {
-                float r = sub.bounds_radius > 0.0f ? sub.bounds_radius : 0.0f;
-                float sx0 = sub.bounds_center[0] - r;
-                float sy0 = sub.bounds_center[1] - r;
-                float sz0 = sub.bounds_center[2] - r;
-                float sx1 = sub.bounds_center[0] + r;
-                float sy1 = sub.bounds_center[1] + r;
-                float sz1 = sub.bounds_center[2] + r;
+                float *he = sub.bounds_half_extents;
+                float *c = sub.bounds_center;
+                float sx0 = c[0] - he[0], sy0 = c[1] - he[1], sz0 = c[2] - he[2];
+                float sx1 = c[0] + he[0], sy1 = c[1] + he[1], sz1 = c[2] + he[2];
                 if (sx0 < bb_min[0]) bb_min[0] = sx0;
                 if (sy0 < bb_min[1]) bb_min[1] = sy0;
                 if (sz0 < bb_min[2]) bb_min[2] = sz0;
@@ -807,6 +805,9 @@ GltfModel load_glb(const char *path, arena *ar) {
             dy = bb_max[1] - bb_min[1];
             dz = bb_max[2] - bb_min[2];
             model.mesh.bounds_radius = sqrtf(dx*dx + dy*dy + dz*dz) * 0.5f;
+            model.mesh.bounds_half_extents[0] = dx * 0.5f;
+            model.mesh.bounds_half_extents[1] = dy * 0.5f;
+            model.mesh.bounds_half_extents[2] = dz * 0.5f;
         }
     }
 

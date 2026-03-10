@@ -2917,16 +2917,17 @@ static void editor_apply_toolbar_action(game_state *gs, editor_state *e, int act
     }
 }
 
-static void draw_selected_entity_bounds(editor_state *e, Mat4 world, float hx, float hy, float hz) {
+static void draw_selected_entity_bounds(editor_state *e, Mat4 world, Vec3 center, float hx, float hy, float hz) {
     Vec3 corners[8];
-    corners[0] = editor_transform_point(world, VEC3(-hx, -hy, -hz));
-    corners[1] = editor_transform_point(world, VEC3( hx, -hy, -hz));
-    corners[2] = editor_transform_point(world, VEC3( hx, -hy,  hz));
-    corners[3] = editor_transform_point(world, VEC3(-hx, -hy,  hz));
-    corners[4] = editor_transform_point(world, VEC3(-hx,  hy, -hz));
-    corners[5] = editor_transform_point(world, VEC3( hx,  hy, -hz));
-    corners[6] = editor_transform_point(world, VEC3( hx,  hy,  hz));
-    corners[7] = editor_transform_point(world, VEC3(-hx,  hy,  hz));
+    float cx = center.x, cy = center.y, cz = center.z;
+    corners[0] = editor_transform_point(world, VEC3(cx-hx, cy-hy, cz-hz));
+    corners[1] = editor_transform_point(world, VEC3(cx+hx, cy-hy, cz-hz));
+    corners[2] = editor_transform_point(world, VEC3(cx+hx, cy-hy, cz+hz));
+    corners[3] = editor_transform_point(world, VEC3(cx-hx, cy-hy, cz+hz));
+    corners[4] = editor_transform_point(world, VEC3(cx-hx, cy+hy, cz-hz));
+    corners[5] = editor_transform_point(world, VEC3(cx+hx, cy+hy, cz-hz));
+    corners[6] = editor_transform_point(world, VEC3(cx+hx, cy+hy, cz+hz));
+    corners[7] = editor_transform_point(world, VEC3(cx-hx, cy+hy, cz+hz));
 
     add_line(e, corners[0], corners[1], 0.95f, 0.82f, 0.25f);
     add_line(e, corners[1], corners[2], 0.95f, 0.82f, 0.25f);
@@ -3083,25 +3084,40 @@ static void build_lines(game_state *gs, editor_state *es) {
             float hx = 0.5f;
             float hy = 0.5f;
             float hz = 0.5f;
+            Vec3 bounds_center = VEC3(0, 0, 0);
+
+            if (has_mesh) {
+                const mesh_component *mc = find_mesh_component_read(gs, selected);
+                if (mc) {
+                    const scene_model_asset *asset = find_scene_model_asset_read(gs, mc->model_asset_index);
+                    if (asset && asset->loaded && asset->model.mesh.primitive_count > 0) {
+                        const float *he = asset->model.mesh.bounds_half_extents;
+                        if (he[0] > 0.01f || he[1] > 0.01f || he[2] > 0.01f) {
+                            hx = he[0];
+                            hy = he[1];
+                            hz = he[2];
+                            bounds_center = VEC3(
+                                asset->model.mesh.bounds_center[0],
+                                asset->model.mesh.bounds_center[1],
+                                asset->model.mesh.bounds_center[2]);
+                        }
+                    }
+                }
+            }
 
             if (has_scale) {
                 hx = fmaxf(0.05f, hx * fabsf(tscale.x));
                 hy = fmaxf(0.05f, hy * fabsf(tscale.y));
                 hz = fmaxf(0.05f, hz * fabsf(tscale.z));
+                bounds_center.x *= tscale.x;
+                bounds_center.y *= tscale.y;
+                bounds_center.z *= tscale.z;
             }
-            if (has_collider) {
-                float chx = fmaxf(0.05f, fabsf(crect.w) * 0.5f);
-                float chz = fmaxf(0.05f, fabsf(crect.h) * 0.5f);
-                hx = fmaxf(hx, chx);
-                hz = fmaxf(hz, chz);
-                hy = fmaxf(hy, fmaxf(0.2f, fmaxf(chx, chz)));
-            }
-
             if (has_collider && collider_is_capsule) {
                 draw_selected_entity_capsule(e, world, capsule_radius, capsule_half_height);
                 draw_selected_entity_capsule_handles(e, world, capsule_radius, capsule_half_height);
             } else {
-                draw_selected_entity_bounds(e, world, hx, hy, hz);
+                draw_selected_entity_bounds(e, world, bounds_center, hx, hy, hz);
             }
 
             if (has_transform || has_rotation || has_scale) {

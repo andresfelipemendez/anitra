@@ -40,6 +40,7 @@ typedef struct {
     uint32_t primitive_count;
     float bounds_center[3];
     float bounds_radius;
+    float bounds_half_extents[3];
 } GltfMesh;
 
 /* ── Skeleton ─────────────────────────────────────────────────── */
