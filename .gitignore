@@ -13,3 +13,5 @@ game_assets/KayKit_Adventurers_2.0_FREE/Animations/.DS_Store
 *.editor.layout.toml
 .worktrees/
 src/state_migration.gen.h
+*.raddbg_project
+*.raddbg_user

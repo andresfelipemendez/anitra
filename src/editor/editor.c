@@ -493,8 +493,13 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
                     }));
                 }
 
-                /* Size — right-aligned */
-                {
+                /* Size — right-aligned in fixed-width column */
+                CLAY(CLAY_IDI("TSize", (int32_t)rid), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIT({ .min = 72 }), CLAY_SIZING_FIT({0}) },
+                        .childAlignment = { .x = CLAY_ALIGN_X_RIGHT }
+                    }
+                }) {
                     Clay_String sz_s = {false, (int32_t)strlen(size_buf), size_buf};
                     CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {140, 140, 150, 255}, .fontSize = UI_FONT_BODY}));
                 }
