@@ -40,18 +40,25 @@ static int watch_and_rebuild(void);
 #define TCC_CORE_CMD \
     "lib/tcc/macos/tcc -Blib/tcc/macos -shared" \
     TCC_MACOS_DEFS \
+    " -DSTBI_NO_THREAD_LOCALS -DCLAY_DISABLE_SIMD" \
     " -o build/Debug/libcore.dylib" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include -Ilib/toml-c" \
+    " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
+    " -Ilib/SDL3/include -Ilib/SDL_shadercross/include" \
+    " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf" \
+    " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof" \
     " src/core/core.c" \
     " src/core/loadlibrary_macos.c" \
-    " src/project.c"
+    " src/core/externals_runtime.c src/core/externals.c" \
+    " src/project.c lib/sqlite/sqlite3.c lib/remotery/Remotery.c" \
+    " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz" \
+    " -lpthread -lm"
 
 #define TCC_EXE_CMD \
     "lib/tcc/macos/tcc -Blib/tcc/macos" \
     TCC_MACOS_DEFS \
     " -o build/Debug/AnitraEngine" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include" \
     " src/main.c" \
     " src/core/loadlibrary_macos.c"
@@ -455,10 +462,10 @@ static time_t newest_mtime_recursive(const char *path)
 
 static int watch_and_rebuild(void)
 {
-    int kq, engine_fd, editor_fd, core_fd, externals_fd, project_fd;
-    struct kevent changes[5];
-    struct kevent events[5];
-    time_t engine_mtime = 0, editor_mtime = 0, core_mtime = 0, externals_mtime = 0;
+    int kq, engine_fd, editor_fd, core_fd, project_fd;
+    struct kevent changes[4];
+    struct kevent events[4];
+    time_t engine_mtime = 0, editor_mtime = 0, core_mtime = 0;
     time_t project_mtime = 0;
     /* Extract project directory from DEFAULT_PROJECT_TOML (e.g. "dungeon1") */
     char project_dir[256];
@@ -471,7 +478,7 @@ static int watch_and_rebuild(void)
         else       project_dir[0] = '\0';
     }
 
-    printf("=== Forge: watching src/engine + src/editor + src/core + src/externals + %s for changes ===\n", project_dir);
+    printf("=== Forge: watching src/engine + src/editor + src/core + %s for changes ===\n", project_dir);
     fflush(stdout);
 
     kq = kqueue();
@@ -504,16 +511,6 @@ static int watch_and_rebuild(void)
         return 1;
     }
 
-    externals_fd = open("src/externals", O_RDONLY | O_DIRECTORY);
-    if (externals_fd < 0) {
-        printf("!! failed to open src/externals for watching\n");
-        close(core_fd);
-        close(editor_fd);
-        close(engine_fd);
-        close(kq);
-        return 1;
-    }
-
     project_fd = project_dir[0] ? open(project_dir, O_RDONLY | O_DIRECTORY) : -1;
     if (project_fd < 0 && project_dir[0]) {
         printf("!! failed to open %s for watching (project reload disabled)\n", project_dir);
@@ -525,17 +522,14 @@ static int watch_and_rebuild(void)
            EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
     EV_SET(&changes[2], core_fd, EVFILT_VNODE,
            EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
-    EV_SET(&changes[3], externals_fd, EVFILT_VNODE,
-           EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
     if (project_fd >= 0) {
-        EV_SET(&changes[4], project_fd, EVFILT_VNODE,
+        EV_SET(&changes[3], project_fd, EVFILT_VNODE,
                EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
     }
 
-    if (kevent(kq, changes, project_fd >= 0 ? 5 : 4, NULL, 0, NULL) < 0) {
+    if (kevent(kq, changes, project_fd >= 0 ? 4 : 3, NULL, 0, NULL) < 0) {
         printf("!! kevent registration failed\n");
         if (project_fd >= 0) close(project_fd);
-        close(externals_fd);
         close(core_fd);
         close(editor_fd);
         close(engine_fd);
@@ -578,13 +572,12 @@ static int watch_and_rebuild(void)
     engine_mtime = newest_mtime_recursive("src/engine");
     editor_mtime = newest_mtime_recursive("src/editor");
     core_mtime = newest_mtime_recursive("src/core");
-    externals_mtime = newest_mtime_recursive("src/externals");
     if (project_dir[0]) project_mtime = newest_mtime_recursive(project_dir);
 
     /* Watch loop */
     while (1) {
         int nev, i;
-        int engine_changed = 0, editor_changed = 0, core_changed = 0, externals_changed = 0, project_changed = 0;
+        int engine_changed = 0, editor_changed = 0, core_changed = 0, project_changed = 0;
         struct timespec timeout;
 
         /* Check if the engine process has exited */
@@ -600,7 +593,7 @@ static int watch_and_rebuild(void)
         timeout.tv_sec = 0;
         timeout.tv_nsec = 200 * 1000 * 1000; /* 200ms poll fallback cadence */
 
-        nev = kevent(kq, NULL, 0, events, 5, &timeout);
+        nev = kevent(kq, NULL, 0, events, 4, &timeout);
         if (nev < 0) {
             printf("!! kevent wait failed\n");
             break;
@@ -610,7 +603,6 @@ static int watch_and_rebuild(void)
             if ((int)events[i].ident == engine_fd) engine_changed = 1;
             if ((int)events[i].ident == editor_fd) editor_changed = 1;
             if ((int)events[i].ident == core_fd)   core_changed = 1;
-            if ((int)events[i].ident == externals_fd) externals_changed = 1;
             if (project_fd >= 0 && (int)events[i].ident == project_fd) project_changed = 1;
         }
 
@@ -619,12 +611,11 @@ static int watch_and_rebuild(void)
         {
             struct timespec zero = {0, 0};
             int drained;
-            while ((drained = kevent(kq, NULL, 0, events, 5, &zero)) > 0) {
+            while ((drained = kevent(kq, NULL, 0, events, 4, &zero)) > 0) {
                 for (i = 0; i < drained; i++) {
                     if ((int)events[i].ident == engine_fd) engine_changed = 1;
                     if ((int)events[i].ident == editor_fd) editor_changed = 1;
                     if ((int)events[i].ident == core_fd)   core_changed = 1;
-                    if ((int)events[i].ident == externals_fd) externals_changed = 1;
                     if (project_fd >= 0 && (int)events[i].ident == project_fd) project_changed = 1;
                 }
             }
@@ -635,12 +626,10 @@ static int watch_and_rebuild(void)
             time_t now_engine = newest_mtime_recursive("src/engine");
             time_t now_editor = newest_mtime_recursive("src/editor");
             time_t now_core = newest_mtime_recursive("src/core");
-            time_t now_externals = newest_mtime_recursive("src/externals");
 
             if (now_engine > engine_mtime) { engine_changed = 1; engine_mtime = now_engine; }
             if (now_editor > editor_mtime) { editor_changed = 1; editor_mtime = now_editor; }
             if (now_core > core_mtime) { core_changed = 1; core_mtime = now_core; }
-            if (now_externals > externals_mtime) { externals_changed = 1; externals_mtime = now_externals; }
 
             if (project_dir[0]) {
                 time_t now_project = newest_mtime_recursive(project_dir);
@@ -691,17 +680,6 @@ static int watch_and_rebuild(void)
             }
         }
 
-        if (externals_changed) {
-            printf("\n--- Externals change detected, recompiling... ---\n");
-            fflush(stdout);
-            if (build_externals() == 0) {
-                fclose(fopen(DEBUG_DIR "/.core-reload-signal", "w"));
-                printf("   Compile OK. Externals rebuilt. Core reload signal written.\n");
-            } else {
-                printf("!! Externals compile failed.\n");
-            }
-        }
-
         if (project_changed && !engine_changed) {
             printf("\n--- Project change detected, triggering scene reload... ---\n");
             fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
@@ -711,7 +689,6 @@ static int watch_and_rebuild(void)
     }
 
     if (project_fd >= 0) close(project_fd);
-    close(externals_fd);
     close(core_fd);
     close(editor_fd);
     close(engine_fd);

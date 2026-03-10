@@ -34,7 +34,7 @@ static int watch_and_rebuild(void);
     ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/editor.dll" \
     " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL -DCPU_PROF_USE_FPTRS" \
-    " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
+    " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay -Ilib/toml-c -Ilib/sqlite" \
     " src/editor/editor.c" \
     " src/collab/collab_ops.c" \
@@ -47,14 +47,28 @@ static int watch_and_rebuild(void);
 #define TCC_CORE_CMD \
     ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/core.dll" \
-    " -Isrc -Isrc/core -Isrc/externals" \
+    " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0" \
+    " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
+    " -Ilib/SDL3/include -Ilib/SDL_shadercross/include" \
+    " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf" \
+    " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof" \
     " src/core/core.c" \
-    " src/core/loadlibrary_windows.c"
+    " src/core/loadlibrary_windows.c" \
+    " src/core/externals_runtime.c src/core/externals.c" \
+    " src/project.c lib/sqlite/sqlite3.c" \
+    " lib/remotery/Remotery.c lib/remotery/rmt_tcc_compat.c" \
+    " build/Debug/SDL3.def" \
+    " build/Debug/SDL3_shadercross.def" \
+    " build/Debug/harfbuzz.def" \
+    " lib/tcc-windows/lib/ws2_32.def" \
+    " lib/tcc-windows/lib/winmm.def" \
+    " lib/tcc-windows/lib/kernel32.def"
 
 #define TCC_EXE_CMD \
     ".\\tcc.exe -Blib/tcc-windows" \
     " -o build/Debug/AnitraEngine.exe" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include" \
     " src/main.c" \
     " src/core/loadlibrary_windows.c"
@@ -96,7 +110,7 @@ static int watch_and_rebuild(void);
     ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/test_editor.dll" \
     " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL -DCPU_PROF_USE_FPTRS" \
-    " -Isrc -Isrc/editor -Isrc/engine -Isrc/externals -Isrc/collab" \
+    " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay -Ilib/toml-c -Ilib/sqlite" \
     " src/editor/editor.c" \
     " tests/test_dll_stubs.c"
@@ -707,13 +721,13 @@ static int build_and_debug(void)
 
 static int watch_and_rebuild(void)
 {
-    HANDLE hEngineDir, hEditorDir, hCoreDir, hExternalsDir;
+    HANDLE hEngineDir, hEditorDir, hCoreDir;
     HANDLE hEngineEvent, hEditorEvent, hCoreEvent;
-    char engine_buf[4096], editor_buf[4096], core_buf[4096], externals_buf[4096];
-    OVERLAPPED engine_ov = {0}, editor_ov = {0}, core_ov = {0}, externals_ov = {0};
+    char engine_buf[4096], editor_buf[4096], core_buf[4096];
+    OVERLAPPED engine_ov = {0}, editor_ov = {0}, core_ov = {0};
     DWORD bytes;
 
-    printf("=== Forge: watching src/engine + src/editor + src/core + src/externals for changes ===\n");
+    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
     fflush(stdout);
 
     /* Open directory handles for watching */
@@ -750,23 +764,9 @@ static int watch_and_rebuild(void)
         return 1;
     }
 
-    hExternalsDir = CreateFileA(
-        "src/externals", FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-    if (hExternalsDir == INVALID_HANDLE_VALUE) {
-        printf("!! Failed to open src/externals for watching (error %lu)\n", GetLastError());
-        CloseHandle(hCoreDir);
-        CloseHandle(hEngineDir);
-        CloseHandle(hEditorDir);
-        return 1;
-    }
-
     engine_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
     editor_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
     core_ov.hEvent   = CreateEventA(NULL, TRUE, FALSE, NULL);
-    externals_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
 
     /* Named events for signaling the running application */
     hEngineEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EVENT_NAME);
@@ -806,8 +806,8 @@ static int watch_and_rebuild(void)
 
     /* Watch loop: wait on directory changes or engine process exit */
     while (1) {
-        HANDLE waitHandles[5];
-        DWORD handleCount = 4;
+        HANDLE waitHandles[4];
+        DWORD handleCount = 3;
         DWORD waitResult;
 
         ReadDirectoryChangesW(hEngineDir, engine_buf, sizeof(engine_buf), TRUE,
@@ -819,22 +819,18 @@ static int watch_and_rebuild(void)
         ReadDirectoryChangesW(hCoreDir, core_buf, sizeof(core_buf), TRUE,
             FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
             &bytes, &core_ov, NULL);
-        ReadDirectoryChangesW(hExternalsDir, externals_buf, sizeof(externals_buf), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            &bytes, &externals_ov, NULL);
 
         waitHandles[0] = engine_ov.hEvent;
         waitHandles[1] = editor_ov.hEvent;
         waitHandles[2] = core_ov.hEvent;
-        waitHandles[3] = externals_ov.hEvent;
         if (g_engine_process) {
-            waitHandles[4] = g_engine_process;
-            handleCount = 5;
+            waitHandles[3] = g_engine_process;
+            handleCount = 4;
         }
         waitResult = WaitForMultipleObjects(handleCount, waitHandles, FALSE, INFINITE);
 
         /* Engine process exited */
-        if (g_engine_process && waitResult == WAIT_OBJECT_0 + 4) {
+        if (g_engine_process && waitResult == WAIT_OBJECT_0 + 3) {
             printf("\n--- Engine exited, stopping watch. ---\n");
             fflush(stdout);
             break;
@@ -845,11 +841,9 @@ static int watch_and_rebuild(void)
         CancelIo(hEngineDir);
         CancelIo(hEditorDir);
         CancelIo(hCoreDir);
-        CancelIo(hExternalsDir);
         ResetEvent(engine_ov.hEvent);
         ResetEvent(editor_ov.hEvent);
         ResetEvent(core_ov.hEvent);
-        ResetEvent(externals_ov.hEvent);
 
         if (waitResult == WAIT_OBJECT_0) {
             /* Engine directory changed */
@@ -890,17 +884,6 @@ static int watch_and_rebuild(void)
             } else {
                 printf("!! Core compile failed.\n");
             }
-        } else if (waitResult == WAIT_OBJECT_0 + 3) {
-            /* Externals directory changed */
-            printf("\n--- Externals change detected, recompiling... ---\n");
-            fflush(stdout);
-            if (build_externals() == 0) {
-                printf("   Compile OK. Signaling core reload...\n");
-                SetEvent(hCoreEvent);
-                ResetEvent(hCoreEvent);
-            } else {
-                printf("!! Externals compile failed.\n");
-            }
         }
         fflush(stdout);
     }
@@ -911,10 +894,8 @@ static int watch_and_rebuild(void)
     CloseHandle(engine_ov.hEvent);
     CloseHandle(editor_ov.hEvent);
     CloseHandle(core_ov.hEvent);
-    CloseHandle(externals_ov.hEvent);
     CloseHandle(hEngineDir);
     CloseHandle(hEditorDir);
     CloseHandle(hCoreDir);
-    CloseHandle(hExternalsDir);
     return 0;
 }

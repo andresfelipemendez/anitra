@@ -83,7 +83,7 @@
 
 /* Common include paths used by externals, core, engine, and exe targets */
 #define COMMON_INCLUDES \
-    "-Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals -Iinclude " \
+    "-Isrc -Isrc/core -Isrc/engine -Isrc/editor -Iinclude " \
     "-Ilib/SDL3/include -Ilib/SDL_shadercross/include " \
     "-Ilib/SDL_shadercross/external/SPIRV-Cross " \
     "-Ilib/SDL_shadercross/external/prebuilt/inc " \
@@ -498,70 +498,6 @@ static int generate_def_from_dll(const char *dll_path, const char *def_path,
     return 0;
 }
 #endif
-
-/* ------- externals (DLL — pure C, compiled by TCC) ---------------------- */
-static int build_externals(void)
-{
-    char cmd[CMD_MAX];
-
-    printf("\n=== Building externals ===\n");
-
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd),
-        ".\\tcc.exe -Blib/tcc-windows -shared"
-        " -o " DEBUG_DIR "/externals.dll"
-        " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
-        " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD"
-        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
-        " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
-        " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
-        " src/externals/externals_runtime.c src/externals/externals.c"
-        " src/project.c lib/sqlite/sqlite3.c"
-        " lib/remotery/Remotery.c lib/remotery/rmt_tcc_compat.c"
-        " " DEBUG_DIR "/SDL3.def"
-        " " DEBUG_DIR "/SDL3_shadercross.def"
-        " " DEBUG_DIR "/harfbuzz.def"
-        " lib/tcc-windows/lib/ws2_32.def"
-        " lib/tcc-windows/lib/winmm.def"
-        " lib/tcc-windows/lib/kernel32.def");
-#elif defined(__APPLE__)
-    snprintf(cmd, sizeof(cmd),
-        "lib/tcc/macos/tcc -Blib/tcc/macos -shared"
-        " -DMAC_OS_X_VERSION_MIN_REQUIRED=1100"
-        " -DSTBI_NO_THREAD_LOCALS -DCLAY_DISABLE_SIMD"
-        " -o " DEBUG_DIR "/libexternals.dylib"
-        " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
-        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
-        " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
-        " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
-        " src/externals/externals_runtime.c src/externals/externals.c"
-        " src/project.c lib/sqlite/sqlite3.c lib/remotery/Remotery.c"
-        " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz"
-        " -lpthread -lm");
-#else
-    snprintf(cmd, sizeof(cmd),
-        "./tcc -Blib/tcc-linux -shared"
-        " -o " DEBUG_DIR "/libexternals.so"
-        " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
-        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
-        " -Ilib/SDL3/include -Ilib/SDL_shadercross/include"
-        " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf"
-        " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
-        " src/externals/externals_runtime.c src/externals/externals.c"
-        " src/project.c lib/sqlite/sqlite3.c lib/remotery/Remotery.c"
-        " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz"
-        " -lpthread -ldl -lm");
-#endif
-    printf(">> %s\n", cmd);
-    if (system(cmd) != 0) {
-        printf("!! externals build failed\n");
-        return 1;
-    }
-
-    return 0;
-}
 
 /* ------- Platform-specific implementations ------------------------------ */
 /*
@@ -1867,30 +1803,21 @@ static int build_remote_compile(void)
 
     if (ensure_dir(REMOTE_DIR)) return 1;
 
-    /* 1. externals.so */
+    /* 1. core.so (includes externals) */
     snprintf(cmd, sizeof(cmd),
         "%s --target aarch64-linux-gnu -shared"
-        " -o " REMOTE_DIR "/libexternals.so"
+        " -o " REMOTE_DIR "/core.so"
         " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
         " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD"
         " " COMMON_INCLUDES
         " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
-        " src/externals/externals_runtime.c src/externals/externals.c"
+        " src/core/core.c"
+        " src/core/loadlibrary_linux.cpp"
+        " src/core/externals_runtime.c src/core/externals.c"
         " src/project.c lib/sqlite/sqlite3.c"
         " lib/remotery/Remotery.c"
         " -Wl,--allow-shlib-undefined"
         " -lpthread -ldl -lm",
-        tool_cc);
-    if (run_cmd(cmd) != 0) { printf("!! externals cross-compile failed\n"); return 1; }
-
-    /* 2. core.so */
-    snprintf(cmd, sizeof(cmd),
-        "%s --target aarch64-linux-gnu -shared"
-        " -o " REMOTE_DIR "/core.so"
-        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
-        " -Ilib/SDL3/include"
-        " src/core/core.c"
-        " src/core/loadlibrary_linux.cpp",
         tool_cc);
     if (run_cmd(cmd) != 0) { printf("!! core cross-compile failed\n"); return 1; }
 
@@ -1921,7 +1848,7 @@ static int build_remote_compile(void)
     snprintf(cmd, sizeof(cmd),
         "%s --target aarch64-linux-gnu"
         " -o " REMOTE_DIR "/AnitraEngine"
-        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals"
+        " -Isrc -Isrc/core -Isrc/engine -Isrc/editor"
         " -Ilib/SDL3/include"
         " src/main.c"
         " src/core/loadlibrary_linux.cpp"
@@ -1950,7 +1877,6 @@ static int build_remote_deploy(const remote_config *cfg, const char *project_dir
     snprintf(cmd, sizeof(cmd),
         "scp"
         " " REMOTE_DIR "/AnitraEngine"
-        " " REMOTE_DIR "/libexternals.so"
         " " REMOTE_DIR "/core.so"
         " " REMOTE_DIR "/engine.so"
         " " REMOTE_DIR "/editor.so"
@@ -2058,7 +1984,6 @@ static int build_all(void)
     if (build_shaders() != 0) return 1;
     if (build_harfbuzz() != 0) return 1;
     force_rebuild = 1;
-    if (build_externals() != 0) return 1;
     if (generate_migration_code() != 0) return 1;
     if (build_core() != 0) return 1;
     if (build_engine() != 0) return 1;

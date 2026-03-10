@@ -34,15 +34,22 @@ static int watch_and_rebuild(void);
 #define TCC_CORE_CMD \
     "./tcc -Blib/tcc-linux -shared" \
     " -o build/Debug/core.so" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
-    " -Ilib/SDL3/include" \
+    " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
+    " -Ilib/SDL3/include -Ilib/SDL_shadercross/include" \
+    " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf" \
+    " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof" \
     " src/core/core.c" \
-    " src/core/loadlibrary_linux.cpp"
+    " src/core/loadlibrary_linux.cpp" \
+    " src/core/externals_runtime.c src/core/externals.c" \
+    " src/project.c lib/sqlite/sqlite3.c lib/remotery/Remotery.c" \
+    " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz" \
+    " -lpthread -ldl -lm"
 
 #define TCC_EXE_CMD \
     "./tcc -Blib/tcc-linux" \
     " -o build/Debug/AnitraEngine" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor -Isrc/externals" \
+    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include" \
     " src/main.c" \
     " src/core/loadlibrary_linux.cpp" \
@@ -431,11 +438,11 @@ static int build_collab(void)
 
 static int watch_and_rebuild(void)
 {
-    int ifd, engine_wfd, editor_wfd, core_wfd, externals_wfd;
+    int ifd, engine_wfd, editor_wfd, core_wfd;
     struct pollfd pfd;
     char buf[4096];
 
-    printf("=== Forge: watching src/engine + src/editor + src/core + src/externals for changes ===\n");
+    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
     fflush(stdout);
 
     ifd = inotify_init();
@@ -464,14 +471,6 @@ static int watch_and_rebuild(void)
         IN_MODIFY | IN_CREATE | IN_MOVED_TO);
     if (core_wfd < 0) {
         printf("!! inotify_add_watch failed on src/core\n");
-        close(ifd);
-        return 1;
-    }
-
-    externals_wfd = inotify_add_watch(ifd, "src/externals",
-        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
-    if (externals_wfd < 0) {
-        printf("!! inotify_add_watch failed on src/externals\n");
         close(ifd);
         return 1;
     }
@@ -518,7 +517,7 @@ static int watch_and_rebuild(void)
         }
 
         /* Drain inotify events — track which directories changed */
-        int engine_changed = 0, editor_changed = 0, core_changed = 0, externals_changed = 0;
+        int engine_changed = 0, editor_changed = 0, core_changed = 0;
         {
             ssize_t n = read(ifd, buf, sizeof(buf));
             ssize_t i = 0;
@@ -527,7 +526,6 @@ static int watch_and_rebuild(void)
                 if (ev->wd == engine_wfd) engine_changed = 1;
                 if (ev->wd == editor_wfd) editor_changed = 1;
                 if (ev->wd == core_wfd)   core_changed = 1;
-                if (ev->wd == externals_wfd) externals_changed = 1;
                 i += sizeof(struct inotify_event) + ev->len;
             }
         }
@@ -546,8 +544,7 @@ static int watch_and_rebuild(void)
                     if (ev->wd == engine_wfd) engine_changed = 1;
                     if (ev->wd == editor_wfd) editor_changed = 1;
                     if (ev->wd == core_wfd)   core_changed = 1;
-                    if (ev->wd == externals_wfd) externals_changed = 1;
-                    i += sizeof(struct inotify_event) + ev->len;
+                        i += sizeof(struct inotify_event) + ev->len;
                 }
             }
         }
@@ -591,16 +588,6 @@ static int watch_and_rebuild(void)
             }
         }
 
-        if (externals_changed) {
-            printf("\n--- Externals change detected, recompiling... ---\n");
-            fflush(stdout);
-            if (build_externals() == 0) {
-                fclose(fopen(DEBUG_DIR "/.core-reload-signal", "w"));
-                printf("   Compile OK. Externals rebuilt. Core reload signal written.\n");
-            } else {
-                printf("!! Externals compile failed.\n");
-            }
-        }
         fflush(stdout);
     }
 
