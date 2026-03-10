@@ -2695,11 +2695,16 @@ static int build_and_debug(void)
     }
 
     printf("   RAD Debugger launched (PID: %lu)\n", (unsigned long)pi.dwProcessId);
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    return (int)exitCode;
+    g_engine_process = pi.hProcess;
+
+    /* Watch for file changes and rebuild DLLs; exits when raddbg closes */
+    {
+        int rc = watch_and_rebuild();
+        CloseHandle(g_engine_process);
+        g_engine_process = NULL;
+        return rc;
+    }
 }
 #endif
 

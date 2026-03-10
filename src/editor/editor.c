@@ -496,8 +496,8 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
                 /* Size — right-aligned in fixed-width column */
                 CLAY(CLAY_IDI("TSize", (int32_t)rid), {
                     .layout = {
-                        .sizing = { CLAY_SIZING_FIT({ .min = 72 }), CLAY_SIZING_FIT({0}) },
-                        .childAlignment = { .x = CLAY_ALIGN_X_RIGHT }
+                        .sizing = { CLAY_SIZING_FIT({72}), CLAY_SIZING_FIT({0}) },
+                        .childAlignment = { CLAY_ALIGN_X_RIGHT }
                     }
                 }) {
                     Clay_String sz_s = {false, (int32_t)strlen(size_buf), size_buf};
@@ -3562,6 +3562,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             e->menu_bar_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){1600, 900}, err);
             Clay_SetCurrentContext((Clay_Context *)e->menu_bar_clay_ctx);
             Clay_SetMeasureTextFunction(profiler_measure_text, e);
+            e->clay_debug_open = 1;
         }
     }
 
@@ -5595,7 +5596,7 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
     Clay_SetPointerState((Clay_Vector2){e->menu_mouse_x, e->menu_mouse_y}, (bool)e->menu_click);
     Clay_UpdateScrollContainers(true, (Clay_Vector2){0, e->menu_scroll_y}, gs->dt);
     e->menu_scroll_y = 0;
-    Clay_SetDebugModeEnabled(true);
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
     Clay_BeginLayout();
 
     CLAY(CLAY_ID("MenuBarRoot"), {
@@ -5832,6 +5833,9 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
     e->menu_bar_cmd_count = commands.length;
     e->menu_bar_cmd_array = commands.internalArray;
     e->menu_click = 0;
+
+    /* Sync back: Clay's close button may have cleared debugModeEnabled */
+    e->clay_debug_open = ((Clay_Context *)e->menu_bar_clay_ctx)->debugModeEnabled;
 }
 
 static void editor_toolbar_layout(game_state *gs, editor_state *es) {
@@ -6842,15 +6846,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
                 CLAY(CLAY_IDI("CUHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
-                    Clay_String h = CLAY_STRING("Duration");
-                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
-                }
-                CLAY(CLAY_IDI("CUHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
-                    Clay_String h = CLAY_STRING("Depth");
-                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
-                }
-                CLAY(CLAY_IDI("CUHCol", 3), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
-                    Clay_String h = CLAY_STRING("Parent");
+                    Clay_String h = CLAY_STRING("Duration (us)");
                     CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
                 }
             }
@@ -6943,7 +6939,8 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                                     .childGap = 4,
                                     .layoutDirection = CLAY_LEFT_TO_RIGHT,
                                     .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
-                                }
+                                },
+                                .clip = { .horizontal = true }
                             }) {
                                 const char *toggle_label = " ";
                                 if (has_visible_children) {
@@ -6968,35 +6965,33 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
                                 }
                                 {
                                     Clay_String ns = {false, (int32_t)strlen(name), (char*)name};
-                                    CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14}));
+                                    CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14, .wrapMode = CLAY_TEXT_WRAP_NONE}));
                                 }
                             }
 
-                            CLAY(CLAY_IDI("CUDur", row_count), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                            /* Duration — right-aligned via manual padding.
+                               All digits in Inter are tabular (same advance),
+                               so padding by digit count gives pixel-perfect alignment. */
+                            {
                                 uint64_t duration_ns = frame->duration_ns[idx];
-                                snprintf(bufs[row_count][0], sizeof(bufs[row_count][0]), "%.1f us", (double)duration_ns / 1000.0);
+                                int num_digits;
+                                float digit_px = e->font_advances['0'] * 14.0f;
+                                uint16_t dur_left_pad;
+                                snprintf(bufs[row_count][0], sizeof(bufs[row_count][0]), "%u", (unsigned)(duration_ns / 1000));
+                                num_digits = (int)strlen(bufs[row_count][0]);
                                 {
+                                    float pad_f = 100.0f - num_digits * digit_px;
+                                    dur_left_pad = (pad_f > 0.0f) ? (uint16_t)pad_f : 0;
+                                }
+                                CLAY(CLAY_IDI("CUDur", row_count), {
+                                    .layout = {
+                                        .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) },
+                                        .padding = { dur_left_pad, 0, 0, 0 },
+                                        .childAlignment = { 0, CLAY_ALIGN_Y_CENTER }
+                                    }
+                                }) {
                                     Clay_String vs = {false, (int32_t)strlen(bufs[row_count][0]), bufs[row_count][0]};
                                     CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 200, 120, 255}, .fontSize = 14}));
-                                }
-                            }
-                            CLAY(CLAY_IDI("CUDep", row_count), { .layout = { .sizing = { CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
-                                snprintf(bufs[row_count][1], sizeof(bufs[row_count][1]), "%u", (unsigned)frame->depth[idx]);
-                                {
-                                    Clay_String vs = {false, (int32_t)strlen(bufs[row_count][1]), bufs[row_count][1]};
-                                    CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
-                                }
-                            }
-                            CLAY(CLAY_IDI("CUPar", row_count), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) } } }) {
-                                if (parent == CPU_PROF_INVALID_PARENT || parent >= (uint16_t)zone_count) {
-                                    snprintf(bufs[row_count][2], sizeof(bufs[row_count][2]), "ROOT");
-                                } else {
-                                    const char *pname = frame->names[parent] ? frame->names[parent] : "(null)";
-                                    snprintf(bufs[row_count][2], sizeof(bufs[row_count][2]), "%s", pname);
-                                }
-                                {
-                                    Clay_String vs = {false, (int32_t)strlen(bufs[row_count][2]), bufs[row_count][2]};
-                                    CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
                                 }
                             }
 
@@ -7324,7 +7319,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             }
             /* Consume motion over Clay debug view panel */
             if (e->menu_bar_clay_ctx &&
-                ((Clay_Context *)e->menu_bar_clay_ctx)->debugModeEnabled) {
+                e->clay_debug_open) {
                 int ww = 0;
                 SDL_GetWindowSize(evwin, &ww, NULL);
                 if (ev->motion.x >= (float)(ww - (int)Clay__debugViewWidth)) {
@@ -7348,7 +7343,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             }
             /* Consume clicks over Clay debug view panel (right side) */
             if (e->menu_bar_clay_ctx &&
-                ((Clay_Context *)e->menu_bar_clay_ctx)->debugModeEnabled) {
+                e->clay_debug_open) {
                 int ww = 0;
                 SDL_GetWindowSize(evwin, &ww, NULL);
                 if (ev->button.x >= (float)(ww - (int)Clay__debugViewWidth)) {
@@ -7958,8 +7953,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 }
             }
             /* Forward scroll to Clay debug view when active */
-            if (!consumed && e->menu_bar_clay_ctx &&
-                ((Clay_Context *)e->menu_bar_clay_ctx)->debugModeEnabled &&
+            if (!consumed && e->clay_debug_open &&
                 d->windows[0].in_use &&
                 evwin == (SDL_Window *)d->windows[0].sdl_window) {
                 e->menu_scroll_y += ev->wheel.y * 3.0f;

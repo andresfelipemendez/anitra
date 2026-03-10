@@ -978,6 +978,7 @@ typedef struct editor_state {
     float menu_mouse_x, menu_mouse_y; /* mouse position in window coords */
     int   menu_click;              /* 1 on the frame left button was pressed in menu bar area */
     float menu_scroll_y;           /* scroll wheel delta for Clay debug view */
+    int   clay_debug_open;         /* 1 when Clay debug tools panel is visible */
 
     /* Cache profiler panel — Clay render output */
     void *cache_prof_clay_ctx;

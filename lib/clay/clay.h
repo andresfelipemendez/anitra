@@ -3470,7 +3470,7 @@ void Clay__RenderDebugView(void) {
             CLAY_TEXT(CLAY_STRING("Clay Debug Tools"), infoTextConfig);
             CLAY_AUTO_ID({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
             // Close button
-            CLAY_AUTO_ID({
+            CLAY(CLAY_ID("Clay__DebugViewTopHeaderCloseButtonOuter"), {
                 .layout = { .sizing = {CLAY_SIZING_FIXED(CLAY__DEBUGVIEW_ROW_HEIGHT - 10), CLAY_SIZING_FIXED(CLAY__DEBUGVIEW_ROW_HEIGHT - 10)}, .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER} },
                 .backgroundColor = {217,91,67,80},
                 .cornerRadius = CLAY_CORNER_RADIUS(4),
