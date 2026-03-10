@@ -3243,10 +3243,18 @@ static void update_camera(game_state *gs, editor_state *es) {
 
     if (e->cam_mouse_look) {
         SDL_GetRelativeMouseState(&dx, &dy);
-        e->cam_yaw   -= dx * e->cam_sens;
-        e->cam_pitch -= dy * e->cam_sens;
-        if (e->cam_pitch >  1.55f) e->cam_pitch =  1.55f;
-        if (e->cam_pitch < -1.55f) e->cam_pitch = -1.55f;
+        if (e->cam_mouse_button == SDL_BUTTON_MIDDLE) {
+            float pan_speed = e->cam_speed * 0.002f;
+            Vec3 cam_right = vec3_normalize(vec3_cross(fwd, VEC3(0, 1, 0)));
+            Vec3 cam_up = vec3_normalize(vec3_cross(cam_right, fwd));
+            e->cam_pos = vec3_sub(e->cam_pos, vec3_scale(cam_right, dx * pan_speed));
+            e->cam_pos = vec3_add(e->cam_pos, vec3_scale(cam_up,    dy * pan_speed));
+        } else {
+            e->cam_yaw   -= dx * e->cam_sens;
+            e->cam_pitch -= dy * e->cam_sens;
+            if (e->cam_pitch >  1.55f) e->cam_pitch =  1.55f;
+            if (e->cam_pitch < -1.55f) e->cam_pitch = -1.55f;
+        }
     }
 }
 
@@ -7687,6 +7695,9 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         if (ev->button.button == SDL_BUTTON_RIGHT &&
             evwin == (SDL_Window *)e->window) {
             editor_begin_mouse_look(e, SDL_BUTTON_RIGHT);
+        } else if (ev->button.button == SDL_BUTTON_MIDDLE &&
+            evwin == (SDL_Window *)e->window) {
+            editor_begin_mouse_look(e, SDL_BUTTON_MIDDLE);
         } else if (ev->button.button == SDL_BUTTON_LEFT &&
                    e->gizmo_hovered == GIZMO_NONE &&
                    e->gizmo_active == GIZMO_NONE) {
@@ -7707,7 +7718,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     if (!editor_is_play_mode(gs) &&
         ev->type == SDL_EVENT_MOUSE_BUTTON_UP &&
         (ev->button.button == SDL_BUTTON_LEFT ||
-         ev->button.button == SDL_BUTTON_RIGHT)) {
+         ev->button.button == SDL_BUTTON_RIGHT ||
+         ev->button.button == SDL_BUTTON_MIDDLE)) {
         if (e->cam_mouse_look && e->cam_mouse_button == ev->button.button) {
             editor_end_mouse_look(e);
         }
