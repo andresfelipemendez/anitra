@@ -9,6 +9,10 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <ctype.h>
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/types.h>
+#endif
 
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
@@ -570,6 +574,7 @@ static Clay_Dimensions profiler_measure_text(Clay_StringSlice text,
     float scale = (float)config->fontSize;
     float width = 0;
     int i = 0;
+    if (!e) return (Clay_Dimensions){ (float)text.length * scale * 0.6f, scale };
     while (i < text.length) {
         int ch = 0;
         int next = i + 1;

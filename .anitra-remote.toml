@@ -1,0 +1,3 @@
+host = "raspberrypi5.local"
+user = "andres"
+deploy_path = "/home/andres/anitra"

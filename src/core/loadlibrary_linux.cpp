@@ -3,14 +3,33 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
+/* Resolve exe directory once — loadlibrary/copylibrary use it as base path */
+static const char *get_exe_dir(void) {
+  static char dir[512];
+  static int done = 0;
+  if (!done) {
+    ssize_t len = readlink("/proc/self/exe", dir, sizeof(dir) - 1);
+    if (len > 0) {
+      dir[len] = '\0';
+      char *last = strrchr(dir, '/');
+      if (last) *(last + 1) = '\0';
+    } else {
+      dir[0] = '\0';
+    }
+    done = 1;
+  }
+  return dir;
+}
+
 void *loadlibrary(const char *libname) {
-  char libpath[256];
-  snprintf(libpath, sizeof(libpath), "lib%s.so", libname);
-  void *hLib = dlopen(libpath, RTLD_LAZY);
+  char libpath[512];
+  snprintf(libpath, sizeof(libpath), "%slib%s.so", get_exe_dir(), libname);
+  void *hLib = dlopen(libpath, RTLD_LAZY | RTLD_GLOBAL);
   if (hLib == NULL) {
-    fprintf(stderr, "Failed to load library: %s\n", libpath);
+    fprintf(stderr, "Failed to load library: %s\n", dlerror());
     return NULL;
   }
   return hLib;
@@ -31,7 +50,8 @@ void *getfunction(void *lib, const char *funcname) {
 }
 
 int copylibrary_with_error(const char *srcname, const char *dstname, error_value *out_error) {
-  char srcpath[256], dstpath[256];
+  const char *base = get_exe_dir();
+  char srcpath[512], dstpath[512];
   int src_fd = -1;
   int dst_fd = -1;
   char buf[8192];
@@ -41,8 +61,8 @@ int copylibrary_with_error(const char *srcname, const char *dstname, error_value
     ERRV_RETURN_CODE_ERR(-1, out_error, 1, "copylibrary: invalid source/destination name");
   }
 
-  snprintf(srcpath, sizeof(srcpath), "lib%s.so", srcname);
-  snprintf(dstpath, sizeof(dstpath), "lib%s.so", dstname);
+  snprintf(srcpath, sizeof(srcpath), "%slib%s.so", base, srcname);
+  snprintf(dstpath, sizeof(dstpath), "%slib%s.so", base, dstname);
 
   src_fd = open(srcpath, O_RDONLY);
   if (src_fd < 0) {

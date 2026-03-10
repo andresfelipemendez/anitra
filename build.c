@@ -1795,6 +1795,270 @@ static int read_remote_config(remote_config *cfg)
     return 0;
 }
 
+/* Linux SDL3 platform sources — needed for cross-compilation from Windows.
+ * This mirrors build_linux.c sdl3_sources_platform[] and must be kept in sync. */
+static const char *sdl3_remote_platform_sources[] = {
+    "lib/SDL3/src/audio/alsa/SDL_alsa_audio.c",
+    "lib/SDL3/src/audio/pulseaudio/SDL_pulseaudio.c",
+    "lib/SDL3/src/audio/dummy/SDL_dummyaudio.c",
+    "lib/SDL3/src/audio/disk/SDL_diskaudio.c",
+    "lib/SDL3/src/camera/v4l2/SDL_camera_v4l2.c",
+    "lib/SDL3/src/camera/dummy/SDL_camera_dummy.c",
+    "lib/SDL3/src/core/linux/SDL_dbus.c",
+    "lib/SDL3/src/core/linux/SDL_evdev.c",
+    "lib/SDL3/src/core/linux/SDL_evdev_capabilities.c",
+    "lib/SDL3/src/core/linux/SDL_evdev_kbd.c",
+    "lib/SDL3/src/core/linux/SDL_progressbar.c",
+    "lib/SDL3/src/core/linux/SDL_threadprio.c",
+    "lib/SDL3/src/core/linux/SDL_udev.c",
+    "lib/SDL3/src/core/unix/SDL_appid.c",
+    "lib/SDL3/src/core/unix/SDL_poll.c",
+    "lib/SDL3/src/core/unix/SDL_gtk.c",
+    "lib/SDL3/src/dialog/unix/SDL_portaldialog.c",
+    "lib/SDL3/src/dialog/unix/SDL_unixdialog.c",
+    "lib/SDL3/src/dialog/unix/SDL_zenitydialog.c",
+    "lib/SDL3/src/dialog/unix/SDL_zenitymessagebox.c",
+    "lib/SDL3/src/filesystem/unix/SDL_sysfilesystem.c",
+    "lib/SDL3/src/filesystem/posix/SDL_sysfsops.c",
+    "lib/SDL3/src/haptic/linux/SDL_syshaptic.c",
+    "lib/SDL3/src/haptic/hidapi/SDL_hidapihaptic.c",
+    "lib/SDL3/src/haptic/hidapi/SDL_hidapihaptic_lg4ff.c",
+    "lib/SDL3/src/io/generic/SDL_asyncio_generic.c",
+    "lib/SDL3/src/joystick/linux/SDL_sysjoystick.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapijoystick.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_combined.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gamecube.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_luna.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps3.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps4.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_ps5.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_rumble.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_shield.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_stadia.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam_hori.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steamdeck.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_switch.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_wii.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xbox360.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xbox360w.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_xboxone.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gip.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_steam_triton.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_lg4ff.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_flydigi.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gamesir.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_sinput.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_hidapi_zuiki.c",
+    "lib/SDL3/src/joystick/hidapi/SDL_report_descriptor.c",
+    "lib/SDL3/src/joystick/virtual/SDL_virtualjoystick.c",
+    "lib/SDL3/src/joystick/dummy/SDL_sysjoystick.c",
+    "lib/SDL3/src/loadso/dlopen/SDL_sysloadso.c",
+    "lib/SDL3/src/locale/unix/SDL_syslocale.c",
+    "lib/SDL3/src/main/generic/SDL_sysmain_callbacks.c",
+    "lib/SDL3/src/misc/unix/SDL_sysurl.c",
+    "lib/SDL3/src/power/linux/SDL_syspower.c",
+    "lib/SDL3/src/process/posix/SDL_posixprocess.c",
+    "lib/SDL3/src/sensor/dummy/SDL_dummysensor.c",
+    "lib/SDL3/src/storage/generic/SDL_genericstorage.c",
+    "lib/SDL3/src/storage/steam/SDL_steamstorage.c",
+    "lib/SDL3/src/thread/pthread/SDL_syscond.c",
+    "lib/SDL3/src/thread/pthread/SDL_sysmutex.c",
+    "lib/SDL3/src/thread/pthread/SDL_sysrwlock.c",
+    "lib/SDL3/src/thread/pthread/SDL_syssem.c",
+    "lib/SDL3/src/thread/pthread/SDL_systhread.c",
+    "lib/SDL3/src/thread/pthread/SDL_systls.c",
+    "lib/SDL3/src/time/unix/SDL_systime.c",
+    "lib/SDL3/src/timer/unix/SDL_systimer.c",
+    "lib/SDL3/src/tray/unix/SDL_tray.c",
+    /* Video - X11 (requires sysroot sync from Pi for X11 headers) */
+    "lib/SDL3/src/video/x11/edid-parse.c",
+    "lib/SDL3/src/video/x11/SDL_x11clipboard.c",
+    "lib/SDL3/src/video/x11/SDL_x11dyn.c",
+    "lib/SDL3/src/video/x11/SDL_x11events.c",
+    "lib/SDL3/src/video/x11/SDL_x11framebuffer.c",
+    "lib/SDL3/src/video/x11/SDL_x11keyboard.c",
+    "lib/SDL3/src/video/x11/SDL_x11messagebox.c",
+    "lib/SDL3/src/video/x11/SDL_x11modes.c",
+    "lib/SDL3/src/video/x11/SDL_x11mouse.c",
+    "lib/SDL3/src/video/x11/SDL_x11opengl.c",
+    "lib/SDL3/src/video/x11/SDL_x11opengles.c",
+    "lib/SDL3/src/video/x11/SDL_x11pen.c",
+    "lib/SDL3/src/video/x11/SDL_x11settings.c",
+    "lib/SDL3/src/video/x11/SDL_x11shape.c",
+    "lib/SDL3/src/video/x11/SDL_x11toolkit.c",
+    "lib/SDL3/src/video/x11/SDL_x11touch.c",
+    "lib/SDL3/src/video/x11/SDL_x11video.c",
+    "lib/SDL3/src/video/x11/SDL_x11vulkan.c",
+    "lib/SDL3/src/video/x11/SDL_x11window.c",
+    "lib/SDL3/src/video/x11/SDL_x11xfixes.c",
+    "lib/SDL3/src/video/x11/SDL_x11xinput2.c",
+    "lib/SDL3/src/video/x11/SDL_x11xsync.c",
+    "lib/SDL3/src/video/x11/SDL_x11xtest.c",
+    "lib/SDL3/src/video/x11/xsettings-client.c"
+};
+
+/* Sync system headers from the Raspberry Pi into a local sysroot for cross-
+ * compilation. Cached in build/remote/sysroot — only downloads once.
+ * Run `build.exe remote-sync` to force a re-sync (e.g. after apt-get install). */
+#define REMOTE_SYSROOT      REMOTE_DIR "/sysroot"
+#define REMOTE_SYSROOT_INC  REMOTE_SYSROOT "/usr/include"
+
+static int build_remote_sync_sysroot(const remote_config *cfg)
+{
+    char cmd[CMD_MAX];
+    FILE *marker;
+
+    /* Check if sysroot already exists (cached) */
+    marker = fopen(REMOTE_SYSROOT "/.synced", "r");
+    if (marker) {
+        fclose(marker);
+        printf("   Sysroot cached (delete " REMOTE_SYSROOT " to re-sync).\n");
+        return 0;
+    }
+
+    printf("\n=== Syncing sysroot from %s ===\n", cfg->host);
+    printf("   This downloads /usr/include from the Pi (one-time).\n");
+    printf("   Make sure dev packages are installed on the Pi:\n");
+    printf("     sudo apt-get install libx11-dev libxext-dev libxfixes-dev\n");
+    printf("     libxi-dev libxrandr-dev libxcursor-dev libxss-dev\n");
+    printf("     libpulse-dev libasound2-dev libgl-dev\n");
+
+    if (ensure_dir(REMOTE_SYSROOT)) return 1;
+    if (ensure_dir(REMOTE_SYSROOT "/usr")) return 1;
+
+    /* Download only the specific headers we need from the Pi — NOT all of
+     * /usr/include, which would conflict with zig's bundled C library headers.
+     * -h dereferences symlinks (asm/ has symlinks that Windows can't create). */
+    snprintf(cmd, sizeof(cmd),
+        "ssh %s@%s \"tar chf -"
+        " /usr/include/X11"
+        " /usr/include/xcb"
+        " /usr/include/alsa"
+        " /usr/include/pulse"
+        " /usr/include/GL"
+        " /usr/include/EGL"
+        " /usr/include/GLES2"
+        " /usr/include/GLES3"
+        " /usr/include/xkbcommon"
+        " 2>/dev/null\" | tar xf - -C " REMOTE_SYSROOT,
+        cfg->user, cfg->host);
+    if (run_cmd(cmd) != 0) {
+        printf("!! Failed to sync sysroot. Install dev packages on Pi and retry.\n");
+        return 1;
+    }
+
+    /* Write marker so we don't re-sync next time */
+    marker = fopen(REMOTE_SYSROOT "/.synced", "w");
+    if (marker) {
+        fprintf(marker, "synced\n");
+        fclose(marker);
+    }
+
+    printf("   Sysroot sync complete.\n");
+    return 0;
+}
+
+/* Cross-compile external libraries (SDL3, SPIRV-Cross, shadercross, HarfBuzz)
+ * for aarch64-linux-gnu using zig cc. Uses response files for SDL3 due to
+ * the large number of source files (~300). */
+static int build_remote_externals(void)
+{
+    char cmd[CMD_MAX];
+    FILE *rsp;
+    int i, common_count, platform_count;
+
+    printf("\n=== Cross-compiling externals for aarch64-linux-gnu ===\n");
+
+    /* --- 1. SDL3 --------------------------------------------------------- */
+    printf("   [1/4] SDL3...\n");
+    {
+        /* Write response file with all SDL3 sources */
+        rsp = fopen(REMOTE_DIR "/sdl3_sources.txt", "w");
+        if (!rsp) { printf("!! failed to create SDL3 response file\n"); return 1; }
+
+        common_count = sizeof(sdl3_sources_common) / sizeof(sdl3_sources_common[0]);
+        platform_count = sizeof(sdl3_remote_platform_sources) / sizeof(sdl3_remote_platform_sources[0]);
+
+        for (i = 0; i < common_count; i++)
+            fprintf(rsp, "%s\n", sdl3_sources_common[i]);
+        for (i = 0; i < platform_count; i++)
+            fprintf(rsp, "%s\n", sdl3_remote_platform_sources[i]);
+        fclose(rsp);
+
+        snprintf(cmd, sizeof(cmd),
+            "%s -target aarch64-linux-gnu -shared -O2"
+            " -DSDL_BUILDING_SDL3 -DDLL_EXPORT"
+            " -include include/SDL_build_config_remote.h"
+            " -isystem " REMOTE_SYSROOT_INC
+            " -Ilib/SDL3/include -Ilib/SDL3/include/build_config"
+            " -Ilib/SDL3/src -Ilib/SDL3/src/video/khronos"
+            " -Wl,-soname,libSDL3.so"
+            " -o " REMOTE_DIR "/libSDL3.so"
+            " @" REMOTE_DIR "/sdl3_sources.txt"
+            " -lpthread -ldl -lm",
+            tool_cc);
+        if (run_cmd(cmd) != 0) { printf("!! SDL3 cross-compile failed\n"); return 1; }
+    }
+
+    /* --- 2. SPIRV-Cross -------------------------------------------------- */
+    printf("   [2/4] SPIRV-Cross...\n");
+    snprintf(cmd, sizeof(cmd),
+        "%s -target aarch64-linux-gnu -shared -std=c++17 -O2"
+        " -DSPVC_EXPORT_SYMBOLS"
+        " -DSPIRV_CROSS_C_API_GLSL=1 -DSPIRV_CROSS_C_API_HLSL=1"
+        " -DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_CPP=1"
+        " -DSPIRV_CROSS_C_API_REFLECT=1"
+        " -Ilib/SDL_shadercross/external/SPIRV-Cross"
+        " -Wl,-soname,libspirv-cross-c-shared.so"
+        " -o " REMOTE_DIR "/libspirv-cross-c-shared.so"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_cfg.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_cpp.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_cross.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_cross_c.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_cross_parsed_ir.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_cross_util.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_glsl.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_hlsl.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_msl.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_parser.cpp"
+        " lib/SDL_shadercross/external/SPIRV-Cross/spirv_reflect.cpp",
+        tool_cxx);
+    if (run_cmd(cmd) != 0) { printf("!! SPIRV-Cross cross-compile failed\n"); return 1; }
+
+    /* --- 3. SDL_shadercross ---------------------------------------------- */
+    printf("   [3/4] SDL_shadercross...\n");
+    snprintf(cmd, sizeof(cmd),
+        "%s -target aarch64-linux-gnu -shared -O2"
+        " -DDLL_EXPORT"
+        " -Ilib/SDL_shadercross/include"
+        " -Ilib/SDL3/include"
+        " -Ilib/SDL_shadercross/external/SPIRV-Cross"
+        " -Ilib/SDL_shadercross/external/prebuilt/inc"
+        " -Wl,-soname,libSDL3_shadercross.so"
+        " -o " REMOTE_DIR "/libSDL3_shadercross.so"
+        " lib/SDL_shadercross/src/SDL_shadercross.c"
+        " -L" REMOTE_DIR " -lSDL3 -lspirv-cross-c-shared",
+        tool_cc);
+    if (run_cmd(cmd) != 0) { printf("!! SDL_shadercross cross-compile failed\n"); return 1; }
+
+    /* --- 4. HarfBuzz ----------------------------------------------------- */
+    printf("   [4/4] HarfBuzz...\n");
+    snprintf(cmd, sizeof(cmd),
+        "%s -target aarch64-linux-gnu -shared -std=c++20 -O2"
+        " -DHB_TINY -DHB_NO_MT"
+        " -Ilib/harfbuzz-src/src"
+        " -Wl,-soname,libharfbuzz.so"
+        " -o " REMOTE_DIR "/libharfbuzz.so"
+        " lib/harfbuzz-src/src/harfbuzz.cc",
+        tool_cxx);
+    if (run_cmd(cmd) != 0) { printf("!! HarfBuzz cross-compile failed\n"); return 1; }
+
+    printf("   Externals cross-compilation complete.\n");
+    return 0;
+}
+
 static int build_remote_compile(void)
 {
     char cmd[CMD_MAX];
@@ -1803,11 +2067,14 @@ static int build_remote_compile(void)
 
     if (ensure_dir(REMOTE_DIR)) return 1;
 
-    /* 1. core.so (includes externals) */
+    /* Cross-compile external libraries first */
+    if (build_remote_externals() != 0) return 1;
+
+    /* 1. core.so (includes externals) — link against cross-compiled libs */
     snprintf(cmd, sizeof(cmd),
-        "%s --target aarch64-linux-gnu -shared"
-        " -o " REMOTE_DIR "/core.so"
-        " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0"
+        "%s -target aarch64-linux-gnu -shared -fno-sanitize=undefined"
+        " -Wl,-soname,libcore.so"
+        " -o " REMOTE_DIR "/libcore.so"
         " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD"
         " " COMMON_INCLUDES
         " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof"
@@ -1815,38 +2082,42 @@ static int build_remote_compile(void)
         " src/core/loadlibrary_linux.cpp"
         " src/core/externals_runtime.c src/core/externals.c"
         " src/project.c lib/sqlite/sqlite3.c"
-        " lib/remotery/Remotery.c"
-        " -Wl,--allow-shlib-undefined"
+        " -L" REMOTE_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz"
+        " -Wl,-rpath,$ORIGIN"
         " -lpthread -ldl -lm",
         tool_cc);
     if (run_cmd(cmd) != 0) { printf("!! core cross-compile failed\n"); return 1; }
 
     /* 3. engine.so */
     snprintf(cmd, sizeof(cmd),
-        "%s --target aarch64-linux-gnu -shared"
-        " -o " REMOTE_DIR "/engine.so"
+        "%s -target aarch64-linux-gnu -shared -fno-sanitize=undefined"
+        " -Wl,-soname,libengine.so"
+        " -o " REMOTE_DIR "/libengine.so"
         " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf"
         " src/engine/anim.c src/engine/debug_render.c src/engine/engine.c"
-        " src/engine/gltf_loader.c src/engine/physics.c",
+        " src/engine/gltf_loader.c src/engine/physics.c"
+        " -Wl,--allow-shlib-undefined",
         tool_cc);
     if (run_cmd(cmd) != 0) { printf("!! engine cross-compile failed\n"); return 1; }
 
     /* 4. editor.so */
     snprintf(cmd, sizeof(cmd),
-        "%s --target aarch64-linux-gnu -shared"
-        " -o " REMOTE_DIR "/editor.so"
+        "%s -target aarch64-linux-gnu -shared -fno-sanitize=undefined"
+        " -Wl,-soname,libeditor.so"
+        " -o " REMOTE_DIR "/libeditor.so"
         " -DCLAY_DISABLE_SIMD -DCPU_PROF_USE_FPTRS"
         " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab"
         " -Ilib/SDL3/include -Ilib/clay"
         " src/editor/editor.c"
         " src/collab/collab_ops.c"
-        " src/collab/collab_client.c",
+        " src/collab/collab_client.c"
+        " -Wl,--allow-shlib-undefined",
         tool_cc);
     if (run_cmd(cmd) != 0) { printf("!! editor cross-compile failed\n"); return 1; }
 
     /* 5. AnitraEngine (exe) */
     snprintf(cmd, sizeof(cmd),
-        "%s --target aarch64-linux-gnu"
+        "%s -target aarch64-linux-gnu -fno-sanitize=undefined"
         " -o " REMOTE_DIR "/AnitraEngine"
         " -Isrc -Isrc/core -Isrc/engine -Isrc/editor"
         " -Ilib/SDL3/include"
@@ -1868,35 +2139,39 @@ static int build_remote_deploy(const remote_config *cfg, const char *project_dir
 
     /* Create remote directory structure */
     snprintf(cmd, sizeof(cmd),
-        "ssh %s@%s \"mkdir -p %s/build/Debug %s/assets/shaders/compiled %s/assets/fonts\"",
+        "ssh %s@%s \"mkdir -p %s/build/Debug\"",
         cfg->user, cfg->host,
-        cfg->deploy_path, cfg->deploy_path, cfg->deploy_path);
+        cfg->deploy_path);
     if (run_cmd(cmd) != 0) { printf("!! Failed to create remote dirs\n"); return 1; }
 
-    /* Copy binaries */
+    /* Copy binaries + external libraries */
     snprintf(cmd, sizeof(cmd),
         "scp"
         " " REMOTE_DIR "/AnitraEngine"
-        " " REMOTE_DIR "/core.so"
-        " " REMOTE_DIR "/engine.so"
-        " " REMOTE_DIR "/editor.so"
+        " " REMOTE_DIR "/libcore.so"
+        " " REMOTE_DIR "/libengine.so"
+        " " REMOTE_DIR "/libeditor.so"
+        " " REMOTE_DIR "/libSDL3.so"
+        " " REMOTE_DIR "/libspirv-cross-c-shared.so"
+        " " REMOTE_DIR "/libSDL3_shadercross.so"
+        " " REMOTE_DIR "/libharfbuzz.so"
         " %s@%s:%s/build/Debug/",
         cfg->user, cfg->host, cfg->deploy_path);
     if (run_cmd(cmd) != 0) { printf("!! Failed to deploy binaries\n"); return 1; }
 
-    /* Copy shaders */
+    /* Copy all assets (shaders, fonts, textures, etc.) */
     snprintf(cmd, sizeof(cmd),
-        "scp -r assets/shaders/compiled"
-        " %s@%s:%s/assets/shaders/",
+        "scp -r assets"
+        " %s@%s:%s/",
         cfg->user, cfg->host, cfg->deploy_path);
-    if (run_cmd(cmd) != 0) { printf("!! Failed to deploy shaders\n"); return 1; }
+    if (run_cmd(cmd) != 0) { printf("!! Failed to deploy assets\n"); return 1; }
 
-    /* Copy fonts */
+    /* Copy game_assets (3D models, animations, etc.) */
     snprintf(cmd, sizeof(cmd),
-        "scp -r assets/fonts"
-        " %s@%s:%s/assets/",
+        "scp -r game_assets"
+        " %s@%s:%s/",
         cfg->user, cfg->host, cfg->deploy_path);
-    if (run_cmd(cmd) != 0) { printf("!! Failed to deploy fonts\n"); return 1; }
+    if (run_cmd(cmd) != 0) { printf("!! Failed to deploy game_assets\n"); return 1; }
 
     /* Copy project directory if available */
     if (project_dir && project_dir[0]) {
@@ -1929,14 +2204,19 @@ static int build_remote_run(const remote_config *cfg, const char *project_includ
 
     printf("\n=== Running on %s ===\n", cfg->host);
 
+    snprintf(cmd, sizeof(cmd),
+        "ssh %s@%s \"chmod +x %s/build/Debug/AnitraEngine\"",
+        cfg->user, cfg->host, cfg->deploy_path);
+    run_cmd(cmd);
+
     if (project_include && project_include[0]) {
         snprintf(cmd, sizeof(cmd),
-            "ssh %s@%s \"cd %s && DISPLAY=:0 ./build/Debug/AnitraEngine --include %s\"",
-            cfg->user, cfg->host, cfg->deploy_path, project_include);
+            "ssh %s@%s \"cd %s && DISPLAY=:0 LD_LIBRARY_PATH=%s/build/Debug ./build/Debug/AnitraEngine --include %s\"",
+            cfg->user, cfg->host, cfg->deploy_path, cfg->deploy_path, project_include);
     } else {
         snprintf(cmd, sizeof(cmd),
-            "ssh %s@%s \"cd %s && DISPLAY=:0 ./build/Debug/AnitraEngine\"",
-            cfg->user, cfg->host, cfg->deploy_path);
+            "ssh %s@%s \"cd %s && DISPLAY=:0 LD_LIBRARY_PATH=%s/build/Debug ./build/Debug/AnitraEngine\"",
+            cfg->user, cfg->host, cfg->deploy_path, cfg->deploy_path);
     }
     return run_cmd(cmd);
 }
@@ -1962,6 +2242,9 @@ static int build_remote(void)
 
     /* Compile shaders (SPIR-V is platform-agnostic) */
     if (build_shaders() != 0) return 1;
+
+    /* Sync sysroot from Pi (cached — one-time download of /usr/include) */
+    if (build_remote_sync_sysroot(&cfg) != 0) return 1;
 
     /* Cross-compile for aarch64 */
     if (build_remote_compile() != 0) return 1;
@@ -2028,6 +2311,13 @@ int main(int argc, char **argv)
     }
     if (argc > 1 && strcmp(argv[1], "remote") == 0) {
         return build_remote();
+    }
+    if (argc > 1 && strcmp(argv[1], "remote-sync") == 0) {
+        remote_config cfg;
+        if (read_remote_config(&cfg) != 0) return 1;
+        /* Delete cached sysroot to force re-download */
+        remove(REMOTE_SYSROOT "/.synced");
+        return build_remote_sync_sysroot(&cfg);
     }
 #ifdef _WIN32
     if (argc > 1 && strcmp(argv[1], "profile") == 0) {
