@@ -925,6 +925,9 @@ typedef struct editor_state {
     int   prof_mouse_down;            /* left button held */
     int   prof_click;                 /* 1 on the frame left button was pressed */
     int   prof_hover_record;          /* hovered flat record index, -1 = none */
+    float prof_split_ratio;           /* tree/grid split: 0.1..0.9, default 0.35 */
+    int   prof_split_dragging;        /* 1 while dragging the split divider */
+    int   prof_split_cursor;          /* 1 when mouse is near split divider — show EW resize cursor */
 
     /* Scene tree input — accumulated per frame by event handler, consumed by scene_tree_layout */
     float scene_tree_mouse_x, scene_tree_mouse_y; /* mouse position in scene-tree-local coords */
@@ -974,6 +977,7 @@ typedef struct editor_state {
     int   menu_hover;              /* which submenu item is hovered (-1 = none) */
     float menu_mouse_x, menu_mouse_y; /* mouse position in window coords */
     int   menu_click;              /* 1 on the frame left button was pressed in menu bar area */
+    float menu_scroll_y;           /* scroll wheel delta for Clay debug view */
 
     /* Cache profiler panel — Clay render output */
     void *cache_prof_clay_ctx;
@@ -1004,6 +1008,7 @@ typedef struct editor_state {
     int   cpu_prof_minimap_dragging;
     float cpu_prof_minimap_drag_offset;
     struct arena *cpu_prof_text_arena;
+    struct arena *prof_text_arena;       /* per-frame scratch for profiler tree text */
     uint8_t cpu_prof_tree_collapsed[EDITOR_CPU_TREE_MAX_ZONES];
     uint64_t cpu_prof_tree_frame_id;
     char  cpu_prof_hover_zone_name[64];

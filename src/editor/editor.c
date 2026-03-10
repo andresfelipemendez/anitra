@@ -318,6 +318,15 @@ static const char *format_bytes(uint32_t bytes) {
     return buf;
 }
 
+/* Raw byte count as integer — for right-aligned tree columns */
+static const char *format_bytes_bare(uint32_t bytes) {
+    static char bufs[4][32];
+    static int idx = 0;
+    char *buf = bufs[idx++ & 3];
+    snprintf(buf, 32, "%u", bytes);
+    return buf;
+}
+
 /* Hovered record info — set by profiler_tree_arena, used by grid/block for highlighting */
 typedef struct HoverInfo {
     const char *tag;
@@ -389,7 +398,8 @@ static int count_arena_records(arena *a) {
 static void profiler_tree_arena(arena *a, int depth, int *row_id,
                                 uint32_t base_offset, HoverInfo *hover,
                                 int *color_id, int click, int *collapsed_nodes,
-                                const char *cpu_focus_tag) {
+                                const char *cpu_focus_tag,
+                                struct arena *text_arena) {
     uint32_t i;
     for (i = 0; i < a->record_count; i++) {
         arena_record *r = &a->records[i];
@@ -413,28 +423,25 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
             (*color_id)++;
         }
 
-        /* Build size string */
+        /* Build size + label strings in scratch arena */
         {
-            static char size_bufs[PROFILER_TREE_MAX_NODES][32];
-            static char label_bufs[PROFILER_TREE_MAX_NODES][48];
-            int bidx = rid % PROFILER_TREE_MAX_NODES;
+            char *size_buf = (char *)arena_alloc(text_arena, 32, 1, "prof_size");
+            char *label_buf = (char *)arena_alloc(text_arena, 48, 1, "prof_label");
+            if (!size_buf || !label_buf) { (*row_id)++; continue; }
+
             if (r->child) {
-                float child_pct = (r->child->capacity > 0)
-                    ? (100.0f * r->child->used / r->child->capacity) : 0.0f;
-                snprintf(size_bufs[bidx], sizeof(size_bufs[bidx]), "%s (%.0f%%)",
-                    format_bytes(r->child->capacity), (double)child_pct);
+                snprintf(size_buf, 32, "%s", format_bytes_bare(r->child->capacity));
             } else {
-                snprintf(size_bufs[bidx], sizeof(size_bufs[bidx]), "%s", format_bytes(r->size));
+                snprintf(size_buf, 32, "%s", format_bytes_bare(r->size));
             }
             /* Label: collapse arrow for parents, bullet for leaves */
             if (is_parent) {
                 const char *disclosure = (rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid])
                     ? UI_ICON_ARROW_RIGHT
                     : UI_ICON_ARROW_DOWN;
-                snprintf(label_bufs[bidx], sizeof(label_bufs[bidx]), "%s %s",
-                    disclosure, r->tag);
+                snprintf(label_buf, 48, "%s %s", disclosure, r->tag);
             } else {
-                snprintf(label_bufs[bidx], sizeof(label_bufs[bidx]), "%s", r->tag);
+                snprintf(label_buf, 48, "%s", r->tag);
             }
 
             /* Two-column row: [left: indent+swatch+tag GROW] [right: size FIT] */
@@ -471,22 +478,24 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
                     .cornerRadius = CLAY_CORNER_RADIUS(2)
                 }) {}
 
-                /* Tag name — grows to push size to the right */
+                /* Tag name — grows to push size to the right, clips overflow */
                 CLAY(CLAY_IDI("TLabel", (int32_t)rid), {
-                    .layout = { .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) } }
+                    .layout = { .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) } },
+                    .clip = { .horizontal = true }
                 }) {
-                    Clay_String tag_s = {false, (int32_t)strlen(label_bufs[bidx]), label_bufs[bidx]};
+                    Clay_String tag_s = {false, (int32_t)strlen(label_buf), label_buf};
                     CLAY_TEXT(tag_s, CLAY_TEXT_CONFIG({
                         .textColor = hovered ? ((Clay_Color){255, 255, 255, 255})
                                              : (cpu_match ? ((Clay_Color){220, 232, 255, 255})
                                                           : ((Clay_Color){200, 200, 200, 255})),
-                        .fontSize = UI_FONT_BODY
+                        .fontSize = UI_FONT_BODY,
+                        .wrapMode = CLAY_TEXT_WRAP_NONE
                     }));
                 }
 
                 /* Size — right-aligned */
                 {
-                    Clay_String sz_s = {false, (int32_t)strlen(size_bufs[bidx]), size_bufs[bidx]};
+                    Clay_String sz_s = {false, (int32_t)strlen(size_buf), size_buf};
                     CLAY_TEXT(sz_s, CLAY_TEXT_CONFIG({.textColor = {140, 140, 150, 255}, .fontSize = UI_FONT_BODY}));
                 }
             }
@@ -497,7 +506,8 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
         if (r->child && !(rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid])) {
             profiler_tree_arena(r->child, depth + 1, row_id,
                                 base_offset + r->offset + (uint32_t)sizeof(arena),
-                                hover, color_id, click, collapsed_nodes, cpu_focus_tag);
+                                hover, color_id, click, collapsed_nodes,
+                                cpu_focus_tag, text_arena);
         } else if (is_parent && rid < PROFILER_TREE_MAX_NODES && collapsed_nodes[rid]) {
             /* Skip children — advance both row_id and color_id to keep
                them stable regardless of expand/collapse state */
@@ -3589,6 +3599,9 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     if (!e->cpu_prof_text_arena && es->editor_arena) {
         e->cpu_prof_text_arena = arena_alloc_subarena(es->editor_arena, 16 * 1024, 16, "cpu_prof_text");
     }
+    if (!e->prof_text_arena && es->editor_arena) {
+        e->prof_text_arena = arena_alloc_subarena(es->editor_arena, 16 * 1024, 16, "prof_text");
+    }
 }
 
 /* ── Profiler Clay layout (produces render commands for externals GPU upload) ── */
@@ -3602,7 +3615,8 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     int win_w, win_h;
     arena *a;
     float used_pct;
-    static char title_buf[128];
+    float split;  /* tree/grid split ratio */
+    char *title_buf;
     static FlatRecord flat[PROFILER_MAX_FLAT_RECORDS];
     int flat_color, flat_count;
     uint32_t hover_offset, hover_size; /* byte range of hovered record (for range match) */
@@ -3656,14 +3670,43 @@ static void profiler_layout(game_state *gs, editor_state *es) {
         e->prof_scroll_y = 0; /* consumed */
     }
 
+    /* Split ratio: default 0.35, draggable */
+    if (e->prof_split_ratio < 0.05f) e->prof_split_ratio = 0.35f;
+    split = e->prof_split_ratio;
+    {
+        float divider_x = 12.0f + (float)(win_w - 24) * split; /* padding=12 each side */
+        float mx = e->prof_mouse_x;
+        int near_divider = (mx > divider_x - 6.0f && mx < divider_x + 6.0f);
+        e->prof_split_cursor = near_divider || e->prof_split_dragging;
+        if (e->prof_split_dragging) {
+            if (e->prof_mouse_down) {
+                float new_ratio = (mx - 12.0f) / (float)(win_w - 24);
+                if (new_ratio < 0.10f) new_ratio = 0.10f;
+                if (new_ratio > 0.90f) new_ratio = 0.90f;
+                e->prof_split_ratio = new_ratio;
+                split = new_ratio;
+            } else {
+                e->prof_split_dragging = 0;
+            }
+        } else if (near_divider && click) {
+            e->prof_split_dragging = 1;
+            click = 0; /* consume click so tree doesn't toggle */
+        }
+    }
+
     EDITOR_CPU_ZONE_BEGIN(e, "prof_clay_begin");
     Clay_BeginLayout();
     EDITOR_CPU_ZONE_END(e);
 
     a = gs->root_arena;
+    if (!e->prof_text_arena) return;
+    arena_reset(e->prof_text_arena);
+
     used_pct = (a->capacity > 0) ? (100.0f * a->used / a->capacity) : 0.0f;
 
-    snprintf(title_buf, sizeof(title_buf), "Memory Profiler    %s / %s  (%.1f%%)",
+    title_buf = (char *)arena_alloc(e->prof_text_arena, 128, 1, "prof_title");
+    if (!title_buf) return;
+    snprintf(title_buf, 128, "Memory Profiler    %s / %s  (%.1f%%)",
         format_bytes(a->used), format_bytes(a->capacity), (double)used_pct);
 
     /* Flatten records for grid */
@@ -3702,12 +3745,14 @@ static void profiler_layout(game_state *gs, editor_state *es) {
             Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
             CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = UI_FONT_BODY}));
             if (have_cpu_focus) {
-                static char focus_buf[96];
-                snprintf(focus_buf, sizeof(focus_buf), "CPU focus: %s",
-                         cpu_focus_tag ? cpu_focus_tag : "");
-                {
-                    Clay_String fs = {false, (int32_t)strlen(focus_buf), focus_buf};
-                    CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {176, 204, 245, 255}, .fontSize = UI_FONT_BODY}));
+                char *focus_buf = (char *)arena_alloc(e->prof_text_arena, 96, 1, "prof_focus");
+                if (focus_buf) {
+                    snprintf(focus_buf, 96, "CPU focus: %s",
+                             cpu_focus_tag ? cpu_focus_tag : "");
+                    {
+                        Clay_String fs = {false, (int32_t)strlen(focus_buf), focus_buf};
+                        CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {176, 204, 245, 255}, .fontSize = UI_FONT_BODY}));
+                    }
                 }
             }
         }
@@ -3720,10 +3765,10 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                 .layoutDirection = CLAY_LEFT_TO_RIGHT
             }
         }) {
-            /* ===== TREE PANEL (left, 35%) ===== */
+            /* ===== TREE PANEL (left, resizable) ===== */
             CLAY(CLAY_ID("PTree"), {
                 .layout = {
-                    .sizing = { CLAY_SIZING_PERCENT(0.35f), CLAY_SIZING_GROW({0}) },
+                    .sizing = { CLAY_SIZING_PERCENT(split), CLAY_SIZING_GROW({0}) },
                     .padding = CLAY_PADDING_ALL(8),
                     .childGap = 2,
                     .layoutDirection = CLAY_TOP_TO_BOTTOM
@@ -3748,23 +3793,26 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                     CLAY(CLAY_ID("PTreeContent"), {
                         .layout = {
                             .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .right = 20 },  /* space for scrollbar */
                             .childGap = 2,
                             .layoutDirection = CLAY_TOP_TO_BOTTOM
                         }
                     }) {
                         /* Arena root row */
                         {
-                            static char root_buf[64];
-                            snprintf(root_buf, sizeof(root_buf), "Arena  %s", format_bytes(a->capacity));
-                            {
-                                Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
-                                CLAY(CLAY_ID("TRootRow"), {
-                                    .layout = {
-                                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
-                                        .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                            char *root_buf = (char *)arena_alloc(e->prof_text_arena, 64, 1, "prof_root");
+                            if (root_buf) {
+                                snprintf(root_buf, 64, "Arena  %s", format_bytes(a->capacity));
+                                {
+                                    Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
+                                    CLAY(CLAY_ID("TRootRow"), {
+                                        .layout = {
+                                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                            .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                                        }
+                                    }) {
+                                        CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = UI_FONT_BODY}));
                                     }
-                                }) {
-                                    CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = UI_FONT_BODY}));
                                 }
                             }
                         }
@@ -3776,7 +3824,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
                             EDITOR_CPU_ZONE_BEGIN(e, "prof_tree_walk");
                             profiler_tree_arena(a, 1, &row_id, 0, &hi,
                                                 &tree_color, click, e->profiler_tree_collapsed,
-                                                cpu_focus_tag);
+                                                cpu_focus_tag, e->prof_text_arena);
                             EDITOR_CPU_ZONE_END(e);
                             hover_offset = hi.offset;
                             hover_size = hi.size;
@@ -5540,6 +5588,8 @@ static void menu_bar_layout(game_state *gs, editor_state *es) {
     Clay_SetCurrentContext(ctx);
     Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
     Clay_SetPointerState((Clay_Vector2){e->menu_mouse_x, e->menu_mouse_y}, (bool)e->menu_click);
+    Clay_UpdateScrollContainers(true, (Clay_Vector2){0, e->menu_scroll_y}, gs->dt);
+    e->menu_scroll_y = 0;
     Clay_SetDebugModeEnabled(true);
     Clay_BeginLayout();
 
@@ -7267,6 +7317,15 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             if (menu_bar_contains_point(d, evwin, ev->motion.x, ev->motion.y)) {
                 return 1;
             }
+            /* Consume motion over Clay debug view panel */
+            if (e->menu_bar_clay_ctx &&
+                ((Clay_Context *)e->menu_bar_clay_ctx)->debugModeEnabled) {
+                int ww = 0;
+                SDL_GetWindowSize(evwin, &ww, NULL);
+                if (ev->motion.x >= (float)(ww - (int)Clay__debugViewWidth)) {
+                    return 1;
+                }
+            }
         }
     }
 
@@ -7281,6 +7340,16 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->menu_open != MENU_NONE) {
                 e->menu_click = 1;
                 return 1;
+            }
+            /* Consume clicks over Clay debug view panel (right side) */
+            if (e->menu_bar_clay_ctx &&
+                ((Clay_Context *)e->menu_bar_clay_ctx)->debugModeEnabled) {
+                int ww = 0;
+                SDL_GetWindowSize(evwin, &ww, NULL);
+                if (ev->button.x >= (float)(ww - (int)Clay__debugViewWidth)) {
+                    e->menu_click = 1;
+                    return 1;
+                }
             }
         }
     }
@@ -7540,6 +7609,8 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 if (hit >= 0) {
                     DockNode *sn = &d->nodes[hit];
                     SDL_SetCursor(sn->type == DOCK_SPLIT_H ? cur_sizewe : cur_sizens);
+                } else if (e->prof_split_cursor) {
+                    SDL_SetCursor(cur_sizewe);
                 } else {
                     SDL_SetCursor(cur_default);
                 }
@@ -7881,6 +7952,14 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                     consumed = 1;
                 }
             }
+            /* Forward scroll to Clay debug view when active */
+            if (!consumed && e->menu_bar_clay_ctx &&
+                ((Clay_Context *)e->menu_bar_clay_ctx)->debugModeEnabled &&
+                d->windows[0].in_use &&
+                evwin == (SDL_Window *)d->windows[0].sdl_window) {
+                e->menu_scroll_y += ev->wheel.y * 3.0f;
+                consumed = 1;
+            }
             if (consumed) return 1;
         }
     }
@@ -7940,6 +8019,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT) {
         e->prof_mouse_down = 0;
+        e->prof_split_dragging = 0;
         e->scene_tree_mouse_down = 0;
         e->scene_tree_click_shift = 0;
         e->project_browser_mouse_down = 0;
