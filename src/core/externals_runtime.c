@@ -2050,6 +2050,9 @@ static int SDLCALL editor_thread_fn(void *userdata) {
         if (SDL_GetAtomicInt(&editor_thread_quit)) break;
 
         if (editor_thread_should_run) {
+            /* Disable cpu profiling — ring buffer is not thread-safe */
+            g_mem->editor.cpu_prof_thread_disabled = 1;
+
             /* 1. Run Clay layout (writes cmd_array / cmd_count fields in editor_state) */
             g_editor_update(&g_mem->game, &g_mem->editor);
 

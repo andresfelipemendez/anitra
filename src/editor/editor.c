@@ -211,7 +211,7 @@ static const Clay_Color profiler_colors[] = {
 static const int profiler_color_count = (int)(sizeof(profiler_colors) / sizeof(profiler_colors[0]));
 
 static int editor_cpu_prof_enabled(const editor_state *e) {
-    return e && cpu_prof_get_capture_enabled();
+    return e && !e->cpu_prof_thread_disabled && cpu_prof_get_capture_enabled();
 }
 
 static int dock_is_panel_visible(dock_state *d, PanelId pid) {
@@ -227,8 +227,8 @@ static int dock_is_panel_visible(dock_state *d, PanelId pid) {
 #define EDITOR_CPU_ZONE_END(es) do { \
     if (editor_cpu_prof_enabled((es))) cpu_zone_end(); \
 } while (0)
-#define EDITOR_CACHE_ZONE_BEGIN(name) do { cache_zone_begin(name); } while (0)
-#define EDITOR_CACHE_ZONE_END()       do { cache_zone_end(); } while (0)
+#define EDITOR_CACHE_ZONE_BEGIN(name) do { (void)0; } while (0)
+#define EDITOR_CACHE_ZONE_END()       do { (void)0; } while (0)
 
 static int cpu_zone_highlights_record_tag(const char *zone, const char *record_tag) {
     if (!zone || !zone[0] || !record_tag || !record_tag[0]) return 0;
@@ -7165,7 +7165,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     if (e->collab.connected || e->collab.connecting)
         collab_update(&e->collab, gs);
 
-    cache_prof_frame_reset();
+    if (!e->cpu_prof_thread_disabled) cache_prof_frame_reset();
     EDITOR_CPU_ZONE_BEGIN(e, "editor_update_frame");
     EDITOR_CACHE_ZONE_BEGIN("editor_update_frame");
 
