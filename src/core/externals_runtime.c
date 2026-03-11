@@ -2045,13 +2045,12 @@ static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
 /* ── Editor thread: Clay layout + vertex building ─────────────────── */
 static int SDLCALL editor_thread_fn(void *userdata) {
     (void)userdata;
+    cpu_prof_register_thread("editor");
     for (;;) {
         SDL_WaitSemaphore(editor_sem_start);
         if (SDL_GetAtomicInt(&editor_thread_quit)) break;
 
         if (editor_thread_should_run) {
-            /* Disable cpu profiling — ring buffer is not thread-safe */
-            g_mem->editor.cpu_prof_thread_disabled = 1;
 
             /* 1. Run Clay layout (writes cmd_array / cmd_count fields in editor_state) */
             g_editor_update(&g_mem->game, &g_mem->editor);
@@ -2629,10 +2628,13 @@ EXPORT int init_externals(const char *project_path) {
         return -1;
     }
 
-    /* Mailbox present mode — triple-buffered, never blocks on VSync */
+    /* Mailbox (triple-buffered, never blocks) on Windows;
+       FIFO (VSync) elsewhere — Pi GPU has limited VRAM, needs back-pressure */
+#ifdef _WIN32
     SDL_SetGPUSwapchainParameters(gpu_device, window,
         SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
         SDL_GPU_PRESENTMODE_MAILBOX);
+#endif
 
     /* Store swapchain format — used for offscreen textures + pipelines */
     offscreen_format = SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
@@ -3874,9 +3876,11 @@ EXPORT int update_externals(void) {
                     (int)(dock->cmd_screen_x - 300),
                     (int)(dock->cmd_screen_y - 12));
                 SDL_ClaimWindowForGPUDevice(gpu_device, new_win);
+#ifdef _WIN32
                 SDL_SetGPUSwapchainParameters(gpu_device, new_win,
                     SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
                     SDL_GPU_PRESENTMODE_MAILBOX);
+#endif
 
                 new_root = dock_alloc_node(dock);
                 if (new_root < 0) {
@@ -4998,8 +5002,13 @@ EXPORT int update_externals(void) {
 
             dw = (SDL_Window *)dock->windows[cwi].sdl_window;
             FRAME_CPU_ZONE_BEGIN("comp_acquire_swapchain");
+#ifdef _WIN32
             if (!SDL_AcquireGPUSwapchainTexture(cmd_buf, dw, &swapchain_texture, &sc_w, &sc_h)
                 || !swapchain_texture) { FRAME_CPU_ZONE_END(); continue; }
+#else
+            if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, dw, &swapchain_texture, &sc_w, &sc_h)
+                || !swapchain_texture) { FRAME_CPU_ZONE_END(); continue; }
+#endif
             FRAME_CPU_ZONE_END();
 
             memset(&comp_ct, 0, sizeof(comp_ct));

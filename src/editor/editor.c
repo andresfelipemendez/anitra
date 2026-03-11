@@ -211,7 +211,7 @@ static const Clay_Color profiler_colors[] = {
 static const int profiler_color_count = (int)(sizeof(profiler_colors) / sizeof(profiler_colors[0]));
 
 static int editor_cpu_prof_enabled(const editor_state *e) {
-    return e && !e->cpu_prof_thread_disabled && cpu_prof_get_capture_enabled();
+    return e && cpu_prof_get_capture_enabled();
 }
 
 static int dock_is_panel_visible(dock_state *d, PanelId pid) {
@@ -7165,7 +7165,7 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     if (e->collab.connected || e->collab.connecting)
         collab_update(&e->collab, gs);
 
-    if (!e->cpu_prof_thread_disabled) cache_prof_frame_reset();
+    cache_prof_frame_reset();
     EDITOR_CPU_ZONE_BEGIN(e, "editor_update_frame");
     EDITOR_CACHE_ZONE_BEGIN("editor_update_frame");
 
