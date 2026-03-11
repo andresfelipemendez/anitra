@@ -131,6 +131,13 @@ static editor_handle_event_fn g_editor_handle_event = NULL;
 static int cpu_prof_capture_paused = 0;
 static int cpu_prof_capture_was_paused = 0;
 
+/* ── Editor thread state ──────────────────────────────────────── */
+static SDL_Thread    *editor_thread         = NULL;
+static SDL_Semaphore *editor_sem_start      = NULL;
+static SDL_Semaphore *editor_sem_done       = NULL;
+static SDL_AtomicInt  editor_thread_quit;
+static int            editor_thread_should_run = 0;
+
 #define FRAME_CPU_ZONE_BEGIN(name) do { if (!cpu_prof_capture_paused) cpu_zone_begin(name); } while (0)
 #define FRAME_CPU_ZONE_END()       do { if (!cpu_prof_capture_paused) cpu_zone_end(); } while (0)
 #define FRAME_CACHE_ZONE_BEGIN(name) do { cache_zone_begin(name); } while (0)
@@ -1676,13 +1683,10 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
     int clip_depth = 0;
     int clipping = 0;
     float clip_x0 = 0, clip_y0 = 0, clip_x1 = 99999, clip_y1 = 99999;
-    int rect_cmd_count = 0, text_cmd_count = 0, hb_shape_count = 0;
-
     ui->rect_vert_count = 0;
     ui->font_vert_count = 0;
     ui->icon_font_vert_count = 0;
 
-    FRAME_CPU_ZONE_BEGIN("build_verts_loop");
     for (int32_t i = 0; i < commands.length; i++) {
         Clay_RenderCommand *cmd = Clay_RenderCommandArray_Get(&commands, i);
         Clay_BoundingBox box = cmd->boundingBox;
@@ -1742,7 +1746,6 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                 if (y1 > clip_y1) y1 = clip_y1;
                 if (x0 >= x1 || y0 >= y1) break; /* fully clipped */
             }
-            rect_cmd_count++;
 
             if (ui->rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
                 ui_rect_vertex *v = &ui->rect_verts[ui->rect_vert_count];
@@ -1774,7 +1777,6 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                     break;
             }
 
-            text_cmd_count++;
 
             if (has_icon) {
                 /* For icon-containing labels (Bootstrap icons + text), run a simple
@@ -1842,15 +1844,12 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                 float hb_to_px = font_size / (float)hb_scale;
                 unsigned int gi;
 
-                FRAME_CPU_ZONE_BEGIN("hb_shape");
                 hb_buffer_add_utf8(hb_buf, text->stringContents.chars,
                     (int)text->stringContents.length, 0, (int)text->stringContents.length);
                 hb_buffer_set_direction(hb_buf, HB_DIRECTION_LTR);
                 hb_buffer_set_script(hb_buf, HB_SCRIPT_LATIN);
                 hb_buffer_set_language(hb_buf, hb_language_from_string("en", -1));
                 hb_shape(hb_editor_font, hb_buf, NULL, 0);
-                hb_shape_count++;
-                FRAME_CPU_ZONE_END();
 
                 glyph_infos = hb_buffer_get_glyph_infos(hb_buf, &glyph_count);
                 glyph_positions = hb_buffer_get_glyph_positions(hb_buf, &glyph_count);
@@ -1900,8 +1899,6 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
             break;
         }
     }
-    FRAME_CPU_ZONE_END(); /* build_verts_loop */
-    (void)rect_cmd_count; (void)text_cmd_count; (void)hb_shape_count;
 }
 
 // Upload a UIRenderState's vertex arrays to GPU via copy pass
@@ -2045,52 +2042,105 @@ static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
 // Profiler helpers (tree_arena, flatten, format_bytes, colors) live in editor.c
 // ---------------------------------------------------------------------------
 
-// Profiler window: read pre-computed Clay commands from editor.dll, build + upload vertices
-static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    if (g->editor.profiler_cmd_count <= 0 || !g->editor.profiler_cmd_array)
-        return;
+/* ── Editor thread: Clay layout + vertex building ─────────────────── */
+static int SDLCALL editor_thread_fn(void *userdata) {
+    (void)userdata;
+    for (;;) {
+        SDL_WaitSemaphore(editor_sem_start);
+        if (SDL_GetAtomicInt(&editor_thread_quit)) break;
 
-    Clay_RenderCommandArray commands;
-    commands.length = g->editor.profiler_cmd_count;
-    commands.internalArray = (Clay_RenderCommand *)g->editor.profiler_cmd_array;
+        if (editor_thread_should_run) {
+            /* 1. Run Clay layout (writes cmd_array / cmd_count fields in editor_state) */
+            g_editor_update(&g_mem->game, &g_mem->editor);
 
-    FRAME_CPU_ZONE_BEGIN("prof_build_verts");
-    ui_build_vertices(&ui_profiler, commands);
-    FRAME_CPU_ZONE_END();
+            /* 2. Build vertices for all 8 editor panels */
+            editor_state *e = &g_mem->editor;
 
-    /* Append scrollbar thumb as an extra rect.
-       Uses scroll data + PTreeScroll bounding box exported by profiler_layout. */
-    {
-        editor_state *e = &g->editor;
-        float content_h = e->prof_content_h;
-        float container_h = e->prof_container_h;
-        float track_h = e->prof_track_h;
-        if (content_h > container_h && track_h > 0) {
-            float sb_w = 6;  /* scrollbar width in pixels */
-            float thumb_frac = container_h / content_h;
-            float thumb_h = track_h * thumb_frac;
-            if (thumb_h < 20) thumb_h = 20;
-            float scroll_frac = (-e->prof_scroll_pos) / (content_h - container_h);
-            float thumb_y = e->prof_track_y + scroll_frac * (track_h - thumb_h);
-            float sb_x = e->prof_track_x + e->prof_track_w - sb_w - 2;
+            if (e->profiler_cmd_count > 0 && e->profiler_cmd_array) {
+                Clay_RenderCommandArray cmds;
+                cmds.length = e->profiler_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->profiler_cmd_array;
+                ui_build_vertices(&ui_profiler, cmds);
+                /* Append scrollbar thumb */
+                {
+                    float content_h = e->prof_content_h;
+                    float container_h = e->prof_container_h;
+                    float track_h = e->prof_track_h;
+                    if (content_h > container_h && track_h > 0) {
+                        float sb_w = 6;
+                        float thumb_frac = container_h / content_h;
+                        float thumb_h = track_h * thumb_frac;
+                        if (thumb_h < 20) thumb_h = 20;
+                        float scroll_frac = (-e->prof_scroll_pos) / (content_h - container_h);
+                        float thumb_y = e->prof_track_y + scroll_frac * (track_h - thumb_h);
+                        float sb_x = e->prof_track_x + e->prof_track_w - sb_w - 2;
+                        if (ui_profiler.rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
+                            ui_rect_vertex *v = &ui_profiler.rect_verts[ui_profiler.rect_vert_count];
+                            float r = 1.0f, g2 = 1.0f, b = 1.0f, a = 0.3f;
+                            v[0] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
+                            v[1] = (ui_rect_vertex){sb_x + sb_w, thumb_y,          r, g2, b, a};
+                            v[2] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
+                            v[3] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
+                            v[4] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
+                            v[5] = (ui_rect_vertex){sb_x,        thumb_y + thumb_h, r, g2, b, a};
+                            ui_profiler.rect_vert_count += 6;
+                        }
+                    }
+                }
+            }
 
-            if (ui_profiler.rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
-                ui_rect_vertex *v = &ui_profiler.rect_verts[ui_profiler.rect_vert_count];
-                float r = 1.0f, g2 = 1.0f, b = 1.0f, a = 0.3f;
-                v[0] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
-                v[1] = (ui_rect_vertex){sb_x + sb_w, thumb_y,          r, g2, b, a};
-                v[2] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
-                v[3] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
-                v[4] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
-                v[5] = (ui_rect_vertex){sb_x,        thumb_y + thumb_h, r, g2, b, a};
-                ui_profiler.rect_vert_count += 6;
+            if (e->scene_tree_cmd_count > 0 && e->scene_tree_cmd_array) {
+                Clay_RenderCommandArray cmds;
+                cmds.length = e->scene_tree_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->scene_tree_cmd_array;
+                ui_build_vertices(&ui_scene_tree, cmds);
+            }
+            if (e->project_browser_cmd_count > 0 && e->project_browser_cmd_array) {
+                Clay_RenderCommandArray cmds;
+                cmds.length = e->project_browser_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->project_browser_cmd_array;
+                ui_build_vertices(&ui_project_browser, cmds);
+            }
+            if (e->inspector_cmd_count > 0 && e->inspector_cmd_array) {
+                Clay_RenderCommandArray cmds;
+                cmds.length = e->inspector_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->inspector_cmd_array;
+                ui_build_vertices(&ui_inspector, cmds);
+            }
+            if (e->cache_prof_cmd_count > 0 && e->cache_prof_cmd_array) {
+                Clay_RenderCommandArray cmds;
+                cmds.length = e->cache_prof_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->cache_prof_cmd_array;
+                ui_build_vertices(&ui_cache_profiler, cmds);
+            }
+            if (e->cpu_prof_cmd_count > 0 && e->cpu_prof_cmd_array) {
+                Clay_RenderCommandArray cmds;
+                cmds.length = e->cpu_prof_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->cpu_prof_cmd_array;
+                ui_build_vertices(&ui_cpu_profiler, cmds);
+            }
+            if (e->editor_toolbar_cmd_count > 0 && e->editor_toolbar_cmd_array) {
+                Clay_RenderCommandArray cmds;
+                cmds.length = e->editor_toolbar_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->editor_toolbar_cmd_array;
+                ui_build_vertices(&ui_editor_toolbar, cmds);
+            }
+            if (e->menu_bar_cmd_count > 0 && e->menu_bar_cmd_array) {
+                Clay_RenderCommandArray cmds;
+                cmds.length = e->menu_bar_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->menu_bar_cmd_array;
+                ui_build_vertices(&ui_menu_bar, cmds);
             }
         }
-    }
 
-    FRAME_CPU_ZONE_BEGIN("prof_ui_upload");
+        SDL_SignalSemaphore(editor_sem_done);
+    }
+    return 0;
+}
+
+// Profiler window: upload vertices (built by editor thread) + grid texture
+static void profiler_upload(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     ui_upload(cmd_buf, &ui_profiler);
-    FRAME_CPU_ZONE_END();
 
     /* Upload grid pixel buffer to GPU texture + build quad vertex buffer (copy pass) */
     FRAME_CPU_ZONE_BEGIN("prof_grid_gpu_upload");
@@ -2197,120 +2247,36 @@ static void profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     FRAME_CPU_ZONE_END(); /* prof_grid_gpu_upload */
 }
 
-static void scene_tree_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    if (g->editor.scene_tree_cmd_count <= 0 || !g->editor.scene_tree_cmd_array)
-        return;
-
-    Clay_RenderCommandArray commands;
-    commands.length = g->editor.scene_tree_cmd_count;
-    commands.internalArray = (Clay_RenderCommand *)g->editor.scene_tree_cmd_array;
-
-    FRAME_CPU_ZONE_BEGIN("st_build_verts");
-    ui_build_vertices(&ui_scene_tree, commands);
-    FRAME_CPU_ZONE_END();
-    FRAME_CPU_ZONE_BEGIN("st_upload");
+static void scene_tree_upload(SDL_GPUCommandBuffer *cmd_buf) {
     ui_upload(cmd_buf, &ui_scene_tree);
-    FRAME_CPU_ZONE_END();
 }
 
-static void project_browser_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    if (g->editor.project_browser_cmd_count <= 0 || !g->editor.project_browser_cmd_array)
-        return;
-
-    Clay_RenderCommandArray commands;
-    commands.length = g->editor.project_browser_cmd_count;
-    commands.internalArray = (Clay_RenderCommand *)g->editor.project_browser_cmd_array;
-
-    FRAME_CPU_ZONE_BEGIN("pb_build_verts");
-    ui_build_vertices(&ui_project_browser, commands);
-    FRAME_CPU_ZONE_END();
-    FRAME_CPU_ZONE_BEGIN("pb_upload");
+static void project_browser_upload(SDL_GPUCommandBuffer *cmd_buf) {
     ui_upload(cmd_buf, &ui_project_browser);
-    FRAME_CPU_ZONE_END();
 }
 
-static void inspector_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    if (g->editor.inspector_cmd_count <= 0 || !g->editor.inspector_cmd_array)
-        return;
-
-    Clay_RenderCommandArray commands;
-    commands.length = g->editor.inspector_cmd_count;
-    commands.internalArray = (Clay_RenderCommand *)g->editor.inspector_cmd_array;
-
-    FRAME_CPU_ZONE_BEGIN("insp_build_verts");
-    ui_build_vertices(&ui_inspector, commands);
-    FRAME_CPU_ZONE_END();
-    FRAME_CPU_ZONE_BEGIN("insp_upload");
+static void inspector_upload(SDL_GPUCommandBuffer *cmd_buf) {
     ui_upload(cmd_buf, &ui_inspector);
-    FRAME_CPU_ZONE_END();
 }
 
-static void cache_profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    if (g->editor.cache_prof_cmd_count <= 0 || !g->editor.cache_prof_cmd_array)
-        return;
-
-    Clay_RenderCommandArray commands;
-    commands.length = g->editor.cache_prof_cmd_count;
-    commands.internalArray = (Clay_RenderCommand *)g->editor.cache_prof_cmd_array;
-
-    FRAME_CPU_ZONE_BEGIN("cp_build_verts");
-    ui_build_vertices(&ui_cache_profiler, commands);
-    FRAME_CPU_ZONE_END();
-    FRAME_CPU_ZONE_BEGIN("cp_upload");
+static void cache_profiler_upload(SDL_GPUCommandBuffer *cmd_buf) {
     ui_upload(cmd_buf, &ui_cache_profiler);
-    FRAME_CPU_ZONE_END();
 }
 
-static void cpu_profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    if (g->editor.cpu_prof_cmd_count <= 0 || !g->editor.cpu_prof_cmd_array)
-        return;
-
-    Clay_RenderCommandArray commands;
-    commands.length = g->editor.cpu_prof_cmd_count;
-    commands.internalArray = (Clay_RenderCommand *)g->editor.cpu_prof_cmd_array;
-
-    FRAME_CPU_ZONE_BEGIN("cpuprof_build_verts");
-    ui_build_vertices(&ui_cpu_profiler, commands);
-    FRAME_CPU_ZONE_END();
-    FRAME_CPU_ZONE_BEGIN("cpuprof_upload");
+static void cpu_profiler_upload(SDL_GPUCommandBuffer *cmd_buf) {
     ui_upload(cmd_buf, &ui_cpu_profiler);
-    FRAME_CPU_ZONE_END();
 }
 
-static void editor_toolbar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    if (g->editor.editor_toolbar_cmd_count <= 0 || !g->editor.editor_toolbar_cmd_array)
-        return;
-
-    Clay_RenderCommandArray commands;
-    commands.length = g->editor.editor_toolbar_cmd_count;
-    commands.internalArray = (Clay_RenderCommand *)g->editor.editor_toolbar_cmd_array;
-
-    FRAME_CPU_ZONE_BEGIN("et_build_verts");
-    ui_build_vertices(&ui_editor_toolbar, commands);
-    FRAME_CPU_ZONE_END();
-    FRAME_CPU_ZONE_BEGIN("et_upload");
+static void editor_toolbar_upload(SDL_GPUCommandBuffer *cmd_buf) {
     ui_upload(cmd_buf, &ui_editor_toolbar);
-    FRAME_CPU_ZONE_END();
 }
 
-static void menu_bar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    if (g->editor.menu_bar_cmd_count <= 0 || !g->editor.menu_bar_cmd_array)
-        return;
-
-    Clay_RenderCommandArray commands;
-    commands.length = g->editor.menu_bar_cmd_count;
-    commands.internalArray = (Clay_RenderCommand *)g->editor.menu_bar_cmd_array;
-
-    FRAME_CPU_ZONE_BEGIN("mb_build_verts");
-    ui_build_vertices(&ui_menu_bar, commands);
-    FRAME_CPU_ZONE_END();
-    FRAME_CPU_ZONE_BEGIN("mb_upload");
+static void menu_bar_upload(SDL_GPUCommandBuffer *cmd_buf) {
     ui_upload(cmd_buf, &ui_menu_bar);
-    FRAME_CPU_ZONE_END();
 }
 
 /* Draw the grid texture quad during the profiler render pass.
-   All GPU resources were prepared by profiler_prepare (copy phase). */
+   All GPU resources were prepared by profiler_upload (copy phase). */
 static void grid_tex_draw(SDL_GPURenderPass *pass, SDL_GPUCommandBuffer *cmd_buf) {
     if (!grid_texture || !grid_tex_pipeline || !grid_quad_buf || !grid_sampler)
         return;
@@ -2659,6 +2625,11 @@ EXPORT int init_externals(const char *project_path) {
         fprintf(stderr, "SDL_ClaimWindowForGPUDevice failed: %s\n", SDL_GetError());
         return -1;
     }
+
+    /* Mailbox present mode — triple-buffered, never blocks on VSync */
+    SDL_SetGPUSwapchainParameters(gpu_device, window,
+        SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+        SDL_GPU_PRESENTMODE_MAILBOX);
 
     /* Store swapchain format — used for offscreen textures + pipelines */
     offscreen_format = SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
@@ -3521,6 +3492,12 @@ EXPORT int init_externals(const char *project_path) {
     /* Release pre-cached file data (no longer needed after boot) */
     precache_free();
 
+    /* Start editor thread (Clay layout + vertex building) */
+    editor_sem_start = SDL_CreateSemaphore(0);
+    editor_sem_done  = SDL_CreateSemaphore(1);  /* 1 = first frame wait passes immediately */
+    SDL_SetAtomicInt(&editor_thread_quit, 0);
+    editor_thread = SDL_CreateThread(editor_thread_fn, "editor", NULL);
+
     BOOT_PROF_END(TP_INIT_EXTERNALS);
     printf("Externals initialized (SDL3 GPU, docked panels)\n");
     return 1;
@@ -3894,6 +3871,9 @@ EXPORT int update_externals(void) {
                     (int)(dock->cmd_screen_x - 300),
                     (int)(dock->cmd_screen_y - 12));
                 SDL_ClaimWindowForGPUDevice(gpu_device, new_win);
+                SDL_SetGPUSwapchainParameters(gpu_device, new_win,
+                    SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                    SDL_GPU_PRESENTMODE_MAILBOX);
 
                 new_root = dock_alloc_node(dock);
                 if (new_root < 0) {
@@ -4070,15 +4050,10 @@ EXPORT int update_externals(void) {
 
     // --- Update editor (dock layout, panel rects, profiler Clay, camera, gizmo, lines) ---
     // Editor.dll now does: dock_layout for all windows, game panel size, editor panel
-    // rect, profiler Clay layout. Must run BEFORE ensure_panel_textures and ortho.
-    // Sync game Clay arena usage so profiler display is accurate
+    // Wait for editor thread to finish building vertices from previous frame
     BOOT_PROF_BEGIN(TP_FRAME_EDITOR_UPDATE);
-    FRAME_CPU_ZONE_BEGIN("editor_update");
-    FRAME_CACHE_ZONE_BEGIN("editor_update");
-    if (clay_arena_game && clay_context)
-        clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
-    if (g_mem->editor.open && g_editor_update) g_editor_update(&g_mem->game, &g_mem->editor);
-    FRAME_CACHE_ZONE_END();
+    FRAME_CPU_ZONE_BEGIN("wait_editor_done");
+    SDL_WaitSemaphore(editor_sem_done);
     FRAME_CPU_ZONE_END();
     BOOT_PROF_END(TP_FRAME_EDITOR_UPDATE);
 
@@ -4204,59 +4179,22 @@ EXPORT int update_externals(void) {
     ui_prepare_game(cmd_buf, g_mem);
     FRAME_CPU_ZONE_END();
 
-    // --- Prepare Clay UI: menu bar (main window overlay) ---
-    FRAME_CPU_ZONE_BEGIN("ui_prepare_menu_bar");
-    menu_bar_prepare(cmd_buf, g_mem);
-    FRAME_CPU_ZONE_END();
-
-    // --- Prepare Clay UI: profiler window (layout + upload) ---
-    if (panel_color[PANEL_PROFILER] && panel_visible[PANEL_PROFILER]) {
-        FRAME_CPU_ZONE_BEGIN("ui_prepare_profiler");
-        profiler_prepare(cmd_buf, g_mem);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- Prepare Clay UI: scene tree window (layout + upload) ---
-    if (panel_color[PANEL_SCENE_TREE] && panel_visible[PANEL_SCENE_TREE]) {
-        FRAME_CPU_ZONE_BEGIN("ui_prepare_scene_tree");
-        scene_tree_prepare(cmd_buf, g_mem);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- Prepare Clay UI: project browser window (layout + upload) ---
-    if (panel_color[PANEL_ASSETS] && panel_visible[PANEL_ASSETS]) {
-        FRAME_CPU_ZONE_BEGIN("ui_prepare_project_browser");
-        project_browser_prepare(cmd_buf, g_mem);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- Prepare Clay UI: inspector window (layout + upload) ---
-    if (panel_color[PANEL_INSPECTOR] && panel_visible[PANEL_INSPECTOR]) {
-        FRAME_CPU_ZONE_BEGIN("ui_prepare_inspector");
-        inspector_prepare(cmd_buf, g_mem);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- Prepare Clay UI: cache profiler (layout + upload) ---
-    if (panel_color[PANEL_CACHE_PROFILER] && panel_visible[PANEL_CACHE_PROFILER]) {
-        FRAME_CPU_ZONE_BEGIN("ui_prepare_cache_profiler");
-        cache_profiler_prepare(cmd_buf, g_mem);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- Prepare Clay UI: cpu profiler (layout + upload) ---
-    if (panel_color[PANEL_CPU_PROFILER] && panel_visible[PANEL_CPU_PROFILER]) {
-        FRAME_CPU_ZONE_BEGIN("ui_prepare_cpu_profiler");
-        cpu_profiler_prepare(cmd_buf, g_mem);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- Prepare Clay UI: editor viewport toolbar (layout + upload) ---
-    if (panel_color[PANEL_EDITOR] && panel_visible[PANEL_EDITOR]) {
-        FRAME_CPU_ZONE_BEGIN("ui_prepare_editor_toolbar");
-        editor_toolbar_prepare(cmd_buf, g_mem);
-        FRAME_CPU_ZONE_END();
-    }
+    // --- Upload editor panel vertices (built by editor thread) ---
+    menu_bar_upload(cmd_buf);
+    if (panel_color[PANEL_PROFILER] && panel_visible[PANEL_PROFILER])
+        profiler_upload(cmd_buf, g_mem);
+    if (panel_color[PANEL_SCENE_TREE] && panel_visible[PANEL_SCENE_TREE])
+        scene_tree_upload(cmd_buf);
+    if (panel_color[PANEL_ASSETS] && panel_visible[PANEL_ASSETS])
+        project_browser_upload(cmd_buf);
+    if (panel_color[PANEL_INSPECTOR] && panel_visible[PANEL_INSPECTOR])
+        inspector_upload(cmd_buf);
+    if (panel_color[PANEL_CACHE_PROFILER] && panel_visible[PANEL_CACHE_PROFILER])
+        cache_profiler_upload(cmd_buf);
+    if (panel_color[PANEL_CPU_PROFILER] && panel_visible[PANEL_CPU_PROFILER])
+        cpu_profiler_upload(cmd_buf);
+    if (panel_color[PANEL_EDITOR] && panel_visible[PANEL_EDITOR])
+        editor_toolbar_upload(cmd_buf);
 
     FRAME_CPU_ZONE_END(); /* ui_prepare_all */
 
@@ -5057,7 +4995,7 @@ EXPORT int update_externals(void) {
 
             dw = (SDL_Window *)dock->windows[cwi].sdl_window;
             FRAME_CPU_ZONE_BEGIN("comp_acquire_swapchain");
-            if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, dw, &swapchain_texture, &sc_w, &sc_h)
+            if (!SDL_AcquireGPUSwapchainTexture(cmd_buf, dw, &swapchain_texture, &sc_w, &sc_h)
                 || !swapchain_texture) { FRAME_CPU_ZONE_END(); continue; }
             FRAME_CPU_ZONE_END();
 
@@ -5133,6 +5071,12 @@ EXPORT int update_externals(void) {
     FRAME_CPU_ZONE_END();
     BOOT_PROF_END(TP_FRAME_GPU_SUBMIT);
 
+    /* Signal editor thread to start Clay layout + vertex building for next frame */
+    editor_thread_should_run = (g_mem->editor.open && g_editor_update != NULL);
+    if (clay_arena_game && clay_context)
+        clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
+    SDL_SignalSemaphore(editor_sem_start);
+
     /* End boot profiler after first frame is submitted to GPU */
     if (g_boot_prof) {
         BOOT_PROF_END(TP_FIRST_FRAME);
@@ -5186,6 +5130,16 @@ EXPORT int update_externals(void) {
 // ---------------------------------------------------------------------------
 
 EXPORT void end_externals(void) {
+    /* Stop editor thread */
+    SDL_SetAtomicInt(&editor_thread_quit, 1);
+    SDL_SignalSemaphore(editor_sem_start);
+    SDL_WaitThread(editor_thread, NULL);
+    SDL_DestroySemaphore(editor_sem_start);
+    SDL_DestroySemaphore(editor_sem_done);
+    editor_thread = NULL;
+    editor_sem_start = NULL;
+    editor_sem_done = NULL;
+
     dock_state *dock = (dock_state *)g_mem->editor.dock;
     // Release textures
     for (int i = 0; i < TEXTURE_COUNT; i++) {
