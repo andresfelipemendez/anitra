@@ -1612,6 +1612,16 @@ typedef struct UIRenderState {
     SDL_GPUBuffer *rect_gpu_buf;
     SDL_GPUBuffer *font_gpu_buf;
     SDL_GPUBuffer *icon_font_gpu_buf;
+    /* Persistent buffer capacities (bytes) — only reallocate when size grows */
+    Uint32         rect_gpu_cap;
+    Uint32         font_gpu_cap;
+    Uint32         icon_font_gpu_cap;
+    SDL_GPUTransferBuffer *rect_xfer;
+    SDL_GPUTransferBuffer *font_xfer;
+    SDL_GPUTransferBuffer *icon_font_xfer;
+    Uint32         rect_xfer_cap;
+    Uint32         font_xfer_cap;
+    Uint32         icon_font_xfer_cap;
 } UIRenderState;
 
 static UIRenderState ui_game = {0};
@@ -1666,11 +1676,13 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
     int clip_depth = 0;
     int clipping = 0;
     float clip_x0 = 0, clip_y0 = 0, clip_x1 = 99999, clip_y1 = 99999;
+    int rect_cmd_count = 0, text_cmd_count = 0, hb_shape_count = 0;
 
     ui->rect_vert_count = 0;
     ui->font_vert_count = 0;
     ui->icon_font_vert_count = 0;
 
+    FRAME_CPU_ZONE_BEGIN("build_verts_loop");
     for (int32_t i = 0; i < commands.length; i++) {
         Clay_RenderCommand *cmd = Clay_RenderCommandArray_Get(&commands, i);
         Clay_BoundingBox box = cmd->boundingBox;
@@ -1730,6 +1742,7 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                 if (y1 > clip_y1) y1 = clip_y1;
                 if (x0 >= x1 || y0 >= y1) break; /* fully clipped */
             }
+            rect_cmd_count++;
 
             if (ui->rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
                 ui_rect_vertex *v = &ui->rect_verts[ui->rect_vert_count];
@@ -1760,6 +1773,8 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                     box.y + box.height < clip_y0 || box.y > clip_y1)
                     break;
             }
+
+            text_cmd_count++;
 
             if (has_icon) {
                 /* For icon-containing labels (Bootstrap icons + text), run a simple
@@ -1827,12 +1842,15 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                 float hb_to_px = font_size / (float)hb_scale;
                 unsigned int gi;
 
+                FRAME_CPU_ZONE_BEGIN("hb_shape");
                 hb_buffer_add_utf8(hb_buf, text->stringContents.chars,
                     (int)text->stringContents.length, 0, (int)text->stringContents.length);
                 hb_buffer_set_direction(hb_buf, HB_DIRECTION_LTR);
                 hb_buffer_set_script(hb_buf, HB_SCRIPT_LATIN);
                 hb_buffer_set_language(hb_buf, hb_language_from_string("en", -1));
                 hb_shape(hb_editor_font, hb_buf, NULL, 0);
+                hb_shape_count++;
+                FRAME_CPU_ZONE_END();
 
                 glyph_infos = hb_buffer_get_glyph_infos(hb_buf, &glyph_count);
                 glyph_positions = hb_buffer_get_glyph_positions(hb_buf, &glyph_count);
@@ -1882,90 +1900,96 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
             break;
         }
     }
+    FRAME_CPU_ZONE_END(); /* build_verts_loop */
+    (void)rect_cmd_count; (void)text_cmd_count; (void)hb_shape_count;
 }
 
 // Upload a UIRenderState's vertex arrays to GPU via copy pass
+/* Ensure a persistent GPU buffer has at least `need` bytes.
+   Returns 1 if the buffer was (re)created, 0 if reused. */
+static int ui_ensure_gpu_buf(SDL_GPUBuffer **buf, Uint32 *cap, Uint32 need) {
+    if (*buf && *cap >= need) return 0;
+    if (*buf) SDL_ReleaseGPUBuffer(gpu_device, *buf);
+    SDL_GPUBufferCreateInfo bi = {0};
+    bi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+    bi.size = need;
+    *buf = SDL_CreateGPUBuffer(gpu_device, &bi);
+    *cap = need;
+    return 1;
+}
+
+/* Ensure a persistent transfer buffer has at least `need` bytes. */
+static void ui_ensure_xfer_buf(SDL_GPUTransferBuffer **xfer, Uint32 *cap, Uint32 need) {
+    if (*xfer && *cap >= need) return;
+    if (*xfer) SDL_ReleaseGPUTransferBuffer(gpu_device, *xfer);
+    SDL_GPUTransferBufferCreateInfo ti = {0};
+    ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    ti.size = need;
+    *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &ti);
+    *cap = need;
+}
+
 static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
-    if (ui->rect_vert_count > 0) {
-        Uint32 buf_size = (Uint32)(ui->rect_vert_count * sizeof(ui_rect_vertex));
+    int has_rects  = ui->rect_vert_count > 0;
+    int has_font   = ui->font_vert_count > 0;
+    int has_icons  = ui->icon_font_vert_count > 0;
+    if (!has_rects && !has_font && !has_icons) return;
 
-        SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
-        tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tbuf_info.size = buf_size;
-        SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
-        void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-        memcpy(mapped, ui->rect_verts, buf_size);
-        SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
+    FRAME_CPU_ZONE_BEGIN("ui_upload_stage");
 
-        SDL_GPUBufferCreateInfo gbuf_info = {0};
-        gbuf_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-        gbuf_info.size = buf_size;
-        ui->rect_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &gbuf_info);
-
-        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd_buf);
-        SDL_GPUTransferBufferLocation src = {0};
-        src.transfer_buffer = xfer;
-        SDL_GPUBufferRegion dst = {0};
-        dst.buffer = ui->rect_gpu_buf;
-        dst.size = buf_size;
-        SDL_UploadToGPUBuffer(copy, &src, &dst, false);
-        SDL_EndGPUCopyPass(copy);
-        SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
+    /* Stage data into persistent transfer buffers (cycle=true for safe re-map) */
+    if (has_rects) {
+        Uint32 sz = (Uint32)(ui->rect_vert_count * sizeof(ui_rect_vertex));
+        ui_ensure_xfer_buf(&ui->rect_xfer, &ui->rect_xfer_cap, sz);
+        ui_ensure_gpu_buf(&ui->rect_gpu_buf, &ui->rect_gpu_cap, sz);
+        void *m = SDL_MapGPUTransferBuffer(gpu_device, ui->rect_xfer, true);
+        memcpy(m, ui->rect_verts, sz);
+        SDL_UnmapGPUTransferBuffer(gpu_device, ui->rect_xfer);
+    }
+    if (has_font) {
+        Uint32 sz = (Uint32)(ui->font_vert_count * sizeof(font_vertex));
+        ui_ensure_xfer_buf(&ui->font_xfer, &ui->font_xfer_cap, sz);
+        ui_ensure_gpu_buf(&ui->font_gpu_buf, &ui->font_gpu_cap, sz);
+        void *m = SDL_MapGPUTransferBuffer(gpu_device, ui->font_xfer, true);
+        memcpy(m, ui->font_verts, sz);
+        SDL_UnmapGPUTransferBuffer(gpu_device, ui->font_xfer);
+    }
+    if (has_icons) {
+        Uint32 sz = (Uint32)(ui->icon_font_vert_count * sizeof(font_vertex));
+        ui_ensure_xfer_buf(&ui->icon_font_xfer, &ui->icon_font_xfer_cap, sz);
+        ui_ensure_gpu_buf(&ui->icon_font_gpu_buf, &ui->icon_font_gpu_cap, sz);
+        void *m = SDL_MapGPUTransferBuffer(gpu_device, ui->icon_font_xfer, true);
+        memcpy(m, ui->icon_font_verts, sz);
+        SDL_UnmapGPUTransferBuffer(gpu_device, ui->icon_font_xfer);
     }
 
-    if (ui->font_vert_count > 0) {
-        Uint32 buf_size = (Uint32)(ui->font_vert_count * sizeof(font_vertex));
+    FRAME_CPU_ZONE_END();
 
-        SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
-        tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tbuf_info.size = buf_size;
-        SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
-        void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-        memcpy(mapped, ui->font_verts, buf_size);
-        SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
-
-        SDL_GPUBufferCreateInfo gbuf_info = {0};
-        gbuf_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-        gbuf_info.size = buf_size;
-        ui->font_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &gbuf_info);
-
+    /* Single copy pass for all buffer types */
+    FRAME_CPU_ZONE_BEGIN("ui_upload_copy");
+    {
         SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd_buf);
-        SDL_GPUTransferBufferLocation src = {0};
-        src.transfer_buffer = xfer;
-        SDL_GPUBufferRegion dst = {0};
-        dst.buffer = ui->font_gpu_buf;
-        dst.size = buf_size;
-        SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+        if (has_rects) {
+            Uint32 sz = (Uint32)(ui->rect_vert_count * sizeof(ui_rect_vertex));
+            SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = ui->rect_xfer;
+            SDL_GPUBufferRegion dst = {0}; dst.buffer = ui->rect_gpu_buf; dst.size = sz;
+            SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+        }
+        if (has_font) {
+            Uint32 sz = (Uint32)(ui->font_vert_count * sizeof(font_vertex));
+            SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = ui->font_xfer;
+            SDL_GPUBufferRegion dst = {0}; dst.buffer = ui->font_gpu_buf; dst.size = sz;
+            SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+        }
+        if (has_icons) {
+            Uint32 sz = (Uint32)(ui->icon_font_vert_count * sizeof(font_vertex));
+            SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = ui->icon_font_xfer;
+            SDL_GPUBufferRegion dst = {0}; dst.buffer = ui->icon_font_gpu_buf; dst.size = sz;
+            SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+        }
         SDL_EndGPUCopyPass(copy);
-        SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
     }
-
-    if (ui->icon_font_vert_count > 0) {
-        Uint32 buf_size = (Uint32)(ui->icon_font_vert_count * sizeof(font_vertex));
-
-        SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
-        tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tbuf_info.size = buf_size;
-        SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
-        void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-        memcpy(mapped, ui->icon_font_verts, buf_size);
-        SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
-
-        SDL_GPUBufferCreateInfo gbuf_info = {0};
-        gbuf_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-        gbuf_info.size = buf_size;
-        ui->icon_font_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &gbuf_info);
-
-        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd_buf);
-        SDL_GPUTransferBufferLocation src = {0};
-        src.transfer_buffer = xfer;
-        SDL_GPUBufferRegion dst = {0};
-        dst.buffer = ui->icon_font_gpu_buf;
-        dst.size = buf_size;
-        SDL_UploadToGPUBuffer(copy, &src, &dst, false);
-        SDL_EndGPUCopyPass(copy);
-        SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
-    }
+    FRAME_CPU_ZONE_END();
 }
 
 // Game window: run Clay layout for game UI overlay, build + upload vertices
@@ -2181,8 +2205,12 @@ static void scene_tree_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.length = g->editor.scene_tree_cmd_count;
     commands.internalArray = (Clay_RenderCommand *)g->editor.scene_tree_cmd_array;
 
+    FRAME_CPU_ZONE_BEGIN("st_build_verts");
     ui_build_vertices(&ui_scene_tree, commands);
+    FRAME_CPU_ZONE_END();
+    FRAME_CPU_ZONE_BEGIN("st_upload");
     ui_upload(cmd_buf, &ui_scene_tree);
+    FRAME_CPU_ZONE_END();
 }
 
 static void project_browser_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
@@ -2193,8 +2221,12 @@ static void project_browser_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.length = g->editor.project_browser_cmd_count;
     commands.internalArray = (Clay_RenderCommand *)g->editor.project_browser_cmd_array;
 
+    FRAME_CPU_ZONE_BEGIN("pb_build_verts");
     ui_build_vertices(&ui_project_browser, commands);
+    FRAME_CPU_ZONE_END();
+    FRAME_CPU_ZONE_BEGIN("pb_upload");
     ui_upload(cmd_buf, &ui_project_browser);
+    FRAME_CPU_ZONE_END();
 }
 
 static void inspector_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
@@ -2205,8 +2237,12 @@ static void inspector_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.length = g->editor.inspector_cmd_count;
     commands.internalArray = (Clay_RenderCommand *)g->editor.inspector_cmd_array;
 
+    FRAME_CPU_ZONE_BEGIN("insp_build_verts");
     ui_build_vertices(&ui_inspector, commands);
+    FRAME_CPU_ZONE_END();
+    FRAME_CPU_ZONE_BEGIN("insp_upload");
     ui_upload(cmd_buf, &ui_inspector);
+    FRAME_CPU_ZONE_END();
 }
 
 static void cache_profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
@@ -2217,8 +2253,12 @@ static void cache_profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.length = g->editor.cache_prof_cmd_count;
     commands.internalArray = (Clay_RenderCommand *)g->editor.cache_prof_cmd_array;
 
+    FRAME_CPU_ZONE_BEGIN("cp_build_verts");
     ui_build_vertices(&ui_cache_profiler, commands);
+    FRAME_CPU_ZONE_END();
+    FRAME_CPU_ZONE_BEGIN("cp_upload");
     ui_upload(cmd_buf, &ui_cache_profiler);
+    FRAME_CPU_ZONE_END();
 }
 
 static void cpu_profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
@@ -2229,8 +2269,12 @@ static void cpu_profiler_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.length = g->editor.cpu_prof_cmd_count;
     commands.internalArray = (Clay_RenderCommand *)g->editor.cpu_prof_cmd_array;
 
+    FRAME_CPU_ZONE_BEGIN("cpuprof_build_verts");
     ui_build_vertices(&ui_cpu_profiler, commands);
+    FRAME_CPU_ZONE_END();
+    FRAME_CPU_ZONE_BEGIN("cpuprof_upload");
     ui_upload(cmd_buf, &ui_cpu_profiler);
+    FRAME_CPU_ZONE_END();
 }
 
 static void editor_toolbar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
@@ -2241,8 +2285,12 @@ static void editor_toolbar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.length = g->editor.editor_toolbar_cmd_count;
     commands.internalArray = (Clay_RenderCommand *)g->editor.editor_toolbar_cmd_array;
 
+    FRAME_CPU_ZONE_BEGIN("et_build_verts");
     ui_build_vertices(&ui_editor_toolbar, commands);
+    FRAME_CPU_ZONE_END();
+    FRAME_CPU_ZONE_BEGIN("et_upload");
     ui_upload(cmd_buf, &ui_editor_toolbar);
+    FRAME_CPU_ZONE_END();
 }
 
 static void menu_bar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
@@ -2253,8 +2301,12 @@ static void menu_bar_prepare(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     commands.length = g->editor.menu_bar_cmd_count;
     commands.internalArray = (Clay_RenderCommand *)g->editor.menu_bar_cmd_array;
 
+    FRAME_CPU_ZONE_BEGIN("mb_build_verts");
     ui_build_vertices(&ui_menu_bar, commands);
+    FRAME_CPU_ZONE_END();
+    FRAME_CPU_ZONE_BEGIN("mb_upload");
     ui_upload(cmd_buf, &ui_menu_bar);
+    FRAME_CPU_ZONE_END();
 }
 
 /* Draw the grid texture quad during the profiler render pass.
@@ -2324,10 +2376,21 @@ static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_bu
 }
 
 // Cleanup per-frame UI GPU buffers for one window
+/* Per-frame release: no-op — buffers are now persistent across frames */
 static void ui_release_buffers(UIRenderState *ui) {
+    (void)ui;
+}
+
+/* Full cleanup on shutdown or hot-reload */
+static void ui_destroy_buffers(UIRenderState *ui) {
     if (ui->rect_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->rect_gpu_buf); ui->rect_gpu_buf = NULL; }
     if (ui->font_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->font_gpu_buf); ui->font_gpu_buf = NULL; }
     if (ui->icon_font_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->icon_font_gpu_buf); ui->icon_font_gpu_buf = NULL; }
+    if (ui->rect_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->rect_xfer); ui->rect_xfer = NULL; }
+    if (ui->font_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->font_xfer); ui->font_xfer = NULL; }
+    if (ui->icon_font_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->icon_font_xfer); ui->icon_font_xfer = NULL; }
+    ui->rect_gpu_cap = ui->font_gpu_cap = ui->icon_font_gpu_cap = 0;
+    ui->rect_xfer_cap = ui->font_xfer_cap = ui->icon_font_xfer_cap = 0;
 }
 
 // Forward declarations (defined after init_externals, needed by TCC)
@@ -4134,7 +4197,9 @@ EXPORT int update_externals(void) {
         }
     }
 
-    // --- Prepare Clay UI: game window (layout + upload) ---
+    // --- Prepare all Clay UI panels (vertex build + GPU upload) ---
+    FRAME_CPU_ZONE_BEGIN("ui_prepare_all");
+
     FRAME_CPU_ZONE_BEGIN("ui_prepare_game");
     ui_prepare_game(cmd_buf, g_mem);
     FRAME_CPU_ZONE_END();
@@ -4192,6 +4257,8 @@ EXPORT int update_externals(void) {
         editor_toolbar_prepare(cmd_buf, g_mem);
         FRAME_CPU_ZONE_END();
     }
+
+    FRAME_CPU_ZONE_END(); /* ui_prepare_all */
 
     // --- Upload editor 3D lines (populated by editor.dll) ---
     SDL_GPUBuffer *editor_line_gpu_buf = NULL;
@@ -4253,11 +4320,13 @@ EXPORT int update_externals(void) {
 
             if (!dock->windows[cwi].in_use || !dock->windows[cwi].sdl_window) continue;
 
+            FRAME_CPU_ZONE_BEGIN("comp_count_quads");
             total_quads_count = count_tree_quads(dock, dock->windows[cwi].root_node);
             /* Reserve +1 quad for drop zone overlay if drag active on this window */
             if (dock->drag.phase == DRAG_ACTIVE && dock->drag.hover_window == cwi &&
                 dock->drag.hover_node >= 0 && dock->drag.hover_zone != DROP_NONE)
                 total_quads_count++;
+            FRAME_CPU_ZONE_END();
             if (total_quads_count <= 0) continue;
 
             SDL_GetWindowSize((SDL_Window *)dock->windows[cwi].sdl_window, &ww, &wh);
@@ -4265,6 +4334,7 @@ EXPORT int update_externals(void) {
             total_quads = (Uint32)total_quads_count;
             comp_buf_size = total_quads * 6 * (Uint32)sizeof(composite_vertex);
 
+            FRAME_CPU_ZONE_BEGIN("comp_build_quads");
             memset(&comp_tbi, 0, sizeof(comp_tbi));
             comp_tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
             comp_tbi.size = comp_buf_size;
@@ -4284,7 +4354,9 @@ EXPORT int update_externals(void) {
             comp_data[cwi].quad_count = qcount;
 
             SDL_UnmapGPUTransferBuffer(gpu_device, comp_transfer);
+            FRAME_CPU_ZONE_END();
 
+            FRAME_CPU_ZONE_BEGIN("comp_upload");
             memset(&comp_bi, 0, sizeof(comp_bi));
             comp_bi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
             comp_bi.size = comp_buf_size;
@@ -4299,6 +4371,7 @@ EXPORT int update_externals(void) {
             SDL_UploadToGPUBuffer(comp_copy, &comp_src, &comp_dst, false);
             SDL_EndGPUCopyPass(comp_copy);
             SDL_ReleaseGPUTransferBuffer(gpu_device, comp_transfer);
+            FRAME_CPU_ZONE_END();
         }
     }
     FRAME_CPU_ZONE_END();
@@ -4983,8 +5056,10 @@ EXPORT int update_externals(void) {
             if (comp_data[cwi].quad_count <= 0 || !comp_data[cwi].gpu_buf) continue;
 
             dw = (SDL_Window *)dock->windows[cwi].sdl_window;
+            FRAME_CPU_ZONE_BEGIN("comp_acquire_swapchain");
             if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, dw, &swapchain_texture, &sc_w, &sc_h)
-                || !swapchain_texture) continue;
+                || !swapchain_texture) { FRAME_CPU_ZONE_END(); continue; }
+            FRAME_CPU_ZONE_END();
 
             memset(&comp_ct, 0, sizeof(comp_ct));
             comp_ct.texture = swapchain_texture;
@@ -4994,6 +5069,7 @@ EXPORT int update_externals(void) {
 
             comp_pass = SDL_BeginGPURenderPass(cmd_buf, &comp_ct, 1, NULL);
 
+            FRAME_CPU_ZONE_BEGIN("comp_draw_quads");
             if (composite_pipeline) {
                 int qi;
                 SDL_GPUBufferBinding comp_vb;
@@ -5025,6 +5101,7 @@ EXPORT int update_externals(void) {
                     SDL_DrawGPUPrimitives(comp_pass, 6, 1, (Uint32)(qi * 6), 0);
                 }
             }
+            FRAME_CPU_ZONE_END();
 
             if (cwi == 0 && (ui_menu_bar.rect_vert_count > 0 ||
                              ui_menu_bar.font_vert_count > 0 ||
@@ -5238,6 +5315,17 @@ EXPORT void end_externals(void) {
             }
         }
     }
+
+    /* Release persistent UI buffers before GPU device is destroyed */
+    ui_destroy_buffers(&ui_game);
+    ui_destroy_buffers(&ui_profiler);
+    ui_destroy_buffers(&ui_scene_tree);
+    ui_destroy_buffers(&ui_project_browser);
+    ui_destroy_buffers(&ui_inspector);
+    ui_destroy_buffers(&ui_menu_bar);
+    ui_destroy_buffers(&ui_editor_toolbar);
+    ui_destroy_buffers(&ui_cache_profiler);
+    ui_destroy_buffers(&ui_cpu_profiler);
 
     /* Shutdown profilers */
     cache_prof_shutdown();
