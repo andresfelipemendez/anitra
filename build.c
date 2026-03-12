@@ -87,7 +87,7 @@
     "-Ilib/SDL3/include -Ilib/SDL_shadercross/include " \
     "-Ilib/SDL_shadercross/external/SPIRV-Cross " \
     "-Ilib/SDL_shadercross/external/prebuilt/inc " \
-    "-Ilib/remotery " \
+    "-Ilib/tracy/public " \
     "-Ilib/harfbuzz-src/src " \
     "-Ilib/clay " \
     "-Ilib/cgltf"
@@ -919,10 +919,52 @@ static int generate_migration_code(void) {
 }
 
 /* ------- core (DLL) ----------------------------------------------------- */
+static int build_tracy(void)
+{
+    char cmd[CMD_MAX];
+    printf("\n=== Building TracyClient ===\n");
+    if (ensure_dirs() != 0) return 1;
+
+#ifdef _WIN32
+    /* Build TracyClient as a DLL (TCC can't link COFF .obj files) */
+    snprintf(cmd, sizeof(cmd),
+        "%s -shared -DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_EXPORTS"
+        " -Ilib/tracy/public"
+        " lib/tracy/public/TracyClient.cpp"
+        " -lws2_32 -ladvapi32 -ldbghelp"
+        " -o " DEBUG_DIR "/TracyClient.dll",
+        tool_cxx);
+    printf(">> %s\n", cmd);
+    fflush(stdout);
+    if (system(cmd) != 0) {
+        printf("!! TracyClient build failed.\n");
+        return 1;
+    }
+    generate_def_from_dll(DEBUG_DIR "/TracyClient.dll",
+                          DEBUG_DIR "/TracyClient.def", "TracyClient.dll");
+#else
+    /* On Linux/macOS, build as shared object */
+    snprintf(cmd, sizeof(cmd),
+        "%s -shared -fPIC -DTRACY_ENABLE -DTRACY_ON_DEMAND"
+        " -Ilib/tracy/public"
+        " lib/tracy/public/TracyClient.cpp"
+        " -o " DEBUG_DIR "/" DLL_PREFIX "TracyClient" DLL_EXT,
+        tool_cxx);
+    printf(">> %s\n", cmd);
+    fflush(stdout);
+    if (system(cmd) != 0) {
+        printf("!! TracyClient build failed.\n");
+        return 1;
+    }
+#endif
+    return 0;
+}
+
 static int build_core(void)
 {
     printf("\n=== Building core ===\n");
     if (ensure_dirs() != 0) return 1;
+    if (build_tracy() != 0) return 1;
     printf(">> " TCC_CORE_CMD "\n");
     fflush(stdout);
     if (system(TCC_CORE_CMD) != 0) {

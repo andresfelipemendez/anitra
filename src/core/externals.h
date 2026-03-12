@@ -39,7 +39,7 @@ DECLARE_FUNC_VOID_pEDITOR_DESTROY(assign_editor_destroy)
 DECLARE_FUNC_VOID_pEDITOR_UPDATE(assign_editor_update)
 DECLARE_FUNC_VOID_pEDITOR_HANDLE_EVENT(assign_editor_handle_event)
 
-/* Profiler zone wrappers (thin forwarding to Remotery/cpu_profiler) */
+/* Profiler zone wrappers (thin forwarding to Tracy/cpu_profiler) */
 EXPORT void ext_cache_zone_begin(const char *name);
 EXPORT void ext_cache_zone_end(void);
 EXPORT void ext_cpu_zone_begin(const char *name);

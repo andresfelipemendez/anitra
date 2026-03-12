@@ -47,17 +47,17 @@ static int watch_and_rebuild(void);
 #define TCC_CORE_CMD \
     ".\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/core.dll" \
-    " -DCPU_PROF_USE_REMOTERY -DRMT_USE_OPENGL=0 -DRMT_USE_D3D11=0 -DRMT_USE_METAL=0" \
+    " -DCPU_PROF_USE_TRACY -DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_IMPORTS" \
     " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include -Ilib/SDL_shadercross/include" \
-    " -Ilib/remotery -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf" \
+    " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf" \
     " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof" \
     " src/core/core.c" \
     " src/core/loadlibrary_windows.c" \
     " src/core/externals_runtime.c src/core/externals.c" \
     " src/project.c lib/sqlite/sqlite3.c" \
-    " lib/remotery/Remotery.c lib/remotery/rmt_tcc_compat.c" \
+    " build/Debug/TracyClient.def" \
     " build/Debug/SDL3.def" \
     " build/Debug/SDL3_shadercross.def" \
     " build/Debug/harfbuzz.def" \

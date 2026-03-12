@@ -55,6 +55,10 @@ static inline uint64_t cpu_prof_now_ns(void) {
 #endif
 }
 
+#ifdef CPU_PROF_USE_TRACY
+#include <tracy/TracyC.h>
+#endif
+
 /* ── Data Structures ────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -74,6 +78,10 @@ typedef struct {
     int         stack_depth;
     const char *thread_name;
     int         active;
+#ifdef CPU_PROF_USE_TRACY
+    TracyCZoneCtx tracy_ctx[CPU_PROF_MAX_STACK];
+    int         tracy_depth;  /* independent of stack_depth — not reset by frame_end */
+#endif
 } cpu_prof_thread_state;
 
 /* ── DLL export decoration ──────────────────────────────────────────────── */
@@ -132,9 +140,40 @@ CPU_PROF_API int             cpu_prof_register_thread(const char *name);
 #include <stdio.h>
 #include <SDL3/SDL_thread.h>
 
-#ifdef CPU_PROF_USE_REMOTERY
-#include "Remotery.h"
-static Remotery *cpu_prof__rmt = NULL;
+/* ── Tracy source location cache ────────────────────────────────────────── */
+#ifdef CPU_PROF_USE_TRACY
+/*
+ * Tracy needs a persistent source_location_data struct per unique zone.
+ * ___tracy_alloc_srcloc_name() allocates a NEW entry every call, which
+ * floods Tracy's queue at 300+ zones/frame.  Instead, we cache static
+ * source locations keyed by the name *pointer* (zone names are always
+ * string literals with stable addresses).
+ */
+#define TRACY_LOC_CACHE_SIZE 512
+static struct ___tracy_source_location_data cpu_prof__tracy_locs[TRACY_LOC_CACHE_SIZE];
+static const char *cpu_prof__tracy_loc_keys[TRACY_LOC_CACHE_SIZE];
+static int         cpu_prof__tracy_loc_count = 0;
+
+static const struct ___tracy_source_location_data *
+cpu_prof__tracy_get_srcloc(const char *name)
+{
+    int i;
+    for (i = 0; i < cpu_prof__tracy_loc_count; i++) {
+        if (cpu_prof__tracy_loc_keys[i] == name)
+            return &cpu_prof__tracy_locs[i];
+    }
+    if (cpu_prof__tracy_loc_count < TRACY_LOC_CACHE_SIZE) {
+        i = cpu_prof__tracy_loc_count++;
+        cpu_prof__tracy_loc_keys[i] = name;
+        cpu_prof__tracy_locs[i].name = name;
+        cpu_prof__tracy_locs[i].function = NULL;
+        cpu_prof__tracy_locs[i].file = NULL;
+        cpu_prof__tracy_locs[i].line = 0;
+        cpu_prof__tracy_locs[i].color = 0;
+        return &cpu_prof__tracy_locs[i];
+    }
+    return &cpu_prof__tracy_locs[0]; /* fallback */
+}
 #endif
 
 /* ── Global state ───────────────────────────────────────────────────────── */
@@ -168,6 +207,9 @@ CPU_PROF_API int cpu_prof_register_thread(const char *name) {
         ts->frame.count = 0;
         memset(ts->stack_zone_idx, 0xFF, sizeof(ts->stack_zone_idx));
         SDL_SetTLS(&cpu_prof__tls_id, ts, NULL);
+#ifdef CPU_PROF_USE_TRACY
+        ___tracy_set_thread_name(name);
+#endif
     }
     return slot;
 }
@@ -184,25 +226,10 @@ CPU_PROF_API void cpu_prof_init(void) {
     /* Register calling thread (main) as slot 0 */
     cpu_prof_register_thread("main");
 
-#ifdef CPU_PROF_USE_REMOTERY
-    {
-        rmtError err = rmt_CreateGlobalInstance(&cpu_prof__rmt);
-        if (err != RMT_ERROR_NONE) {
-            fprintf(stderr, "[cpu_profiler] Remotery init failed (%d)\n", (int)err);
-            cpu_prof__rmt = NULL;
-        }
-    }
-#endif
 }
 
 CPU_PROF_API void cpu_prof_shutdown(void) {
     int t;
-#ifdef CPU_PROF_USE_REMOTERY
-    if (cpu_prof__rmt) {
-        rmt_DestroyGlobalInstance(cpu_prof__rmt);
-        cpu_prof__rmt = NULL;
-    }
-#endif
     cpu_prof__write_idx = 0;
     cpu_prof__frames_recorded = 0;
     for (t = 0; t < CPU_PROF_MAX_THREADS; t++) {
@@ -224,8 +251,12 @@ CPU_PROF_API void cpu_zone_begin(const char *name) {
     if (!ts) return;
     if (ts->stack_depth >= CPU_PROF_MAX_STACK) return;
 
-#ifdef CPU_PROF_USE_REMOTERY
-    if (cpu_prof__rmt) _rmt_BeginCPUSample(name, 0, NULL);
+#ifdef CPU_PROF_USE_TRACY
+    if (ts->tracy_depth < CPU_PROF_MAX_STACK) {
+        const struct ___tracy_source_location_data *srcloc = cpu_prof__tracy_get_srcloc(name);
+        ts->tracy_ctx[ts->tracy_depth] = ___tracy_emit_zone_begin(srcloc, 1);
+        ts->tracy_depth++;
+    }
 #endif
 
     d = ts->stack_depth;
@@ -274,16 +305,19 @@ CPU_PROF_API void cpu_zone_end(void) {
     d = ts->stack_depth;
     zone_idx = ts->stack_zone_idx[d];
 
+#ifdef CPU_PROF_USE_TRACY
+    if (ts->tracy_depth > 0) {
+        ts->tracy_depth--;
+        ___tracy_emit_zone_end(ts->tracy_ctx[ts->tracy_depth]);
+    }
+#endif
+
     if (zone_idx < 0) return;
     frame = &ts->frame;
     if ((uint16_t)zone_idx >= frame->count) return;
 
     end_ns = cpu_prof_now_ns();
     frame->duration_ns[(uint16_t)zone_idx] = end_ns - frame->start_ns[(uint16_t)zone_idx];
-
-#ifdef CPU_PROF_USE_REMOTERY
-    if (cpu_prof__rmt) _rmt_EndCPUSample();
-#endif
 }
 
 CPU_PROF_API void cpu_prof_frame_end(void) {
@@ -297,6 +331,15 @@ CPU_PROF_API void cpu_prof_frame_end(void) {
     dst_count = 0;
 
     /* Merge all thread-local frames into the ring buffer slot */
+    {
+        static int dbg_count = 0;
+        if (dbg_count++ % 300 == 0) {
+            printf("[cpu_prof] frame_end: %d threads", cpu_prof__thread_count);
+            for (t = 0; t < cpu_prof__thread_count; t++)
+                printf(" | %s: %d zones", cpu_prof__threads[t].thread_name ? cpu_prof__threads[t].thread_name : "?", cpu_prof__threads[t].frame.count);
+            printf("\n");
+        }
+    }
     for (t = 0; t < cpu_prof__thread_count; t++) {
         cpu_prof_thread_state *ts = &cpu_prof__threads[t];
         cpu_prof_frame *src;
@@ -337,6 +380,10 @@ CPU_PROF_API void cpu_prof_frame_end(void) {
     /* Commit to ring buffer */
     cpu_prof__slot_frame_id[cpu_prof__write_idx] = cpu_prof__current_frame_id;
     if (cpu_prof__frames_recorded < CPU_PROF_MAX_FRAMES) cpu_prof__frames_recorded++;
+
+#ifdef CPU_PROF_USE_TRACY
+    ___tracy_emit_frame_mark(0);
+#endif
 
     /* Advance write index */
     cpu_prof__write_idx = (cpu_prof__write_idx + 1) % CPU_PROF_MAX_FRAMES;
