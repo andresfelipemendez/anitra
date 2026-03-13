@@ -57,6 +57,17 @@ static inline uint64_t cpu_prof_now_ns(void) {
 
 #ifdef CPU_PROF_USE_TRACY
 #include <tracy/TracyC.h>
+/* Memory tracking: wrap malloc/free to report to Tracy */
+#define cpu_prof_alloc(ptr, size)   TracyCAlloc(ptr, size)
+#define cpu_prof_free(ptr)          TracyCFree(ptr)
+#define cpu_prof_plot(name, val)    TracyCPlot(name, (double)(val))
+#define cpu_prof_plot_int(name, val) TracyCPlotI(name, val)
+#define ARENA_TRACY_PLOT(name, val) TracyCPlotI(name, val)
+#else
+#define cpu_prof_alloc(ptr, size)
+#define cpu_prof_free(ptr)
+#define cpu_prof_plot(name, val)
+#define cpu_prof_plot_int(name, val)
 #endif
 
 /* ── Data Structures ────────────────────────────────────────────────────── */
@@ -297,13 +308,8 @@ CPU_PROF_API void cpu_zone_end(void) {
     cpu_prof_frame *frame;
     uint64_t end_ns;
 
-    if (!cpu_prof__capture_enabled) return;
     ts = (cpu_prof_thread_state *)SDL_GetTLS(&cpu_prof__tls_id);
-    if (!ts || ts->stack_depth <= 0) return;
-
-    ts->stack_depth--;
-    d = ts->stack_depth;
-    zone_idx = ts->stack_zone_idx[d];
+    if (!ts) return;
 
 #ifdef CPU_PROF_USE_TRACY
     if (ts->tracy_depth > 0) {
@@ -311,6 +317,13 @@ CPU_PROF_API void cpu_zone_end(void) {
         ___tracy_emit_zone_end(ts->tracy_ctx[ts->tracy_depth]);
     }
 #endif
+
+    if (!cpu_prof__capture_enabled) return;
+    if (ts->stack_depth <= 0) return;
+
+    ts->stack_depth--;
+    d = ts->stack_depth;
+    zone_idx = ts->stack_zone_idx[d];
 
     if (zone_idx < 0) return;
     frame = &ts->frame;

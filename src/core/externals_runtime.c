@@ -487,6 +487,7 @@ static int precache_thread_fn(void *userdata) {
         len = ftell(f);
         fseek(f, 0, SEEK_SET);
         s_precache[i].data = malloc((size_t)len);
+        cpu_prof_alloc(s_precache[i].data, (size_t)len);
         if (s_precache[i].data) {
             s_precache[i].size = fread(s_precache[i].data, 1, (size_t)len, f);
         }
@@ -514,6 +515,7 @@ static void *precache_get(const char *path, size_t *out_size) {
 static void precache_free(void) {
     int i;
     for (i = 0; i < s_precache_count; i++) {
+        cpu_prof_free(s_precache[i].data);
         free(s_precache[i].data);
         s_precache[i].data = NULL;
     }
@@ -840,8 +842,10 @@ static int msdf_cache_load(const char *cache_path, uint64_t expected_fp,
     atlas->height = (int)hdr.atlas_h;
     pixel_size = hdr.atlas_w * hdr.atlas_h * 4;
     atlas->pixels = (unsigned char *)malloc(pixel_size);
+    cpu_prof_alloc(atlas->pixels, pixel_size);
     if (!atlas->pixels) goto fail;
     if (fread(atlas->pixels, 1, pixel_size, f) != pixel_size) {
+        cpu_prof_free(atlas->pixels);
         free(atlas->pixels);
         atlas->pixels = NULL;
         goto fail;
@@ -904,6 +908,7 @@ static int font_load_msdf(const char *path) {
         if (cached) {
             /* Use pre-cached data — make a copy because stbtt keeps the pointer */
             font_ttf_buffer = (unsigned char *)malloc(cached_size);
+            cpu_prof_alloc(font_ttf_buffer, cached_size);
             memcpy(font_ttf_buffer, cached, cached_size);
             size = cached_size;
         } else {
@@ -1256,6 +1261,7 @@ static int icon_font_load_msdf(const char *path) {
         void *cached = precache_get(path, &cached_size);
         if (cached) {
             icon_ttf_buffer = (unsigned char *)malloc(cached_size);
+            cpu_prof_alloc(icon_ttf_buffer, cached_size);
             memcpy(icon_ttf_buffer, cached, cached_size);
             size = cached_size;
         } else {
@@ -1497,6 +1503,7 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     stbtt_GetFontVMetrics(&font_stb_info, &ascent_i, &descent_i, &line_gap_i);
 
     pixels = (unsigned char *)calloc((size_t)(header_w * header_h * 4), 1);
+    cpu_prof_alloc(pixels, (size_t)(header_w * header_h * 4));
     if (!pixels) return NULL;
 
     /* Fill with header background color */
@@ -1554,7 +1561,7 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     tex_info.num_levels = 1;
     tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
     tex = SDL_CreateGPUTexture(gpu_device, &tex_info);
-    if (!tex) { free(pixels); return NULL; }
+    if (!tex) { cpu_prof_free(pixels); free(pixels); return NULL; }
 
     /* Upload via transfer buffer */
     memset(&tbi, 0, sizeof(tbi));
@@ -1584,6 +1591,7 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     SDL_SubmitGPUCommandBuffer(cmd);
     SDL_ReleaseGPUTransferBuffer(gpu_device, transfer);
 
+    cpu_prof_free(pixels);
     free(pixels);
     *out_w = (int)((x_cursor + 8) / display_density); /* text width + padding, in logical pixels */
     return tex;
@@ -2393,6 +2401,7 @@ EXPORT int init_externals(const char *project_path) {
     /* Allocate and zero the memory struct */
     g_mem = (memory *)malloc(sizeof(memory));
     if (!g_mem) { fprintf(stderr, "Failed to allocate memory\n"); return -1; }
+    cpu_prof_alloc(g_mem, sizeof(memory));
     memset(g_mem, 0, sizeof(*g_mem));
 
     /* Set default asset paths */
@@ -3265,6 +3274,7 @@ EXPORT int init_externals(const char *project_path) {
     {
         uint32_t arena_size = 500 * 1024 * 1024; // 500 MB
         void *arena_mem = malloc(arena_size);
+        cpu_prof_alloc(arena_mem, arena_size);
         arena_init(&g_mem->arena, arena_mem, arena_size);
         printf("Arena initialized (%u bytes)\n", arena_size);
     }
@@ -5312,10 +5322,12 @@ EXPORT void end_externals(void) {
 
     // Free arena (single free for all engine memory)
     if (g_mem->arena.base) {
+        cpu_prof_free(g_mem->arena.base);
         free(g_mem->arena.base);
         g_mem->arena.base = NULL;
     }
 
+    cpu_prof_free(g_mem);
     free(g_mem);
     g_mem = NULL;
 

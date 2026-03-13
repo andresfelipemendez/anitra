@@ -410,6 +410,24 @@ static int build_and_run(void)
     CloseHandle(pi.hThread);
     g_engine_process = pi.hProcess;
 
+    /* Launch Tracy profiler, connected to localhost */
+    {
+        STARTUPINFOA tracy_si = {0};
+        PROCESS_INFORMATION tracy_pi = {0};
+        tracy_si.cb = sizeof(tracy_si);
+        if (CreateProcessA(
+                "lib\\tracy\\tracy-profiler.exe",
+                "lib\\tracy\\tracy-profiler.exe -a 127.0.0.1",
+                NULL, NULL, FALSE, 0, NULL, NULL,
+                &tracy_si, &tracy_pi)) {
+            printf("   Tracy profiler launched (PID: %lu)\n", (unsigned long)tracy_pi.dwProcessId);
+            CloseHandle(tracy_pi.hThread);
+            CloseHandle(tracy_pi.hProcess);
+        } else {
+            printf("   Tracy profiler not found (lib/tracy/tracy-profiler.exe)\n");
+        }
+    }
+
     {
         int rc = watch_and_rebuild();
         CloseHandle(g_engine_process);

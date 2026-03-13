@@ -47,6 +47,9 @@ static inline void *arena_alloc(arena *a, uint32_t size, uint32_t align, const c
     }
 
     a->used = aligned + size;
+#ifdef ARENA_TRACY_PLOT
+    ARENA_TRACY_PLOT("arena used", (int64_t)a->used);
+#endif
     return ptr;
 }
 
