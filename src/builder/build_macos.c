@@ -1,29 +1,35 @@
 /*
- * build_linux.c - Linux platform implementation for build.c
+ * build_macos.c - macOS platform implementation for build.c
  *
- * Included by build.c on __linux__. Provides:
- *   - inotify include
+ * Included by build.c on __APPLE__. Provides:
+ *   - kqueue include
  *   - TCC command defines
- *   - SDL3 platform source list
- *   - watch_and_rebuild() using inotify
+ *   - SDL3 platform source list (Cocoa, Metal, CoreAudio, etc.)
+ *   - watch_and_rebuild() using kqueue
  */
 
-#include <sys/inotify.h>
+#include <sys/event.h>
+#include <dirent.h>
 
 /* Forward declaration */
 static int watch_and_rebuild(void);
 
 /* ------- TCC commands --------------------------------------------------- */
 
+#define TCC_MACOS_DEFS " -DMAC_OS_X_VERSION_MIN_REQUIRED=1100"
+
 #define TCC_COMPILE_CMD \
-    "./tcc -Blib/tcc-linux -shared" \
-    " -o build/Debug/engine.so" \
+    "lib/tcc/macos/tcc -Blib/tcc/macos -shared" \
+    TCC_MACOS_DEFS \
+    " -DSTBI_NO_THREAD_LOCALS" \
+    " -o build/Debug/libengine.dylib" \
     " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf" \
     " src/engine/*.c"
 
 #define TCC_EDITOR_CMD \
-    "./tcc -Blib/tcc-linux -shared" \
-    " -o build/Debug/editor.so" \
+    "lib/tcc/macos/tcc -Blib/tcc/macos -shared" \
+    TCC_MACOS_DEFS \
+    " -o build/Debug/libeditor.dylib" \
     " -DCLAY_DISABLE_SIMD -DCPU_PROF_USE_FPTRS" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab" \
     " -Ilib/SDL3/include -Ilib/clay" \
@@ -32,50 +38,52 @@ static int watch_and_rebuild(void);
     " src/collab/collab_client.c"
 
 #define TCC_CORE_CMD \
-    "./tcc -Blib/tcc-linux -shared" \
-    " -o build/Debug/core.so" \
+    "lib/tcc/macos/tcc -Blib/tcc/macos -shared" \
+    TCC_MACOS_DEFS \
+    " -DSTBI_NO_THREAD_LOCALS -DCLAY_DISABLE_SIMD" \
+    " -o build/Debug/libcore.dylib" \
     " -DCPU_PROF_USE_TRACY -DTRACY_ENABLE -DTRACY_ON_DEMAND" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include -Ilib/SDL_shadercross/include" \
     " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf" \
     " -Ilib/sqlite -Ilib/toml-c -Ilib/nanoprof" \
     " src/core/core.c" \
-    " src/core/loadlibrary_linux.cpp" \
+    " src/core/loadlibrary_macos.c" \
     " src/core/externals_runtime.c src/core/externals.c" \
     " src/project.c lib/sqlite/sqlite3.c" \
     " -L" DEBUG_DIR " -lSDL3 -lSDL3_shadercross -lharfbuzz -lTracyClient" \
-    " -lpthread -ldl -lm"
+    " -lpthread -lm"
 
 #define TCC_EXE_CMD \
-    "./tcc -Blib/tcc-linux" \
+    "lib/tcc/macos/tcc -Blib/tcc/macos" \
+    TCC_MACOS_DEFS \
     " -o build/Debug/AnitraEngine" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include" \
     " src/main.c" \
-    " src/core/loadlibrary_linux.cpp" \
-    " -ldl"
+    " src/core/loadlibrary_macos.c"
 
 #define TCC_TEST_CMD \
-    "./tcc -Blib/tcc-linux" \
+    "lib/tcc/macos/tcc -Blib/tcc/macos" \
     " -o build/Debug/test_dock" \
     " -Isrc/editor" \
     " tests/test_dock.c"
 
 #define TCC_TEST_INSPECTOR_CMD \
-    "./tcc -Blib/tcc-linux" \
+    "lib/tcc/macos/tcc -Blib/tcc/macos" \
     " -o build/Debug/test_inspector" \
     " -Isrc -Isrc/editor" \
     " tests/test_inspector.c"
 
 #define TCC_TEST_HOTRELOAD_CMD \
-    "./tcc -Blib/tcc-linux" \
+    "lib/tcc/macos/tcc -Blib/tcc/macos" \
     " -o build/Debug/test_hotreload" \
     " -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/editor -Ilib/clay" \
     " tests/test_hotreload.c"
 
 #define TCC_TEST_COLLAB_OT_CMD \
-    "./tcc -Blib/tcc-linux" \
+    "lib/tcc/macos/tcc -Blib/tcc/macos" \
     " -o build/Debug/test_collab_ot" \
     " -Isrc -Isrc/collab" \
     " tests/test_collab_ot.c"
@@ -84,48 +92,41 @@ static int watch_and_rebuild(void);
 
 static const char *sdl3_sources_platform[] = {
     /* Audio */
-    "lib/SDL3/src/audio/alsa/SDL_alsa_audio.c",
-    "lib/SDL3/src/audio/pulseaudio/SDL_pulseaudio.c",
+    "lib/SDL3/src/audio/coreaudio/SDL_coreaudio.m",
     "lib/SDL3/src/audio/dummy/SDL_dummyaudio.c",
     "lib/SDL3/src/audio/disk/SDL_diskaudio.c",
 
     /* Camera */
-    "lib/SDL3/src/camera/v4l2/SDL_camera_v4l2.c",
+    "lib/SDL3/src/camera/coremedia/SDL_camera_coremedia.m",
     "lib/SDL3/src/camera/dummy/SDL_camera_dummy.c",
 
     /* Core */
-    "lib/SDL3/src/core/linux/SDL_dbus.c",
-    "lib/SDL3/src/core/linux/SDL_evdev.c",
-    "lib/SDL3/src/core/linux/SDL_evdev_capabilities.c",
-    "lib/SDL3/src/core/linux/SDL_evdev_kbd.c",
-    "lib/SDL3/src/core/linux/SDL_progressbar.c",
-    "lib/SDL3/src/core/linux/SDL_threadprio.c",
-    "lib/SDL3/src/core/linux/SDL_udev.c",
     "lib/SDL3/src/core/unix/SDL_appid.c",
     "lib/SDL3/src/core/unix/SDL_poll.c",
 
     /* Dialog */
-    "lib/SDL3/src/dialog/unix/SDL_portaldialog.c",
-    "lib/SDL3/src/dialog/unix/SDL_unixdialog.c",
-    "lib/SDL3/src/dialog/unix/SDL_zenitydialog.c",
-    "lib/SDL3/src/dialog/unix/SDL_zenitymessagebox.c",
+    "lib/SDL3/src/dialog/cocoa/SDL_cocoadialog.m",
 
     /* Filesystem */
-    "lib/SDL3/src/filesystem/unix/SDL_sysfilesystem.c",
+    "lib/SDL3/src/filesystem/cocoa/SDL_sysfilesystem.m",
     "lib/SDL3/src/filesystem/posix/SDL_sysfsops.c",
 
+    /* GPU */
+    "lib/SDL3/src/gpu/metal/SDL_gpu_metal.m",
+
     /* Haptic */
-    "lib/SDL3/src/haptic/linux/SDL_syshaptic.c",
+    "lib/SDL3/src/haptic/darwin/SDL_syshaptic.c",
     "lib/SDL3/src/haptic/hidapi/SDL_hidapihaptic.c",
     "lib/SDL3/src/haptic/hidapi/SDL_hidapihaptic_lg4ff.c",
 
-    /* HID — linux/hid.c is #included by SDL_hidapi.c via SDL_hidapi_linux.h */
+    /* HID — mac/hid.c is #included by SDL_hidapi.c via SDL_hidapi_mac.h */
 
     /* I/O */
     "lib/SDL3/src/io/generic/SDL_asyncio_generic.c",
 
     /* Joystick */
-    "lib/SDL3/src/joystick/linux/SDL_sysjoystick.c",
+    "lib/SDL3/src/joystick/darwin/SDL_iokitjoystick.c",
+    "lib/SDL3/src/joystick/apple/SDL_mfijoystick.m",
     "lib/SDL3/src/joystick/hidapi/SDL_hidapijoystick.c",
     "lib/SDL3/src/joystick/hidapi/SDL_hidapi_combined.c",
     "lib/SDL3/src/joystick/hidapi/SDL_hidapi_gamecube.c",
@@ -160,19 +161,22 @@ static const char *sdl3_sources_platform[] = {
     "lib/SDL3/src/loadso/dlopen/SDL_sysloadso.c",
 
     /* Locale */
-    "lib/SDL3/src/locale/unix/SDL_syslocale.c",
+    "lib/SDL3/src/locale/macos/SDL_syslocale.m",
 
     /* Main */
     "lib/SDL3/src/main/generic/SDL_sysmain_callbacks.c",
 
     /* Misc */
-    "lib/SDL3/src/misc/unix/SDL_sysurl.c",
+    "lib/SDL3/src/misc/macos/SDL_sysurl.m",
 
     /* Power */
-    "lib/SDL3/src/power/linux/SDL_syspower.c",
+    "lib/SDL3/src/power/macos/SDL_syspower.c",
 
     /* Process */
     "lib/SDL3/src/process/posix/SDL_posixprocess.c",
+
+    /* Render */
+    "lib/SDL3/src/render/metal/SDL_render_metal.m",
 
     /* Sensor */
     "lib/SDL3/src/sensor/dummy/SDL_dummysensor.c",
@@ -181,7 +185,7 @@ static const char *sdl3_sources_platform[] = {
     "lib/SDL3/src/storage/generic/SDL_genericstorage.c",
     "lib/SDL3/src/storage/steam/SDL_steamstorage.c",
 
-    /* Thread */
+    /* Thread (pthread — same as Linux) */
     "lib/SDL3/src/thread/pthread/SDL_syscond.c",
     "lib/SDL3/src/thread/pthread/SDL_sysmutex.c",
     "lib/SDL3/src/thread/pthread/SDL_sysrwlock.c",
@@ -194,33 +198,23 @@ static const char *sdl3_sources_platform[] = {
     "lib/SDL3/src/timer/unix/SDL_systimer.c",
 
     /* Tray */
-    "lib/SDL3/src/tray/unix/SDL_tray.c",
+    "lib/SDL3/src/tray/cocoa/SDL_tray.m",
 
-    /* Video - X11 */
-    "lib/SDL3/src/video/x11/edid-parse.c",
-    "lib/SDL3/src/video/x11/SDL_x11clipboard.c",
-    "lib/SDL3/src/video/x11/SDL_x11dyn.c",
-    "lib/SDL3/src/video/x11/SDL_x11events.c",
-    "lib/SDL3/src/video/x11/SDL_x11framebuffer.c",
-    "lib/SDL3/src/video/x11/SDL_x11keyboard.c",
-    "lib/SDL3/src/video/x11/SDL_x11messagebox.c",
-    "lib/SDL3/src/video/x11/SDL_x11modes.c",
-    "lib/SDL3/src/video/x11/SDL_x11mouse.c",
-    "lib/SDL3/src/video/x11/SDL_x11opengl.c",
-    "lib/SDL3/src/video/x11/SDL_x11opengles.c",
-    "lib/SDL3/src/video/x11/SDL_x11pen.c",
-    "lib/SDL3/src/video/x11/SDL_x11settings.c",
-    "lib/SDL3/src/video/x11/SDL_x11shape.c",
-    "lib/SDL3/src/video/x11/SDL_x11toolkit.c",
-    "lib/SDL3/src/video/x11/SDL_x11touch.c",
-    "lib/SDL3/src/video/x11/SDL_x11video.c",
-    "lib/SDL3/src/video/x11/SDL_x11vulkan.c",
-    "lib/SDL3/src/video/x11/SDL_x11window.c",
-    "lib/SDL3/src/video/x11/SDL_x11xfixes.c",
-    "lib/SDL3/src/video/x11/SDL_x11xinput2.c",
-    "lib/SDL3/src/video/x11/SDL_x11xsync.c",
-    "lib/SDL3/src/video/x11/SDL_x11xtest.c",
-    "lib/SDL3/src/video/x11/xsettings-client.c"
+    /* Video - Cocoa */
+    "lib/SDL3/src/video/cocoa/SDL_cocoaclipboard.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoaevents.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoakeyboard.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoamessagebox.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoametalview.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoamodes.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoamouse.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoaopengl.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoaopengles.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoapen.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoashape.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoavideo.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoavulkan.m",
+    "lib/SDL3/src/video/cocoa/SDL_cocoawindow.m"
 };
 
 /* ------- test (compile and run unit tests) ------------------------------- */
@@ -318,7 +312,7 @@ static int build_and_run(void)
         char engine_path[PATH_SIZE];
         snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
         if (project_include) {
-            execl(engine_path, "AnitraEngine", "--include", project_include, NULL);
+            execl(engine_path, "AnitraEngine", project_include, NULL);
         } else {
             execl(engine_path, "AnitraEngine", NULL);
         }
@@ -347,7 +341,7 @@ static int build_play_test(void)
     if (pid == 0) {
         char engine_path[PATH_SIZE];
         snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine", DEBUG_DIR);
-        execl(engine_path, "AnitraEngine", "--include", GYM_SCENE_TOML, NULL);
+        execl(engine_path, "AnitraEngine", GYM_SCENE_TOML, NULL);
         printf("!! Failed to exec engine\n");
         _exit(1);
     }
@@ -399,8 +393,7 @@ static int build_collab(void)
                        kill(server_pid, SIGTERM); return 1; }
         if (pid == 0) {
             if (project_include)
-                execl(engine_path, "AnitraEngine",
-                      "--include", project_include, NULL);
+                execl(engine_path, "AnitraEngine", project_include, NULL);
             else
                 execl(engine_path, "AnitraEngine", NULL);
             printf("!! Failed to exec editor 1\n");
@@ -416,8 +409,7 @@ static int build_collab(void)
                            kill(server_pid, SIGTERM); return 1; }
     if (editor2_pid == 0) {
         if (project_include)
-            execl(engine_path, "AnitraEngine",
-                  "--include", project_include, NULL);
+            execl(engine_path, "AnitraEngine", project_include, NULL);
         else
             execl(engine_path, "AnitraEngine", NULL);
         printf("!! Failed to exec editor 2\n");
@@ -434,44 +426,112 @@ static int build_collab(void)
     }
 }
 
-/* ------- watch (forge) — Linux inotify ---------------------------------- */
+/* ------- watch (forge) — macOS kqueue ----------------------------------- */
+
+static time_t newest_mtime_recursive(const char *path)
+{
+    struct stat st;
+    time_t newest = 0;
+    DIR *dir;
+    struct dirent *de;
+
+    if (stat(path, &st) != 0) return 0;
+    newest = st.st_mtime;
+    if (!S_ISDIR(st.st_mode)) return newest;
+
+    dir = opendir(path);
+    if (!dir) return newest;
+
+    while ((de = readdir(dir)) != NULL) {
+        char child[PATH_SIZE];
+        time_t child_newest;
+
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+
+        snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+        child_newest = newest_mtime_recursive(child);
+        if (child_newest > newest) newest = child_newest;
+    }
+
+    closedir(dir);
+    return newest;
+}
 
 static int watch_and_rebuild(void)
 {
-    int ifd, engine_wfd, editor_wfd, core_wfd;
-    struct pollfd pfd;
-    char buf[4096];
+    int kq, engine_fd, editor_fd, core_fd, project_fd;
+    struct kevent changes[4];
+    struct kevent events[4];
+    time_t engine_mtime = 0, editor_mtime = 0, core_mtime = 0;
+    time_t project_mtime = 0;
+    /* Extract project directory from DEFAULT_PROJECT_TOML (e.g. "dungeon1") */
+    char project_dir[256];
+    {
+        const char *slash;
+        strncpy(project_dir, DEFAULT_PROJECT_TOML, sizeof(project_dir) - 1);
+        project_dir[sizeof(project_dir) - 1] = '\0';
+        slash = strrchr(project_dir, '/');
+        if (slash) project_dir[slash - project_dir] = '\0';
+        else       project_dir[0] = '\0';
+    }
 
-    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
+    printf("=== Forge: watching src/engine + src/editor + src/core + %s for changes ===\n", project_dir);
     fflush(stdout);
 
-    ifd = inotify_init();
-    if (ifd < 0) {
-        printf("!! inotify_init failed\n");
+    kq = kqueue();
+    if (kq < 0) {
+        printf("!! kqueue failed\n");
         return 1;
     }
 
-    engine_wfd = inotify_add_watch(ifd, "src/engine",
-        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
-    if (engine_wfd < 0) {
-        printf("!! inotify_add_watch failed on src/engine\n");
-        close(ifd);
+    engine_fd = open("src/engine", O_RDONLY | O_DIRECTORY);
+    if (engine_fd < 0) {
+        printf("!! failed to open src/engine for watching\n");
+        close(kq);
         return 1;
     }
 
-    editor_wfd = inotify_add_watch(ifd, "src/editor",
-        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
-    if (editor_wfd < 0) {
-        printf("!! inotify_add_watch failed on src/editor\n");
-        close(ifd);
+    editor_fd = open("src/editor", O_RDONLY | O_DIRECTORY);
+    if (editor_fd < 0) {
+        printf("!! failed to open src/editor for watching\n");
+        close(engine_fd);
+        close(kq);
         return 1;
     }
 
-    core_wfd = inotify_add_watch(ifd, "src/core",
-        IN_MODIFY | IN_CREATE | IN_MOVED_TO);
-    if (core_wfd < 0) {
-        printf("!! inotify_add_watch failed on src/core\n");
-        close(ifd);
+    core_fd = open("src/core", O_RDONLY | O_DIRECTORY);
+    if (core_fd < 0) {
+        printf("!! failed to open src/core for watching\n");
+        close(editor_fd);
+        close(engine_fd);
+        close(kq);
+        return 1;
+    }
+
+    project_fd = project_dir[0] ? open(project_dir, O_RDONLY | O_DIRECTORY) : -1;
+    if (project_fd < 0 && project_dir[0]) {
+        printf("!! failed to open %s for watching (project reload disabled)\n", project_dir);
+    }
+
+    EV_SET(&changes[0], engine_fd, EVFILT_VNODE,
+           EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
+    EV_SET(&changes[1], editor_fd, EVFILT_VNODE,
+           EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
+    EV_SET(&changes[2], core_fd, EVFILT_VNODE,
+           EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
+    if (project_fd >= 0) {
+        EV_SET(&changes[3], project_fd, EVFILT_VNODE,
+               EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_RENAME | NOTE_DELETE, 0, NULL);
+    }
+
+    if (kevent(kq, changes, project_fd >= 0 ? 4 : 3, NULL, 0, NULL) < 0) {
+        printf("!! kevent registration failed\n");
+        if (project_fd >= 0) close(project_fd);
+        close(core_fd);
+        close(editor_fd);
+        close(engine_fd);
+        close(kq);
         return 1;
     }
 
@@ -505,48 +565,78 @@ static int watch_and_rebuild(void)
         printf("!! Initial core compile failed. Waiting for changes...\n");
     }
 
-    /* Watch loop */
-    pfd.fd = ifd;
-    pfd.events = POLLIN;
+    /* Baseline source mtimes for polling fallback (kqueue on directories
+       misses in-place file edits in some workflows/editors). */
+    engine_mtime = newest_mtime_recursive("src/engine");
+    editor_mtime = newest_mtime_recursive("src/editor");
+    core_mtime = newest_mtime_recursive("src/core");
+    if (project_dir[0]) project_mtime = newest_mtime_recursive(project_dir);
 
+    /* Watch loop */
     while (1) {
-        int ret = poll(&pfd, 1, -1);
-        if (ret < 0) {
-            printf("!! poll failed\n");
+        int nev, i;
+        int engine_changed = 0, editor_changed = 0, core_changed = 0, project_changed = 0;
+        struct timespec timeout;
+
+        /* Check if the engine process has exited */
+        if (g_engine_pid > 0) {
+            int status;
+            pid_t result = waitpid(g_engine_pid, &status, WNOHANG);
+            if (result == g_engine_pid) {
+                printf("\n--- Engine exited, stopping watch. ---\n");
+                break;
+            }
+        }
+
+        timeout.tv_sec = 0;
+        timeout.tv_nsec = 200 * 1000 * 1000; /* 200ms poll fallback cadence */
+
+        nev = kevent(kq, NULL, 0, events, 4, &timeout);
+        if (nev < 0) {
+            printf("!! kevent wait failed\n");
             break;
         }
 
-        /* Drain inotify events — track which directories changed */
-        int engine_changed = 0, editor_changed = 0, core_changed = 0;
+        for (i = 0; i < nev; i++) {
+            if ((int)events[i].ident == engine_fd) engine_changed = 1;
+            if ((int)events[i].ident == editor_fd) editor_changed = 1;
+            if ((int)events[i].ident == core_fd)   core_changed = 1;
+            if (project_fd >= 0 && (int)events[i].ident == project_fd) project_changed = 1;
+        }
+
+        /* Debounce: wait 50ms and drain */
+        usleep(50000);
         {
-            ssize_t n = read(ifd, buf, sizeof(buf));
-            ssize_t i = 0;
-            while (i < n) {
-                struct inotify_event *ev = (struct inotify_event *)(buf + i);
-                if (ev->wd == engine_wfd) engine_changed = 1;
-                if (ev->wd == editor_wfd) editor_changed = 1;
-                if (ev->wd == core_wfd)   core_changed = 1;
-                i += sizeof(struct inotify_event) + ev->len;
+            struct timespec zero = {0, 0};
+            int drained;
+            while ((drained = kevent(kq, NULL, 0, events, 4, &zero)) > 0) {
+                for (i = 0; i < drained; i++) {
+                    if ((int)events[i].ident == engine_fd) engine_changed = 1;
+                    if ((int)events[i].ident == editor_fd) editor_changed = 1;
+                    if ((int)events[i].ident == core_fd)   core_changed = 1;
+                    if (project_fd >= 0 && (int)events[i].ident == project_fd) project_changed = 1;
+                }
             }
         }
 
-        /* Debounce: wait 50ms and drain again */
-        usleep(50000);
+        /* Poll fallback: catches in-place writes that may not fire vnode events on dirs. */
         {
-            struct pollfd drain_pfd;
-            drain_pfd.fd = ifd;
-            drain_pfd.events = POLLIN;
-            while (poll(&drain_pfd, 1, 0) > 0) {
-                ssize_t n = read(ifd, buf, sizeof(buf));
-                ssize_t i = 0;
-                while (i < n) {
-                    struct inotify_event *ev = (struct inotify_event *)(buf + i);
-                    if (ev->wd == engine_wfd) engine_changed = 1;
-                    if (ev->wd == editor_wfd) editor_changed = 1;
-                    if (ev->wd == core_wfd)   core_changed = 1;
-                        i += sizeof(struct inotify_event) + ev->len;
-                }
+            time_t now_engine = newest_mtime_recursive("src/engine");
+            time_t now_editor = newest_mtime_recursive("src/editor");
+            time_t now_core = newest_mtime_recursive("src/core");
+
+            if (now_engine > engine_mtime) { engine_changed = 1; engine_mtime = now_engine; }
+            if (now_editor > editor_mtime) { editor_changed = 1; editor_mtime = now_editor; }
+            if (now_core > core_mtime) { core_changed = 1; core_mtime = now_core; }
+
+            if (project_dir[0]) {
+                time_t now_project = newest_mtime_recursive(project_dir);
+                if (now_project > project_mtime) { project_changed = 1; project_mtime = now_project; }
             }
+        }
+
+        if (engine_changed || editor_changed || core_changed) {
+            generate_migration_code();
         }
 
         if (engine_changed) {
@@ -588,9 +678,18 @@ static int watch_and_rebuild(void)
             }
         }
 
+        if (project_changed && !engine_changed) {
+            printf("\n--- Project change detected, triggering scene reload... ---\n");
+            fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
+            printf("   Engine reload signal written.\n");
+        }
         fflush(stdout);
     }
 
-    close(ifd);
+    if (project_fd >= 0) close(project_fd);
+    close(core_fd);
+    close(editor_fd);
+    close(engine_fd);
+    close(kq);
     return 0;
 }

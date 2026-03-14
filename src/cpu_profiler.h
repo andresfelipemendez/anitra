@@ -344,15 +344,6 @@ CPU_PROF_API void cpu_prof_frame_end(void) {
     dst_count = 0;
 
     /* Merge all thread-local frames into the ring buffer slot */
-    {
-        static int dbg_count = 0;
-        if (dbg_count++ % 300 == 0) {
-            printf("[cpu_prof] frame_end: %d threads", cpu_prof__thread_count);
-            for (t = 0; t < cpu_prof__thread_count; t++)
-                printf(" | %s: %d zones", cpu_prof__threads[t].thread_name ? cpu_prof__threads[t].thread_name : "?", cpu_prof__threads[t].frame.count);
-            printf("\n");
-        }
-    }
     for (t = 0; t < cpu_prof__thread_count; t++) {
         cpu_prof_thread_state *ts = &cpu_prof__threads[t];
         cpu_prof_frame *src;

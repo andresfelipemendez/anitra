@@ -32,12 +32,6 @@ typedef void (*editor_destroy_fn)(struct game_state *gs, struct editor_state *es
 typedef void (*editor_update_fn)(struct game_state *gs, struct editor_state *es);
 typedef int  (*editor_handle_event_fn)(struct game_state *gs, struct editor_state *es, void *event);
 
-#ifdef _WIN32
-#define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
-#define HOTRELOAD_EDITOR_EVENT_NAME "Global\\ReloadEditorEvent"
-#define HOTRELOAD_CORE_EVENT_NAME   "Global\\ReloadCoreEvent"
-#endif
-
 /* Engine: game_state only */
 #define DECLARE_ENGINE_FUNC_VOID(func)                                         \
   EXPORT void func(struct game_state *gs);                                     \

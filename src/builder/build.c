@@ -1746,7 +1746,7 @@ static int build_nanoprof2chrome(void)
 
 #ifdef _WIN32
     snprintf(cmd, sizeof(cmd),
-        ".\\tcc.exe -Blib/tcc-windows"
+        "tcc\\tcc.exe -Blib/tcc-windows"
         " -o %s"
         " lib/nanoprof/nanoprof2chrome.c", out_exe);
 #elif defined(__APPLE__)
@@ -1756,7 +1756,7 @@ static int build_nanoprof2chrome(void)
         " lib/nanoprof/nanoprof2chrome.c", out_exe);
 #else
     snprintf(cmd, sizeof(cmd),
-        "./tcc -Blib/tcc-linux"
+        "tcc/tcc -Blib/tcc-linux"
         " -o %s"
         " lib/nanoprof/nanoprof2chrome.c", out_exe);
 #endif
@@ -2253,7 +2253,7 @@ static int build_remote_run(const remote_config *cfg, const char *project_includ
 
     if (project_include && project_include[0]) {
         snprintf(cmd, sizeof(cmd),
-            "ssh %s@%s \"cd %s && DISPLAY=:0 LD_LIBRARY_PATH=%s/build/Debug ./build/Debug/AnitraEngine --include %s\"",
+            "ssh %s@%s \"cd %s && DISPLAY=:0 LD_LIBRARY_PATH=%s/build/Debug ./build/Debug/AnitraEngine %s\"",
             cfg->user, cfg->host, cfg->deploy_path, cfg->deploy_path, project_include);
     } else {
         snprintf(cmd, sizeof(cmd),
@@ -2334,7 +2334,7 @@ int main(int argc, char **argv)
     if (find_tools() != 0) return 1;
 
     if (argc > 1 && strcmp(argv[1], "watch") == 0) {
-        return build_and_run();
+        return build_forge(argc, argv);
     }
     if (argc > 1 && strcmp(argv[1], "collab") == 0) {
         return build_collab();

@@ -2,7 +2,6 @@
  * build_win32.c - Windows platform implementation for build.c
  *
  * Included by build.c on _WIN32. Provides:
- *   - Hot-reload event name defines
  *   - TCC command defines
  *   - SDL3 platform source list
  *   - watch_and_rebuild() using ReadDirectoryChangesW
@@ -11,16 +10,10 @@
 /* Forward declaration */
 static int watch_and_rebuild(void);
 
-/* ------- hot-reload event names ----------------------------------------- */
-
-#define HOTRELOAD_EVENT_NAME        "Global\\ReloadEvent"
-#define HOTRELOAD_EDITOR_EVENT_NAME "Global\\ReloadEditorEvent"
-#define HOTRELOAD_CORE_EVENT_NAME   "Global\\ReloadCoreEvent"
-
 /* ------- TCC commands --------------------------------------------------- */
 
 #define TCC_COMPILE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g -shared" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/engine.dll" \
     " -Isrc -Isrc/engine -Isrc/editor -Ilib/SDL3/include -Ilib/cgltf -Ilib/toml-c" \
     " src/engine/engine.c" \
@@ -31,7 +24,7 @@ static int watch_and_rebuild(void);
     " src/project.c" \
     " build/Debug/SDL3.def"
 #define TCC_EDITOR_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g -shared" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/editor.dll" \
     " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL -DCPU_PROF_USE_FPTRS" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab" \
@@ -45,7 +38,7 @@ static int watch_and_rebuild(void);
     " lib/tcc-windows/lib/ws2_32.def"
 
 #define TCC_CORE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g -shared" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/core.dll" \
     " -DCPU_PROF_USE_TRACY -DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_IMPORTS" \
     " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD" \
@@ -66,7 +59,7 @@ static int watch_and_rebuild(void);
     " lib/tcc-windows/lib/kernel32.def"
 
 #define TCC_EXE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
+    "tcc\\tcc.exe -Blib/tcc-windows" \
     " -o build/Debug/AnitraEngine.exe" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include" \
@@ -74,32 +67,32 @@ static int watch_and_rebuild(void);
     " src/core/loadlibrary_windows.c"
 
 #define TCC_TEST_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_dock.exe" \
     " -Isrc -Isrc/editor" \
     " tests/test_dock.c"
 
 #define TCC_TEST_INSPECTOR_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_inspector.exe" \
     " -Isrc -Isrc/editor" \
     " tests/test_inspector.c"
 
 #define TCC_TEST_HOTRELOAD_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_hotreload.exe" \
     " -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/editor -Ilib/clay" \
     " tests/test_hotreload.c"
 
 #define TCC_TEST_COLLAB_OT_CMD \
-    ".\\tcc.exe -Blib/tcc-windows" \
+    "tcc\\tcc.exe -Blib/tcc-windows" \
     " -o build/Debug/test_collab_ot.exe" \
     " -Isrc -Isrc/collab" \
     " tests/test_collab_ot.c"
 
 #define TCC_TEST_GYM_SCENE_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_gym_scene.exe" \
     " -Isrc -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include -Ilib/cgltf -Ilib/toml-c" \
@@ -107,7 +100,7 @@ static int watch_and_rebuild(void);
 
 /* test_editor.dll: real editor.c with SDL/externals stubs compiled in */
 #define TCC_TEST_DLL_EDITOR_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g -shared" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/test_editor.dll" \
     " -DCLAY_DISABLE_SIMD -DCACHE_PROF_IMPL -DCPU_PROF_USE_FPTRS" \
     " -Isrc -Isrc/editor -Isrc/engine -Isrc/collab" \
@@ -117,7 +110,7 @@ static int watch_and_rebuild(void);
 
 /* test_hotreload_dll.exe: exercises real DLL load/unload/reload */
 #define TCC_TEST_DLL_CMD \
-    ".\\tcc.exe -Blib/tcc-windows -g" \
+    "tcc\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_hotreload_dll.exe" \
     " -Isrc -Isrc/editor -Isrc/engine" \
     " tests/test_hotreload_dll.c"
@@ -365,73 +358,39 @@ static int build_test(void)
 
 static HANDLE g_engine_process = NULL;
 
-static int build_and_run(void)
+static int build_forge(int argc, char **argv)
 {
-    char project_path[PATH_SIZE];
-    const char *project_include;
-    STARTUPINFOA si = {0};
-    PROCESS_INFORMATION pi = {0};
-    char engine_path[PATH_SIZE];
-    char engine_cmdline[CMD_MAX];
+    int i;
+    DWORD target_pid = 0;
 
-    printf("=== Building and running engine ===\n\n");
-    if (build_all() != 0) return 1;
-
-    project_include = resolve_project(project_path, sizeof(project_path));
-    if (project_include) {
-        printf("   Using project include: %s\n", project_include);
-    } else {
-        printf("   No project include found (checked %s and %s)\n",
-               PROJECT_INCLUDE_FILE, DEFAULT_PROJECT_TOML);
-    }
-
-    printf("\n=== Launching engine and starting watch mode ===\n");
-
-    si.cb = sizeof(si);
-    snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine.exe", DEBUG_DIR);
-    if (project_include) {
-        snprintf(engine_cmdline, sizeof(engine_cmdline),
-                 "\"%s\" --include \"%s\"",
-                 engine_path, project_include);
-    } else {
-        snprintf(engine_cmdline, sizeof(engine_cmdline),
-                 "\"%s\"", engine_path);
-    }
-
-    if (!CreateProcessA(
-            engine_path, engine_cmdline,
-            NULL, NULL, FALSE, 0, NULL, NULL,
-            &si, &pi)) {
-        printf("!! Failed to launch engine (error %lu)\n", GetLastError());
-        return 1;
-    }
-
-    printf("   Engine launched (PID: %lu)\n", (unsigned long)pi.dwProcessId);
-    CloseHandle(pi.hThread);
-    g_engine_process = pi.hProcess;
-
-    /* Launch Tracy profiler, connected to localhost */
-    {
-        STARTUPINFOA tracy_si = {0};
-        PROCESS_INFORMATION tracy_pi = {0};
-        tracy_si.cb = sizeof(tracy_si);
-        if (CreateProcessA(
-                "lib\\tracy\\tracy-profiler.exe",
-                "lib\\tracy\\tracy-profiler.exe -a 127.0.0.1",
-                NULL, NULL, FALSE, 0, NULL, NULL,
-                &tracy_si, &tracy_pi)) {
-            printf("   Tracy profiler launched (PID: %lu)\n", (unsigned long)tracy_pi.dwProcessId);
-            CloseHandle(tracy_pi.hThread);
-            CloseHandle(tracy_pi.hProcess);
-        } else {
-            printf("   Tracy profiler not found (lib/tracy/tracy-profiler.exe)\n");
+    /* Parse --pid <PID> to optionally watch a process for exit */
+    for (i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
+            target_pid = (DWORD)atol(argv[i + 1]);
+            i++;
         }
     }
 
+    if (target_pid) {
+        g_engine_process = OpenProcess(SYNCHRONIZE, FALSE, target_pid);
+        if (!g_engine_process) {
+            printf("!! Could not open process %lu (error %lu)\n",
+                   (unsigned long)target_pid, GetLastError());
+            return 1;
+        }
+        printf("=== Forge: watching files, attached to PID %lu ===\n",
+               (unsigned long)target_pid);
+    } else {
+        printf("=== Forge: watching files (standalone) ===\n");
+    }
+    fflush(stdout);
+
     {
         int rc = watch_and_rebuild();
-        CloseHandle(g_engine_process);
-        g_engine_process = NULL;
+        if (g_engine_process) {
+            CloseHandle(g_engine_process);
+            g_engine_process = NULL;
+        }
         return rc;
     }
 }
@@ -453,7 +412,7 @@ static int build_play_test(void)
     si.cb = sizeof(si);
     snprintf(engine_path, PATH_SIZE, "%s/AnitraEngine.exe", DEBUG_DIR);
     snprintf(engine_cmdline, sizeof(engine_cmdline),
-             "\"%s\" --include \"%s\"", engine_path, GYM_SCENE_TOML);
+             "\"%s\" \"%s\"", engine_path, GYM_SCENE_TOML);
     if (!CreateProcessA(engine_path, engine_cmdline,
                         NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         printf("!! Failed to launch engine (error %lu)\n", GetLastError());
@@ -510,7 +469,7 @@ static int build_collab(void)
     si.cb = sizeof(si);
     if (project_include) {
         snprintf(cmdline, sizeof(cmdline),
-                 "\"%s/AnitraEngine.exe\" --include \"%s\"",
+                 "\"%s/AnitraEngine.exe\" \"%s\"",
                  DEBUG_DIR, project_include);
     } else {
         snprintf(cmdline, sizeof(cmdline),
@@ -606,7 +565,7 @@ static int build_and_profile(void)
             " -e RETIRED_INST"
             " -o " PROFILE_DIR
             " -d 30"
-            " %s/AnitraEngine.exe --include \"%s\"",
+            " %s/AnitraEngine.exe \"%s\"",
             DEBUG_DIR, project_include);
     } else {
         snprintf(cmd, sizeof(cmd),
@@ -682,7 +641,7 @@ static void write_raddbg_project(const char *project_include)
     fprintf(f, "  executable: \"%s/%s/AnitraEngine.exe\"\n", cwd, DEBUG_DIR);
     fprintf(f, "  working_directory: \"%s\"\n", cwd);
     if (project_include) {
-        fprintf(f, "  arguments: \"--include %s\"\n", project_include);
+        fprintf(f, "  arguments: \"%s\"\n", project_include);
     }
     fprintf(f, "  enabled: 1\n");
     fprintf(f, "}\n\n");
@@ -740,7 +699,6 @@ static int build_and_debug(void)
 static int watch_and_rebuild(void)
 {
     HANDLE hEngineDir, hEditorDir, hCoreDir;
-    HANDLE hEngineEvent, hEditorEvent, hCoreEvent;
     char engine_buf[4096], editor_buf[4096], core_buf[4096];
     OVERLAPPED engine_ov = {0}, editor_ov = {0}, core_ov = {0};
     DWORD bytes;
@@ -786,43 +744,9 @@ static int watch_and_rebuild(void)
     editor_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
     core_ov.hEvent   = CreateEventA(NULL, TRUE, FALSE, NULL);
 
-    /* Named events for signaling the running application */
-    hEngineEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EVENT_NAME);
-    hEditorEvent = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_EDITOR_EVENT_NAME);
-    hCoreEvent   = CreateEventA(NULL, TRUE, FALSE, HOTRELOAD_CORE_EVENT_NAME);
-    if (!hEngineEvent || !hEditorEvent || !hCoreEvent) {
-        printf("!! Failed to create reload events (error %lu)\n", GetLastError());
-        return 1;
-    }
-
     if (ensure_dirs() != 0) return 1;
 
-    /* Initial compiles (app handles copying to _copy on load) */
-    printf(">> " TCC_COMPILE_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_COMPILE_CMD) == 0) {
-        printf("   Initial engine compile OK.\n");
-    } else {
-        printf("!! Initial engine compile failed.\n");
-    }
-
-    printf(">> " TCC_EDITOR_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_EDITOR_CMD) == 0) {
-        printf("   Initial editor compile OK.\n");
-    } else {
-        printf("!! Initial editor compile failed.\n");
-    }
-
-    printf(">> " TCC_CORE_CMD "\n");
-    fflush(stdout);
-    if (system(TCC_CORE_CMD) == 0) {
-        printf("   Initial core compile OK.\n");
-    } else {
-        printf("!! Initial core compile failed.\n");
-    }
-
-    /* Watch loop: wait on directory changes or engine process exit */
+    /* Watch loop: wait on directory changes or target process exit */
     while (1) {
         HANDLE waitHandles[4];
         DWORD handleCount = 3;
@@ -847,9 +771,9 @@ static int watch_and_rebuild(void)
         }
         waitResult = WaitForMultipleObjects(handleCount, waitHandles, FALSE, INFINITE);
 
-        /* Engine process exited */
+        /* Target process exited */
         if (g_engine_process && waitResult == WAIT_OBJECT_0 + 3) {
-            printf("\n--- Engine exited, stopping watch. ---\n");
+            printf("\n--- Target process exited, stopping watch. ---\n");
             fflush(stdout);
             break;
         }
@@ -864,41 +788,32 @@ static int watch_and_rebuild(void)
         ResetEvent(core_ov.hEvent);
 
         if (waitResult == WAIT_OBJECT_0) {
-            /* Engine directory changed */
             printf("\n--- Engine change detected, recompiling... ---\n");
             fflush(stdout);
             printf(">> " TCC_COMPILE_CMD "\n");
             fflush(stdout);
             if (system(TCC_COMPILE_CMD) == 0) {
-                printf("   Compile OK. Signaling engine reload...\n");
-                SetEvent(hEngineEvent);
-                ResetEvent(hEngineEvent);
+                printf("   Compile OK.\n");
             } else {
                 printf("!! Engine compile failed.\n");
             }
         } else if (waitResult == WAIT_OBJECT_0 + 1) {
-            /* Editor directory changed */
             printf("\n--- Editor change detected, recompiling... ---\n");
             fflush(stdout);
             printf(">> " TCC_EDITOR_CMD "\n");
             fflush(stdout);
             if (system(TCC_EDITOR_CMD) == 0) {
-                printf("   Compile OK. Signaling editor reload...\n");
-                SetEvent(hEditorEvent);
-                ResetEvent(hEditorEvent);
+                printf("   Compile OK.\n");
             } else {
                 printf("!! Editor compile failed.\n");
             }
         } else if (waitResult == WAIT_OBJECT_0 + 2) {
-            /* Core directory changed */
             printf("\n--- Core change detected, recompiling... ---\n");
             fflush(stdout);
             printf(">> " TCC_CORE_CMD "\n");
             fflush(stdout);
             if (system(TCC_CORE_CMD) == 0) {
-                printf("   Compile OK. Signaling core reload...\n");
-                SetEvent(hCoreEvent);
-                ResetEvent(hCoreEvent);
+                printf("   Compile OK.\n");
             } else {
                 printf("!! Core compile failed.\n");
             }
@@ -906,9 +821,6 @@ static int watch_and_rebuild(void)
         fflush(stdout);
     }
 
-    CloseHandle(hEngineEvent);
-    CloseHandle(hEditorEvent);
-    CloseHandle(hCoreEvent);
     CloseHandle(engine_ov.hEvent);
     CloseHandle(editor_ov.hEvent);
     CloseHandle(core_ov.hEvent);

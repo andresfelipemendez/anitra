@@ -15,28 +15,8 @@ static double _boot_ms(LARGE_INTEGER start) {
 #include <unistd.h>
 #endif
 
-static const char *resolve_project_path(int argc, char **argv) {
-  int i;
-  const char *project_path = NULL;
-
-  for (i = 1; i < argc; i++) {
-    if ((strcmp(argv[i], "--include") == 0 || strcmp(argv[i], "-i") == 0) &&
-        i + 1 < argc) {
-      project_path = argv[i + 1];
-      i++;
-      continue;
-    }
-
-    if (argv[i][0] != '-' && project_path == NULL) {
-      project_path = argv[i];
-    }
-  }
-
-  return project_path;
-}
-
 int main(int argc, char **argv) {
-  const char *project_path = resolve_project_path(argc, argv);
+  const char *project_path = (argc > 1) ? argv[1] : NULL;
 
   /* Build PID-based copy name so multiple instances don't collide */
   char core_copy[64];
@@ -55,6 +35,32 @@ int main(int argc, char **argv) {
   }
 #endif
 
+  /* Spawn builder in watch-only mode (detached — we don't own it) */
+#ifdef _WIN32
+  {
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+    char exe_dir[MAX_PATH];
+    char cmd[MAX_PATH + 64];
+    si.cb = sizeof(si);
+    GetModuleFileNameA(NULL, exe_dir, sizeof(exe_dir));
+    {
+      char *last_sep = exe_dir + strlen(exe_dir);
+      while (last_sep > exe_dir && *last_sep != '\\' && *last_sep != '/') last_sep--;
+      *last_sep = '\0';
+    }
+    snprintf(cmd, sizeof(cmd),
+             "\"%s\\build.exe\" watch --pid %lu", exe_dir, (unsigned long)GetCurrentProcessId());
+    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
+                       CREATE_NEW_PROCESS_GROUP, NULL, NULL, &si, &pi)) {
+      printf("[boot] builder launched (PID: %lu)\n",
+             (unsigned long)pi.dwProcessId);
+      CloseHandle(pi.hThread);
+      CloseHandle(pi.hProcess);
+    }
+  }
+#endif
+
   while (1) {
     void *lib;
     init_core_func init;
@@ -64,40 +70,21 @@ int main(int argc, char **argv) {
       fprintf(stderr, "Failed to copy core.dll\n");
       return 1;
     }
-#ifdef _WIN32
-    printf("[boot] copy core: %.2f ms\n", _boot_ms(t0));
-#endif
-
     lib = loadlibrary(core_copy);
     if (lib == NULL) {
       fprintf(stderr, "Failed to load %s.dll\n", core_copy);
       return 1;
     }
-#ifdef _WIN32
-    printf("[boot] load %s: %.2f ms\n", core_copy, _boot_ms(t0));
-#endif
-
     init = (init_core_func)getfunction(lib, "init_core");
     if (init == NULL) {
       fprintf(stderr, "Failed to get init_core\n");
       unloadlibrary(lib);
       return 1;
     }
-
-#ifdef _WIN32
-    printf("[boot] calling init_core...\n");
-#endif
     result = init(project_path);
     if (result == 0) {
-      /* Normal exit — do NOT FreeLibrary(core_copy.dll).
-         All subsystems are already torn down inside init_core().
-         FreeLibrary would cascade through the DLL import chain and
-         DllMain destructors can deadlock on the loader lock.
-         The OS will reclaim everything when the process terminates. */
-      return 0;
+     return 0;
     }
-
-    /* Core hot-reload requested — must unload so we can load the new copy */
     unloadlibrary(lib);
     printf("Core reload — restarting...\n");
   }
