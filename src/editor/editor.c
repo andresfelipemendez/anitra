@@ -3406,32 +3406,17 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
        so text layout works immediately on the next frame.
        ────────────────────────────────────────────────────────────── */
     if (e->initialized) {
-        void *clay_ctxs[] = {
-            e->profiler_clay_ctx,
-            e->scene_tree_clay_ctx,
-            e->inspector_clay_ctx,
-            e->project_browser_clay_ctx,
-            e->menu_bar_clay_ctx,
-            e->editor_toolbar_clay_ctx,
-            e->cache_prof_clay_ctx,
-            e->cpu_prof_clay_ctx,
-        };
-        int i;
-        for (i = 0; i < (int)(sizeof(clay_ctxs) / sizeof(clay_ctxs[0])); i++) {
-            if (clay_ctxs[i]) {
-                Clay_SetCurrentContext((Clay_Context *)clay_ctxs[i]);
-                Clay_SetMeasureTextFunction(profiler_measure_text, e);
-            }
+        if (e->clay_ctx) {
+            Clay_SetCurrentContext((Clay_Context *)e->clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
         }
-        /* Publish editor Clay context to externals (may reference old ptr) */
-        es->clay_editor = e->profiler_clay_ctx;
+        es->clay_editor = e->clay_ctx;
 
         /* Re-init cache profiler statics (CACHE_PROF_IMPL is compiled into
            editor.dll, so its file-scope data is also zeroed on reload) */
         cache_prof_init();
 
-        fprintf(stderr, "Editor hot-reload: re-wired %d Clay contexts\n",
-                (int)(sizeof(clay_ctxs) / sizeof(clay_ctxs[0])));
+        fprintf(stderr, "Editor hot-reload: re-wired Clay context\n");
         return;
     }
 
@@ -3531,111 +3516,28 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
         e->dock_layout_hash_valid = 1;
     }
 
-    /* Create profiler Clay context (one-time, backed by editor_arena).
-       profiler_clay_ctx in editor_state survives hot-reload. */
-    if (!e->profiler_clay_ctx && es->editor_arena) {
-        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_editor");
-        if (clay_sub) {
-            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
-            Clay_ErrorHandler err = {0};
-            e->profiler_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
-            Clay_SetCurrentContext((Clay_Context *)e->profiler_clay_ctx);
-            Clay_SetMeasureTextFunction(profiler_measure_text, e);
-            es->clay_editor = e->profiler_clay_ctx;
-        }
-    }
-
-    if (!e->scene_tree_clay_ctx && es->editor_arena) {
-        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_scene_tree");
-        if (clay_sub) {
-            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
-            Clay_ErrorHandler err = {0};
-            e->scene_tree_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
-            Clay_SetCurrentContext((Clay_Context *)e->scene_tree_clay_ctx);
-            Clay_SetMeasureTextFunction(profiler_measure_text, e);
-        }
-    }
-
-    if (!e->inspector_clay_ctx && es->editor_arena) {
-        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_inspector");
-        if (clay_sub) {
-            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
-            Clay_ErrorHandler err = {0};
-            e->inspector_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){420, 700}, err);
-            Clay_SetCurrentContext((Clay_Context *)e->inspector_clay_ctx);
-            Clay_SetMeasureTextFunction(profiler_measure_text, e);
-        }
-    }
-
-    if (!e->project_browser_clay_ctx && es->editor_arena) {
-        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_project_browser");
-        if (clay_sub) {
-            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
-            Clay_ErrorHandler err = {0};
-            e->project_browser_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){520, 720}, err);
-            Clay_SetCurrentContext((Clay_Context *)e->project_browser_clay_ctx);
-            Clay_SetMeasureTextFunction(profiler_measure_text, e);
-        }
-    }
-
-    if (!e->menu_bar_clay_ctx && es->editor_arena) {
-        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_menu_bar");
-        if (clay_sub) {
-            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
-            Clay_ErrorHandler err = {0};
-            e->menu_bar_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){1600, 900}, err);
-            Clay_SetCurrentContext((Clay_Context *)e->menu_bar_clay_ctx);
-            Clay_SetMeasureTextFunction(profiler_measure_text, e);
-            e->clay_debug_open = 1;
-        }
-    }
-
-    if (!e->editor_toolbar_clay_ctx && es->editor_arena) {
-        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_editor_toolbar");
-        if (clay_sub) {
-            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
-            Clay_ErrorHandler err = {0};
-            e->editor_toolbar_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 200}, err);
-            Clay_SetCurrentContext((Clay_Context *)e->editor_toolbar_clay_ctx);
-            Clay_SetMeasureTextFunction(profiler_measure_text, e);
-        }
-    }
-
-    if (!e->cache_prof_clay_ctx && es->editor_arena) {
-        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_cache_prof");
-        if (clay_sub) {
-            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
-            Clay_ErrorHandler err = {0};
-            e->cache_prof_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
-            Clay_SetCurrentContext((Clay_Context *)e->cache_prof_clay_ctx);
-            Clay_SetMeasureTextFunction(profiler_measure_text, e);
-        }
-    }
-
-    if (!e->cpu_prof_clay_ctx && es->editor_arena) {
-        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
-        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_cpu_prof");
-        if (clay_sub) {
-            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
-            Clay_ErrorHandler err = {0};
-            e->cpu_prof_clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){800, 600}, err);
-            Clay_SetCurrentContext((Clay_Context *)e->cpu_prof_clay_ctx);
-            Clay_SetMeasureTextFunction(profiler_measure_text, e);
-        }
-    }
+    /* Old per-panel Clay contexts removed — unified context below replaces them */
 
     if (!e->cpu_prof_text_arena && es->editor_arena) {
         e->cpu_prof_text_arena = arena_alloc_subarena(es->editor_arena, 16 * 1024, 16, "cpu_prof_text");
     }
     if (!e->prof_text_arena && es->editor_arena) {
         e->prof_text_arena = arena_alloc_subarena(es->editor_arena, 16 * 1024, 16, "prof_text");
+    }
+
+    /* Unified Clay context — single layout tree for all editor UI */
+    if (!e->clay_ctx && es->editor_arena) {
+        Clay_SetMaxElementCount(32768);
+        uint32_t clay_size = (uint32_t)Clay_MinMemorySize();
+        arena *clay_sub = arena_alloc_subarena(es->editor_arena, clay_size, 16, "clay_unified");
+        if (clay_sub) {
+            Clay_Arena ca = Clay_CreateArenaWithCapacityAndMemory(clay_size, clay_sub->base);
+            Clay_ErrorHandler err = {0};
+            e->clay_ctx = Clay_Initialize(ca, (Clay_Dimensions){1600, 900}, err);
+            Clay_SetCurrentContext((Clay_Context *)e->clay_ctx);
+            Clay_SetMeasureTextFunction(profiler_measure_text, e);
+            es->clay_editor = e->clay_ctx;
+        }
     }
 }
 
@@ -3730,6 +3632,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     }
 
     EDITOR_CPU_ZONE_BEGIN(e, "prof_clay_begin");
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
     Clay_BeginLayout();
     EDITOR_CPU_ZONE_END(e);
 
@@ -4293,6 +4196,7 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
         e->scene_tree_scroll_y = 0;
     }
 
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
     Clay_BeginLayout();
 
     entity_count = gs->scene_entities ? gs->scene_entity_count : 0;
@@ -4472,6 +4376,7 @@ static void project_browser_layout(game_state *gs, editor_state *es) {
     }
     num_rows = vis_count > 0 ? (vis_count + cols - 1) / cols : 0;
 
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
     Clay_BeginLayout();
 
     /* Root: 2-column horizontal layout */
@@ -5124,6 +5029,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     Clay_SetPointerState((Clay_Vector2){e->inspector_mouse_x, e->inspector_mouse_y},
                          (bool)e->inspector_mouse_down);
     snprintf(title_buf, sizeof(title_buf), "Inspector");
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
     Clay_BeginLayout();
 
 /* ── Macros for editable field rendering ── */
@@ -5887,6 +5793,7 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
 
     Clay_SetCurrentContext(ctx);
     Clay_SetLayoutDimensions((Clay_Dimensions){e->panel_w, e->panel_h});
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
     Clay_BeginLayout();
 
     CLAY(CLAY_ID("EDToolbarRoot"), {
@@ -6051,6 +5958,7 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
     }
 
     EDITOR_CPU_ZONE_BEGIN(e, "cache_clay_begin");
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
     Clay_BeginLayout();
     EDITOR_CPU_ZONE_END(e);
 
@@ -6306,6 +6214,7 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
     e->cpu_prof_hover_zone_active = 0;
     e->cpu_prof_hover_zone_name[0] = '\0';
 
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
     Clay_BeginLayout();
 
     history_count = cpu_prof_get_history_count();
@@ -7155,6 +7064,2951 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
     e->cpu_prof_click = 0;
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  Unified Clay layout — single context for all editor UI
+ * ══════════════════════════════════════════════════════════════ */
+
+static void profiler_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    int prof_win_idx;
+    int prof_node;
+    int win_w, win_h;
+    arena *a;
+    float used_pct;
+    float split;  /* tree/grid split ratio */
+    char *title_buf;
+    static FlatRecord flat[PROFILER_MAX_FLAT_RECORDS];
+    int flat_color, flat_count;
+    uint32_t hover_offset, hover_size; /* byte range of hovered record (for range match) */
+    int have_hover;
+    const char *cpu_focus_tag;
+    int have_cpu_focus;
+    int click;    /* snapshot of prof_click -- consumed after layout */
+
+    /* Sync unified Clay arena usage for display */
+    {
+        Clay_Context *pc = (Clay_Context *)e->clay_ctx;
+        arena *clay_sub_arena = NULL;
+        uint32_t ri;
+        /* Find the clay_unified sub-arena by tag in editor_arena records */
+        for (ri = 0; ri < es->editor_arena->record_count; ri++) {
+            if (es->editor_arena->records[ri].child &&
+                strcmp(es->editor_arena->records[ri].tag, "clay_unified") == 0) {
+                clay_sub_arena = es->editor_arena->records[ri].child;
+                break;
+            }
+        }
+        if (clay_sub_arena && pc)
+            clay_sub_arena->used = (uint32_t)pc->internalArena.nextAllocation;
+    }
+
+    /* Get profiler panel dimensions from dock node */
+    prof_node = dock_find_leaf_for_panel_global(d, PANEL_PROFILER, &prof_win_idx);
+    if (prof_node >= 0) {
+        DockNode *pn = &d->nodes[prof_node];
+        win_w = (int)pn->w;
+        win_h = (int)(pn->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    } else {
+        win_w = 800;
+        win_h = 600;
+    }
+
+    /* Feed Clay pointer + scroll state so scroll containers and hover work */
+    click = e->prof_click;   /* snapshot before layout -- tree uses it for collapse toggle */
+
+    /* Split ratio: default 0.35, draggable */
+    if (e->prof_split_ratio < 0.05f) e->prof_split_ratio = 0.35f;
+    split = e->prof_split_ratio;
+    {
+        float divider_x = 12.0f + (float)(win_w - 24) * split; /* padding=12 each side */
+        float mx = e->prof_mouse_x;
+        int near_divider = (mx > divider_x - 6.0f && mx < divider_x + 6.0f);
+        e->prof_split_cursor = near_divider || e->prof_split_dragging;
+        if (e->prof_split_dragging) {
+            if (e->prof_mouse_down) {
+                float new_ratio = (mx - 12.0f) / (float)(win_w - 24);
+                if (new_ratio < 0.10f) new_ratio = 0.10f;
+                if (new_ratio > 0.90f) new_ratio = 0.90f;
+                e->prof_split_ratio = new_ratio;
+                split = new_ratio;
+            } else {
+                e->prof_split_dragging = 0;
+            }
+        } else if (near_divider && click) {
+            e->prof_split_dragging = 1;
+            click = 0; /* consume click so tree doesn't toggle */
+        }
+    }
+
+    a = gs->root_arena;
+    if (!e->prof_text_arena) return;
+    arena_reset(e->prof_text_arena);
+
+    used_pct = (a->capacity > 0) ? (100.0f * a->used / a->capacity) : 0.0f;
+
+    title_buf = (char *)arena_alloc(e->prof_text_arena, 128, 1, "prof_title");
+    if (!title_buf) return;
+    snprintf(title_buf, 128, "Memory Profiler    %s / %s  (%.1f%%)",
+        format_bytes(a->used), format_bytes(a->capacity), (double)used_pct);
+
+    /* Flatten records for grid */
+    EDITOR_CPU_ZONE_BEGIN(e, "prof_flatten_arena");
+    flat_color = 0;
+    flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
+    EDITOR_CPU_ZONE_END(e);
+    cpu_focus_tag = NULL;
+    if (e->cpu_prof_hover_zone_active && e->cpu_prof_hover_zone_name[0]) {
+        cpu_focus_tag = e->cpu_prof_hover_zone_name;
+    } else if (e->cpu_prof_selected_zone_active && e->cpu_prof_selected_zone_name[0]) {
+        cpu_focus_tag = e->cpu_prof_selected_zone_name;
+    }
+    have_cpu_focus = (cpu_focus_tag && cpu_focus_tag[0]) ? 1 : 0;
+
+    /* Root container */
+    EDITOR_CPU_ZONE_BEGIN(e, "prof_clay_tree_and_grid");
+    CLAY(CLAY_ID("PRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 0,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {25, 25, 30, 255}
+    }) {
+        /* Title bar */
+        CLAY(CLAY_ID("PTitleBar"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                .padding = { .left = 8, .right = 8, .top = 6, .bottom = 10 },
+                .childGap = 4,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            }
+        }) {
+            Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
+            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = UI_FONT_BODY}));
+            if (have_cpu_focus) {
+                char *focus_buf = (char *)arena_alloc(e->prof_text_arena, 96, 1, "prof_focus");
+                if (focus_buf) {
+                    snprintf(focus_buf, 96, "CPU focus: %s",
+                             cpu_focus_tag ? cpu_focus_tag : "");
+                    {
+                        Clay_String fs = {false, (int32_t)strlen(focus_buf), focus_buf};
+                        CLAY_TEXT(fs, CLAY_TEXT_CONFIG({.textColor = {176, 204, 245, 255}, .fontSize = UI_FONT_BODY}));
+                    }
+                }
+            }
+        }
+
+        /* Two-panel row */
+        CLAY(CLAY_ID("PPanels"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .childGap = 8,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT
+            }
+        }) {
+            /* ===== TREE PANEL (left, resizable) ===== */
+            CLAY(CLAY_ID("PTree"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_PERCENT(split), CLAY_SIZING_GROW({0}) },
+                    .padding = CLAY_PADDING_ALL(8),
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {35, 35, 40, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                {
+                    Clay_String hdr = CLAY_STRING("Tree View");
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = UI_FONT_BODY}));
+                }
+
+                /* Scrollable tree content */
+                CLAY(CLAY_ID("PTreeScroll"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                        .childGap = 2,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+                }) {
+                    CLAY(CLAY_ID("PTreeContent"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .right = 20 },  /* space for scrollbar */
+                            .childGap = 2,
+                            .layoutDirection = CLAY_TOP_TO_BOTTOM
+                        }
+                    }) {
+                        /* Arena root row */
+                        {
+                            char *root_buf = (char *)arena_alloc(e->prof_text_arena, 64, 1, "prof_root");
+                            if (root_buf) {
+                                snprintf(root_buf, 64, "Arena  %s", format_bytes(a->capacity));
+                                {
+                                    Clay_String rs = {false, (int32_t)strlen(root_buf), root_buf};
+                                    CLAY(CLAY_ID("TRootRow"), {
+                                        .layout = {
+                                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                            .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 }
+                                        }
+                                    }) {
+                                        CLAY_TEXT(rs, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = UI_FONT_BODY}));
+                                    }
+                                }
+                            }
+                        }
+
+                        {
+                            HoverInfo hi = {0};
+                            int row_id = 0;
+                            int tree_color = 0;
+                            EDITOR_CPU_ZONE_BEGIN(e, "prof_tree_walk");
+                            profiler_tree_arena(a, 1, &row_id, 0, &hi,
+                                                &tree_color, click, e->profiler_tree_collapsed,
+                                                cpu_focus_tag, e->prof_text_arena);
+                            EDITOR_CPU_ZONE_END(e);
+                            hover_offset = hi.offset;
+                            hover_size = hi.size;
+                            have_hover = hi.found;
+                        }
+                    }
+                }
+            }
+
+            /* ===== GRID PANEL (right) -- single placeholder, pixels built below ===== */
+            CLAY(CLAY_ID("PGrid"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                    .padding = CLAY_PADDING_ALL(8),
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {35, 35, 40, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                {
+                    Clay_String hdr = CLAY_STRING("Grid View");
+                    CLAY_TEXT(hdr, CLAY_TEXT_CONFIG({.textColor = {180, 180, 190, 255}, .fontSize = UI_FONT_BODY}));
+                }
+
+                /* Placeholder rect -- sized by Clay, filled by GPU texture in externals */
+                CLAY(CLAY_ID("PGridTex"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) }
+                    },
+                    .backgroundColor = {50, 50, 55, 255}
+                }) {}
+
+                /* Legend */
+                CLAY(CLAY_ID("GLegend"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                        .padding = { .left = 0, .right = 0, .top = 8, .bottom = 0 },
+                        .childGap = 12,
+                        .layoutDirection = CLAY_LEFT_TO_RIGHT
+                    }
+                }) {
+                    CLAY(CLAY_ID("GLAllocBox"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
+                        .backgroundColor = profiler_colors[0],
+                        .cornerRadius = CLAY_CORNER_RADIUS(1)
+                    }) {}
+                    {
+                        Clay_String ls = CLAY_STRING("= allocated");
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = UI_FONT_BODY}));
+                    }
+                    CLAY(CLAY_ID("GLFreeBox"), {
+                        .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10) } },
+                        .backgroundColor = {50, 50, 55, 255},
+                        .cornerRadius = CLAY_CORNER_RADIUS(1)
+                    }) {}
+                    {
+                        Clay_String ls = CLAY_STRING("= free");
+                        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {170, 170, 170, 255}, .fontSize = UI_FONT_BODY}));
+                    }
+                }
+            }
+        }
+    }
+
+    EDITOR_CPU_ZONE_END(e); /* prof_clay_tree_and_grid */
+
+    /* Export scroll data for scrollbar rendering */
+    {
+        Clay_ScrollContainerData sd = Clay_GetScrollContainerData(CLAY_ID("PTreeScroll"));
+        if (sd.found && sd.scrollPosition) {
+            e->prof_scroll_pos = sd.scrollPosition->y;
+            e->prof_content_h = sd.contentDimensions.height;
+            e->prof_container_h = sd.scrollContainerDimensions.height;
+        }
+        /* Export PTreeScroll bounding box for scrollbar track positioning */
+        {
+            Clay_ElementData ed = Clay_GetElementData(CLAY_ID("PTreeScroll"));
+            if (ed.found) {
+                e->prof_track_x = ed.boundingBox.x;
+                e->prof_track_y = ed.boundingBox.y;
+                e->prof_track_w = ed.boundingBox.width;
+                e->prof_track_h = ed.boundingBox.height;
+            }
+        }
+    }
+
+    /* Export PGridTex bounding box + build pixel buffer for GPU texture */
+    EDITOR_CPU_ZONE_BEGIN(e, "prof_grid_pixels");
+    {
+        uint32_t cell_size = 64 * 1024;
+        uint32_t total_cells;
+        int grid_cols, grid_rows;
+        int total_px, row, col, i;
+
+        /* --- Sub-zone: Clay bounding box lookup --- */
+        EDITOR_CPU_ZONE_BEGIN(e, "grid:bbox");
+        {
+            Clay_ElementData gd = Clay_GetElementData(CLAY_ID("PGridTex"));
+            if (gd.found) {
+                e->prof_grid_x  = gd.boundingBox.x;
+                e->prof_grid_y  = gd.boundingBox.y;
+                e->prof_grid_bw = gd.boundingBox.width;
+                e->prof_grid_bh = gd.boundingBox.height;
+            }
+        }
+        EDITOR_CPU_ZONE_END(e);
+
+        /* --- Grid dimensions --- */
+        total_cells = (a->capacity + cell_size - 1) / cell_size;
+        grid_cols = 16;
+        grid_rows = ((int)total_cells + grid_cols - 1) / grid_cols;
+        if (grid_cols > PROF_GRID_MAX_COLS) grid_cols = PROF_GRID_MAX_COLS;
+        if (grid_rows > PROF_GRID_MAX_ROWS) grid_rows = PROF_GRID_MAX_ROWS;
+        e->prof_grid_w = grid_cols;
+        e->prof_grid_h = grid_rows;
+        total_px = grid_cols * grid_rows;
+
+        /* --- Sub-zone: clear all pixels to "free" color --- */
+        EDITOR_CPU_ZONE_BEGIN(e, "grid:clear");
+        for (i = 0; i < total_px; i++) {
+            e->prof_grid_pixels[i * 4 + 0] = 50;
+            e->prof_grid_pixels[i * 4 + 1] = 50;
+            e->prof_grid_pixels[i * 4 + 2] = 55;
+            e->prof_grid_pixels[i * 4 + 3] = 255;
+        }
+        EDITOR_CPU_ZONE_END(e);
+
+        /* --- Sub-zone: precompute per-record colors (O(records)) --- */
+        EDITOR_CPU_ZONE_BEGIN(e, "grid:color_precompute");
+        {
+            int fi;
+            for (fi = 0; fi < flat_count; fi++) {
+                Clay_Color cc = profiler_colors[flat[fi].color_idx % profiler_color_count];
+                int is_hovered = have_hover &&
+                    flat[fi].offset >= hover_offset &&
+                    flat[fi].offset + flat[fi].size <= hover_offset + hover_size;
+                int is_cpu_match = have_cpu_focus && flat[fi].tag &&
+                    cpu_zone_highlights_record_tag(cpu_focus_tag, flat[fi].tag);
+                if (have_hover || have_cpu_focus) {
+                    if (is_hovered || is_cpu_match) {
+                        flat[fi].cr = (uint8_t)(cc.r + (255 - cc.r) * 0.5f);
+                        flat[fi].cg = (uint8_t)(cc.g + (255 - cc.g) * 0.5f);
+                        flat[fi].cb = (uint8_t)(cc.b + (255 - cc.b) * 0.5f);
+                    } else {
+                        flat[fi].cr = (uint8_t)(cc.r * 0.3f);
+                        flat[fi].cg = (uint8_t)(cc.g * 0.3f);
+                        flat[fi].cb = (uint8_t)(cc.b * 0.3f);
+                    }
+                } else {
+                    flat[fi].cr = (uint8_t)cc.r;
+                    flat[fi].cg = (uint8_t)cc.g;
+                    flat[fi].cb = (uint8_t)cc.b;
+                }
+            }
+        }
+        EDITOR_CPU_ZONE_END(e);
+
+        /* --- Sub-zone: stamp record colors onto cells (O(records), record-major) --- */
+        EDITOR_CPU_ZONE_BEGIN(e, "grid:stamp_cells");
+        {
+            int fi;
+            for (fi = 0; fi < flat_count; fi++) {
+                uint32_t first_cell = flat[fi].offset / cell_size;
+                uint32_t last_cell  = (flat[fi].offset + flat[fi].size - 1) / cell_size;
+                uint32_t c;
+                if (last_cell >= total_cells) last_cell = total_cells - 1;
+                for (c = first_cell; c <= last_cell; c++) {
+                    int pi = (int)c * 4;
+                    e->prof_grid_pixels[pi + 0] = flat[fi].cr;
+                    e->prof_grid_pixels[pi + 1] = flat[fi].cg;
+                    e->prof_grid_pixels[pi + 2] = flat[fi].cb;
+                }
+            }
+        }
+        EDITOR_CPU_ZONE_END(e);
+    }
+    EDITOR_CPU_ZONE_END(e); /* prof_grid_pixels */
+}
+static void scene_tree_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    int scene_win_idx;
+    int scene_node;
+    int win_w, win_h;
+    int click;
+    int shift_toggle;
+    int entity_count;
+    int parent_of[SCENE_TREE_MAX_ENTITIES];
+    int visited[SCENE_TREE_MAX_ENTITIES];
+    static char title_buf[128];
+
+    scene_node = dock_find_leaf_for_panel_global(d, PANEL_SCENE_TREE, &scene_win_idx);
+    if (scene_node >= 0) {
+        DockNode *sn = &d->nodes[scene_node];
+        win_w = (int)sn->w;
+        win_h = (int)(sn->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    } else {
+        win_w = 600;
+        win_h = 700;
+    }
+
+    click = e->scene_tree_click;
+    shift_toggle = click && e->scene_tree_click_shift;
+    if (e->scene_tree_drag_active && e->scene_tree_mouse_down) {
+        e->scene_tree_drop_target = -1;
+        e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+    }
+
+    entity_count = gs->scene_entities ? gs->scene_entity_count : 0;
+    snprintf(title_buf, sizeof(title_buf), "Scene Tree  (%d entities)", entity_count);
+    if (entity_count > SCENE_TREE_MAX_ENTITIES) entity_count = SCENE_TREE_MAX_ENTITIES;
+    build_scene_parent_lookup(gs, entity_count, parent_of);
+    memset(visited, 0, (size_t)entity_count * sizeof(int));
+
+    CLAY(CLAY_ID("STRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+            .childGap = UI_PANEL_GAP,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+        Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
+        CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 225, 235, 255}, .fontSize = UI_FONT_TITLE}));
+
+        CLAY(CLAY_ID("STList"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .childGap = UI_ROW_GAP,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+        }) {
+            CLAY(CLAY_ID("STListContent"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .childGap = UI_ROW_GAP,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                }
+            }) {
+                int i;
+                if (entity_count <= 0) {
+                    Clay_String cs = CLAY_STRING("(empty)");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {150, 160, 180, 255}, .fontSize = UI_FONT_SECONDARY}));
+                } else {
+                    for (i = 0; i < entity_count; i++) {
+                        int p = parent_of[i];
+                        int is_root = (p < 0 || p >= entity_count || p == i);
+                        if (is_root) {
+                            scene_tree_emit_entity_recursive(gs, e, i, 0, click,
+                                                             shift_toggle,
+                                                             parent_of, entity_count, visited);
+                        }
+                    }
+                    for (i = 0; i < entity_count; i++) {
+                        if (!visited[i]) {
+                            scene_tree_emit_entity_recursive(gs, e, i, 0, click,
+                                                             shift_toggle,
+                                                             parent_of, entity_count, visited);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Handle drag-drop reparenting */
+    if (e->scene_tree_drag_active && !e->scene_tree_mouse_down) {
+        int child = e->scene_tree_drag_entity;
+        int target = e->scene_tree_drop_target;
+        int mode = e->scene_tree_drop_mode;
+        int parent = -2;
+
+        if (mode == SCENE_TREE_DROP_NESTED && target >= 0 && target < entity_count) {
+            parent = target;
+        } else if ((mode == SCENE_TREE_DROP_SIBLING_BEFORE || mode == SCENE_TREE_DROP_SIBLING_AFTER) &&
+                   target >= 0 && target < entity_count) {
+            parent = parent_of[target];
+            if (parent < 0 || parent >= entity_count) parent = -1;
+        }
+
+        if (parent >= -1 && scene_tree_parent_assignment_is_valid(child, parent, parent_of, entity_count)) {
+            set_parent_transform_component(gs, child, parent);
+            if (e->collab.connected) {
+                op_parent_payload cp = {parent};
+                collab_emit_op(&e->collab, OP_SET_PARENT, child, &cp, sizeof(cp));
+            }
+            editor_scene_selection_set_single(e, child);
+        }
+        e->scene_tree_drag_active = 0;
+        e->scene_tree_drag_entity = -1;
+        e->scene_tree_drop_target = -1;
+        e->scene_tree_drop_mode = SCENE_TREE_DROP_NONE;
+    }
+
+    e->scene_tree_click = 0;
+    e->scene_tree_click_shift = 0;
+}
+static void project_browser_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    int browser_win_idx;
+    int browser_node;
+    int win_w, win_h;
+    int total_assets;
+    int click;
+    int i, vis_count, cols, row, col, num_rows;
+    int folder_count;
+
+    static char title_buf[128];
+    static char folders[PB_MAX_FOLDERS][256];
+    const char *sel_path;
+
+    /* Visible asset refs (filtered by selected folder) */
+    #define PB_MAX_VIS_INNER 128
+    const char *vis_keys[PB_MAX_VIS_INNER];
+    const char *vis_paths[PB_MAX_VIS_INNER];
+    Clay_Color  vis_swatch[PB_MAX_VIS_INNER];
+    int         vis_type[PB_MAX_VIS_INNER];
+
+    browser_node = dock_find_leaf_for_panel_global(d, PANEL_ASSETS, &browser_win_idx);
+    if (browser_node < 0) {
+        e->pb_thumbnail_count = 0;
+        return;
+    }
+    {
+        DockNode *n = &d->nodes[browser_node];
+        win_w = (int)n->w;
+        win_h = (int)(n->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    }
+
+    click = e->project_browser_click;
+
+    total_assets = gs->project.asset_count;
+    snprintf(title_buf, sizeof(title_buf), "Project Browser  (%d assets)", total_assets);
+    sel_path = e->pb_selected_path;
+
+    folder_count = pb_build_folder_list(&gs->project, folders);
+
+    vis_count = 0;
+    for (i = 0; i < gs->project.asset_count && vis_count < PB_MAX_VIS_INNER; i++) {
+        const project_asset *a = &gs->project.assets[i];
+        if (pb_path_matches(a->path, sel_path)) {
+            vis_keys[vis_count] = a->key;
+            vis_paths[vis_count] = a->path;
+            vis_swatch[vis_count] = pb_asset_type_color((int)a->type);
+            vis_type[vis_count] = (int)a->type;
+            vis_count++;
+        }
+    }
+
+    /* Compute grid columns from available width */
+    {
+        int grid_w = win_w - PB_FOLDER_TREE_WIDTH - 24;
+        cols = grid_w / (PB_ICON_SIZE + PB_ICON_GAP);
+        if (cols < 1) cols = 1;
+    }
+    num_rows = vis_count > 0 ? (vis_count + cols - 1) / cols : 0;
+
+    /* Root: 2-column horizontal layout */
+    CLAY(CLAY_ID("PBRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .layoutDirection = CLAY_LEFT_TO_RIGHT
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+
+        /* -- LEFT COLUMN: Folder tree -- */
+        CLAY(CLAY_ID("PBFolderTree"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIXED(PB_FOLDER_TREE_WIDTH), CLAY_SIZING_GROW({0}) },
+                .padding = CLAY_PADDING_ALL(UI_SECTION_PADDING),
+                .childGap = UI_SPACE_XXS,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .backgroundColor = {28, 32, 42, 255},
+            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+        }) {
+            CLAY(CLAY_ID("PBTreeContent"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .childGap = UI_SPACE_XXS,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                }
+            }) {
+                /* "All" root entry */
+                {
+                    int is_root_sel = (sel_path[0] == '\0');
+                    CLAY(CLAY_ID("PBFolderAll"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = {
+                                .left = UI_ROW_PADDING_X,
+                                .right = UI_ROW_PADDING_X,
+                                .top = UI_ROW_PADDING_Y,
+                                .bottom = UI_ROW_PADDING_Y
+                            },
+                            .childGap = UI_ROW_GAP,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = is_root_sel ? ((Clay_Color){60, 90, 140, 255})
+                                         : Clay_Hovered() ? ((Clay_Color){44, 52, 68, 255})
+                                         : ((Clay_Color){0, 0, 0, 0}),
+                        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
+                    }) {
+                        {
+                            Clay_String n = CLAY_STRING("All");
+                            CLAY_TEXT(n, CLAY_TEXT_CONFIG({
+                                .textColor = is_root_sel ? ((Clay_Color){255, 255, 255, 255})
+                                                         : ((Clay_Color){200, 210, 225, 255}),
+                                .fontSize = UI_FONT_SECONDARY
+                            }));
+                        }
+                        if (Clay_Hovered() && click) {
+                            e->pb_selected_path[0] = '\0';
+                        }
+                    }
+                }
+
+                /* Folder entries */
+                for (i = 0; i < folder_count; i++) {
+                    int depth = pb_count_depth(folders[i]);
+                    const char *display = pb_last_component(folders[i]);
+                    int is_selected = (strcmp(folders[i], sel_path) == 0);
+                    int indent = depth * UI_TREE_INDENT;
+
+                    CLAY(CLAY_IDI("PBFolder", i), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = {
+                                .left = (uint16_t)(UI_SPACE_XS + indent),
+                                .right = UI_SPACE_XS,
+                                .top = UI_SPACE_XS,
+                                .bottom = UI_SPACE_XS
+                            },
+                            .childGap = UI_ROW_GAP,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = is_selected ? ((Clay_Color){60, 90, 140, 255})
+                                         : Clay_Hovered() ? ((Clay_Color){44, 52, 68, 255})
+                                         : ((Clay_Color){0, 0, 0, 0}),
+                        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
+                    }) {
+                        /* Folder icon */
+                        CLAY(CLAY_IDI("PBFIcon", i), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) }
+                            },
+                            .backgroundColor = {140, 160, 190, 255},
+                            .cornerRadius = CLAY_CORNER_RADIUS(2)
+                        }) {}
+
+                        /* Folder name */
+                        {
+                            Clay_String fname = {false, (int32_t)strlen(display), display};
+                            CLAY_TEXT(fname, CLAY_TEXT_CONFIG({
+                                .textColor = is_selected ? ((Clay_Color){255, 255, 255, 255})
+                                                         : ((Clay_Color){190, 200, 218, 255}),
+                                .fontSize = UI_FONT_SECONDARY
+                            }));
+                        }
+
+                        /* Handle click */
+                        if (Clay_Hovered() && click) {
+                            strncpy(e->pb_selected_path, folders[i], 255);
+                            e->pb_selected_path[255] = '\0';
+                        }
+                    }
+                }
+            }
+        }
+
+        /* -- Separator -- */
+        CLAY(CLAY_ID("PBSep"), {
+            .layout = { .sizing = { CLAY_SIZING_FIXED(1), CLAY_SIZING_GROW({0}) } },
+            .backgroundColor = {50, 58, 75, 255}
+        }) {}
+
+        /* -- RIGHT COLUMN: Icon grid -- */
+        CLAY(CLAY_ID("PBGridArea"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+                .childGap = UI_SECTION_GAP,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            }
+        }) {
+            /* Header with path breadcrumb */
+            {
+                static char header_buf[300];
+                Clay_String ts;
+                if (sel_path[0])
+                    snprintf(header_buf, sizeof(header_buf), "%s", sel_path);
+                else
+                    snprintf(header_buf, sizeof(header_buf), "%s", title_buf);
+                ts = (Clay_String){ false, (int32_t)strlen(header_buf), header_buf };
+                CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {180, 190, 208, 255}, .fontSize = UI_FONT_SECONDARY}));
+            }
+
+            /* Scrollable grid */
+            CLAY(CLAY_ID("PBGridScroll"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) }
+                },
+                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+            }) {
+                CLAY(CLAY_ID("PBGridContent"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                        .childGap = PB_ICON_GAP,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    }
+                }) {
+                    if (vis_count == 0) {
+                        Clay_String cs = CLAY_STRING("(no assets in this folder)");
+                        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({
+                            .textColor = {130, 142, 166, 255}, .fontSize = UI_FONT_SECONDARY
+                        }));
+                    } else {
+                        for (row = 0; row < num_rows; row++) {
+                            CLAY(CLAY_IDI("PBRow", row), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_GROW({0}),
+                                                CLAY_SIZING_FIT({0}) },
+                                    .childGap = PB_ICON_GAP,
+                                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                                }
+                            }) {
+                                for (col = 0; col < cols; col++) {
+                                    int idx = row * cols + col;
+                                    if (idx >= vis_count) break;
+                                    {
+                                        const char *key = vis_keys[idx];
+                                        const char *path = vis_paths[idx];
+                                        Clay_Color sw = vis_swatch[idx];
+                                        Clay_String ks;
+                                        int tile_selected = (strcmp(e->pb_selected_asset_key, key) == 0 &&
+                                                             e->pb_selected_asset_type == vis_type[idx]);
+
+                                        CLAY(CLAY_IDI("PBTile", idx), {
+                                            .layout = {
+                                                .sizing = {
+                                                    CLAY_SIZING_FIXED(PB_ICON_SIZE),
+                                                    CLAY_SIZING_FIT({0})
+                                                },
+                                                .padding = CLAY_PADDING_ALL(UI_SPACE_XS),
+                                                .childGap = UI_ROW_GAP,
+                                                .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                                                .childAlignment = {
+                                                    CLAY_ALIGN_X_CENTER,
+                                                    CLAY_ALIGN_Y_TOP
+                                                }
+                                            },
+                                            .backgroundColor = tile_selected
+                                                ? ((Clay_Color){58, 72, 98, 255})
+                                                : Clay_Hovered()
+                                                    ? ((Clay_Color){52, 62, 82, 255})
+                                                    : ((Clay_Color){34, 40, 54, 255}),
+                                            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_LG)
+                                        }) {
+                                            /* Color swatch */
+                                            CLAY(CLAY_IDI("PBSwFrame", idx), {
+                                                .layout = {
+                                                    .sizing = {
+                                                        CLAY_SIZING_FIXED(PB_ICON_SIZE - 8),
+                                                        CLAY_SIZING_FIXED(44)
+                                                    },
+                                                    .padding = CLAY_PADDING_ALL(2)
+                                                },
+                                                .backgroundColor = sw,
+                                                .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
+                                            }) {
+                                                CLAY(CLAY_IDI("PBSw", idx), {
+                                                    .layout = {
+                                                        .sizing = {
+                                                            CLAY_SIZING_GROW({0}),
+                                                            CLAY_SIZING_GROW({0})
+                                                        }
+                                                    },
+                                                    .backgroundColor = {24, 30, 40, 255},
+                                                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
+                                                }) {}
+                                            }
+
+                                            /* Asset name */
+                                            ks = (Clay_String){false,
+                                                (int32_t)strlen(key), key};
+                                            CLAY_TEXT(ks, CLAY_TEXT_CONFIG({
+                                                .textColor = {210, 218, 230, 255},
+                                                .fontSize = UI_FONT_SECONDARY
+                                            }));
+
+                                            if (Clay_Hovered() && click) {
+                                                strncpy(e->pb_selected_asset_key, key,
+                                                        sizeof(e->pb_selected_asset_key) - 1);
+                                                e->pb_selected_asset_key[sizeof(e->pb_selected_asset_key) - 1] = '\0';
+                                                strncpy(e->pb_selected_asset_path, path,
+                                                        sizeof(e->pb_selected_asset_path) - 1);
+                                                e->pb_selected_asset_path[sizeof(e->pb_selected_asset_path) - 1] = '\0';
+                                                e->pb_selected_asset_type = vis_type[idx];
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Build thumbnail requests from swatch bounding boxes */
+    e->pb_thumbnail_count = 0;
+    for (i = 0; i < vis_count && i < PB_MAX_THUMBNAILS; i++) {
+        Clay_ElementData ed = Clay_GetElementData(
+            Clay_GetElementIdWithIndex(CLAY_STRING("PBSw"), (uint32_t)i));
+        if (!ed.found) continue;
+        {
+            pb_thumbnail_request *req = &e->pb_thumbnails[e->pb_thumbnail_count];
+            strncpy(req->key, vis_keys[i], sizeof(req->key) - 1);
+            req->key[sizeof(req->key) - 1] = '\0';
+            req->type = vis_type[i];
+            req->x = ed.boundingBox.x;
+            req->y = ed.boundingBox.y;
+            req->w = ed.boundingBox.width;
+            req->h = ed.boundingBox.height;
+            e->pb_thumbnail_count++;
+        }
+    }
+
+    e->project_browser_click = 0;
+    #undef PB_MAX_VIS_INNER
+}
+static void inspector_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    int insp_win_idx;
+    int insp_node;
+    int win_w, win_h;
+    int selected;
+    int has_asset_selected;
+    int click;
+    int clicked_any_field = 0;
+    static char title_buf[96];
+    static char line_bufs[96][256];
+    int line_i = 0;
+
+    insp_node = dock_find_leaf_for_panel_global(d, PANEL_INSPECTOR, &insp_win_idx);
+    if (insp_node < 0) return;
+    {
+        DockNode *n = &d->nodes[insp_node];
+        win_w = (int)n->w;
+        win_h = (int)(n->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    }
+
+    click = e->inspector_click;
+
+    /* Handle commit/cancel from key events before layout */
+    if (e->insp_key_enter || e->insp_key_tab) {
+        insp_commit_edit(gs, e);
+        /* Tab: advance to next field */
+        if (e->insp_key_tab && e->insp_edit_field == INSP_FIELD_NONE) {
+            /* Next field logic handled below during layout */
+        }
+    }
+    if (e->insp_key_escape) {
+        insp_cancel_edit(e);
+    }
+    e->insp_key_enter = 0;
+    e->insp_key_escape = 0;
+    e->insp_key_backspace = 0;
+    e->insp_key_tab = 0;
+
+    selected = e->scene_selected_entity;
+    if (!gs->scene_entities) selected = -1;
+    if (selected < 0 || selected >= gs->scene_entity_count) selected = -1;
+
+    /* If selected entity changed, cancel any edit in progress */
+    if (e->insp_edit_field >= 0 && e->insp_edit_entity != selected) {
+        insp_cancel_edit(e);
+    }
+
+    has_asset_selected = (e->pb_selected_asset_key[0] != '\0' &&
+                          e->pb_selected_asset_type >= 0 &&
+                          e->pb_selected_asset_type <= 3);
+
+    snprintf(title_buf, sizeof(title_buf), "Inspector");
+
+/* -- Macros for editable field rendering -- */
+#define INSP_FIELD_BG_IDLE    ((Clay_Color){42, 50, 66, 255})
+#define INSP_FIELD_BG_HOVER   ((Clay_Color){52, 62, 82, 255})
+#define INSP_FIELD_BG_ACTIVE  ((Clay_Color){60, 70, 100, 255})
+#define INSP_LABEL_COLOR      ((Clay_Color){140, 155, 180, 255})
+#define INSP_VALUE_COLOR      ((Clay_Color){220, 225, 235, 255})
+#define INSP_VALUE_ACTIVE_CLR ((Clay_Color){255, 255, 255, 255})
+#define INSP_HEADER_BG        ((Clay_Color){44, 52, 70, 255})
+#define INSP_HEADER_COLOR     ((Clay_Color){180, 200, 230, 255})
+
+/* Render a single float field: label + editable value box. */
+#define INSP_FLOAT_ROW(fid, lbl, val) do { \
+    int _fid = (fid); \
+    float _val = (val); \
+    int _active = (e->insp_edit_field == _fid); \
+    const char *_disp; \
+    CLAY(CLAY_IDI("IFRow", _fid), { \
+        .layout = { \
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) }, \
+            .padding = { .left = UI_SPACE_SM, .right = UI_SPACE_XS, .top = 1, .bottom = 1 }, \
+            .childGap = UI_SPACE_SM, \
+            .layoutDirection = CLAY_LEFT_TO_RIGHT, \
+            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER } \
+        } \
+    }) { \
+        CLAY(CLAY_IDI("IFLbl", _fid), { \
+            .layout = { .sizing = { CLAY_SIZING_FIXED(20), CLAY_SIZING_FIT({0}) } } \
+        }) { \
+            CLAY_TEXT(CLAY_STRING(lbl), CLAY_TEXT_CONFIG({ \
+                .textColor = INSP_LABEL_COLOR, .fontSize = UI_FONT_SECONDARY})); \
+        } \
+        if (_active) { \
+            _disp = e->insp_edit_buf; \
+        } else { \
+            snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "%.2f", _val); \
+            _disp = line_bufs[line_i]; \
+            line_i++; \
+        } \
+        CLAY(CLAY_IDI("IFVal", _fid), { \
+            .layout = { \
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) }, \
+                .padding = { .left = UI_SPACE_XS, .right = UI_SPACE_XS, .top = 2, .bottom = 2 } \
+            }, \
+            .backgroundColor = _active ? INSP_FIELD_BG_ACTIVE \
+                              : Clay_Hovered() ? INSP_FIELD_BG_HOVER \
+                              : INSP_FIELD_BG_IDLE, \
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM) \
+        }) { \
+            Clay_String _cs = {false, (int32_t)strlen(_disp), (char*)_disp}; \
+            CLAY_TEXT(_cs, CLAY_TEXT_CONFIG({ \
+                .textColor = _active ? INSP_VALUE_ACTIVE_CLR : INSP_VALUE_COLOR, \
+                .fontSize = UI_FONT_SECONDARY})); \
+        } \
+        if (Clay_Hovered()) { \
+            if (click) { \
+                if (e->insp_edit_field >= 0 && e->insp_edit_field != _fid) \
+                    insp_commit_edit(gs, e); \
+                if (e->insp_edit_field != _fid) \
+                    insp_begin_edit(e, _fid, selected, _val); \
+                clicked_any_field = 1; \
+            } \
+        } \
+    } \
+} while(0)
+
+/* Section header: colored bar with component name */
+#define INSP_SECTION(label_str, id_suffix) \
+    CLAY(CLAY_ID("INSec" id_suffix), { \
+        .layout = { \
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) }, \
+            .padding = { .left = UI_SPACE_SM, .right = UI_SPACE_SM, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS } \
+        }, \
+        .backgroundColor = INSP_HEADER_BG, \
+        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM) \
+    }) { \
+        CLAY_TEXT(CLAY_STRING(label_str), CLAY_TEXT_CONFIG({ \
+            .textColor = INSP_HEADER_COLOR, .fontSize = UI_FONT_BODY})); \
+    }
+
+    CLAY(CLAY_ID("INRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+            .childGap = UI_PANEL_GAP,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+        Clay_String ts = {false, (int32_t)strlen(title_buf), title_buf};
+        CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 225, 235, 255}, .fontSize = UI_FONT_TITLE}));
+
+        CLAY(CLAY_ID("INBody"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+                .childGap = UI_SECTION_GAP,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .backgroundColor = {36, 42, 56, 255},
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
+        }) {
+            if (has_asset_selected) {
+                /* -- Asset inspector (read-only, unchanged) -- */
+                const char *asset_file = project_browser_path_basename(e->pb_selected_asset_path);
+                const char *asset_ext = strrchr(asset_file, '.');
+                const char *type_name = pb_asset_type_name(e->pb_selected_asset_type);
+                const char *bound_mesh_key = NULL;
+                scene_model_asset *asset_model = NULL;
+                int ai;
+
+                if (e->pb_selected_asset_type == 0 || e->pb_selected_asset_type == 2) {
+                    for (ai = 0; ai < gs->scene_model_asset_count; ai++) {
+                        if (strcmp(gs->scene_model_assets[ai].key, e->pb_selected_asset_key) == 0) {
+                            asset_model = &gs->scene_model_assets[ai];
+                            break;
+                        }
+                    }
+                } else if (e->pb_selected_asset_type == 1) {
+                    for (ai = 0; ai < gs->project.anim_count; ai++) {
+                        const project_anim *pa = &gs->project.anims[ai];
+                        const project_mesh *pm = project_find_mesh(&gs->project, pa->entity);
+                        if (!pm) continue;
+                        if (strcmp(pa->asset, e->pb_selected_asset_key) != 0) continue;
+                        bound_mesh_key = pm->model;
+                        break;
+                    }
+                    if (bound_mesh_key) {
+                        for (ai = 0; ai < gs->scene_model_asset_count; ai++) {
+                            if (strcmp(gs->scene_model_assets[ai].key, bound_mesh_key) == 0) {
+                                asset_model = &gs->scene_model_assets[ai];
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                CLAY(CLAY_ID("INAssetDetails"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                        .padding = CLAY_PADDING_ALL(UI_SECTION_PADDING),
+                        .childGap = UI_ROW_GAP,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .backgroundColor = {30, 36, 48, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
+                }) {
+                    Clay_String hs = CLAY_STRING("Selected Asset");
+                    CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = {228, 236, 248, 255}, .fontSize = UI_FONT_BODY}));
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Type: %s", type_name);
+                    { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {188, 206, 236, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                    line_i++;
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Key: %s", e->pb_selected_asset_key);
+                    { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {214, 222, 236, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                    line_i++;
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "File: %s", asset_file);
+                    { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {184, 194, 210, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                    line_i++;
+
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Path: %s", e->pb_selected_asset_path);
+                    { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                    line_i++;
+
+                    if (asset_ext) {
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Extension: %s", asset_ext);
+                        { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                          CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {164, 174, 194, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                        line_i++;
+                    }
+
+                    if (e->pb_selected_asset_type == 1) {
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "Rig Mesh: %s", bound_mesh_key ? bound_mesh_key : "(no matching scene rig)");
+                        { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                          CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {198, 178, 146, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                        line_i++;
+                    }
+
+                    if (asset_model) {
+                        GltfMesh *mesh = &asset_model->model.mesh;
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "Loaded: %s  Meshes: %u  Skinned: %s  Clips: %u",
+                                 asset_model->loaded ? "yes" : "no",
+                                 (unsigned int)mesh->primitive_count,
+                                 asset_model->has_skeleton ? "yes" : "no",
+                                 (unsigned int)asset_model->model.clip_count);
+                        { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                          CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                        line_i++;
+
+                        snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                                 "Bounds center=(%.2f, %.2f, %.2f) radius=%.2f",
+                                 mesh->bounds_center[0], mesh->bounds_center[1],
+                                 mesh->bounds_center[2], mesh->bounds_radius);
+                        { Clay_String ls = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                          CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = {154, 212, 176, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                        line_i++;
+                    } else if (e->pb_selected_asset_type != 3) {
+                        CLAY_TEXT(CLAY_STRING("Loaded mesh info unavailable."),
+                            CLAY_TEXT_CONFIG({.textColor = {180, 152, 152, 255}, .fontSize = UI_FONT_SECONDARY}));
+                    }
+                }
+            }
+
+            if (!has_asset_selected) {
+                if (selected < 0) {
+                    CLAY_TEXT(CLAY_STRING("No entity selected."),
+                        CLAY_TEXT_CONFIG({.textColor = {170, 180, 198, 255}, .fontSize = UI_FONT_SECONDARY}));
+                } else {
+                /* -- Entity component inspector with editable fields -- */
+                int parent_idx = -1;
+                int parent_transform_idx = -1;
+                Vec3 tpos = VEC3(0.0f, 0.0f, 0.0f);
+                float ry = 0.0f;
+                Vec3 tscale = VEC3(1.0f, 1.0f, 1.0f);
+                Vec3 vvel = VEC3(0.0f, 0.0f, 0.0f);
+                float hcur = 0.0f, hmax = 0.0f;
+                rect crect = {0.0f, 0.0f, 0.0f, 0.0f};
+                int collider_is_capsule = 0;
+                float capsule_radius = 0.0f;
+                float capsule_half_height = 0.0f;
+                int mesh_visible = 0;
+                int anim_playing = 0;
+                int anim_clip = 0;
+                float anim_time = 0.0f;
+                float anim_speed = 1.0f;
+                float cam_fov = 0.0f, cam_near = 0.0f, cam_far = 0.0f;
+                Vec3 cam_target = VEC3(0.0f, 0.0f, 0.0f);
+                Vec3 cam_up = VEC3(0.0f, 1.0f, 0.0f);
+                int ht = has_transform_component(gs, selected, &tpos);
+                int hr = has_rotation_component(gs, selected, &ry);
+                int hsc = has_scale_component(gs, selected, &tscale);
+                int hv = has_velocity_component(gs, selected, &vvel);
+                float cc_move = 0.0f, cc_jump = 0.0f;
+                int hcc = has_character_controller_component(gs, selected, &cc_move, &cc_jump);
+                int hh = has_health_component(gs, selected, &hcur, &hmax);
+                int hcol = has_any_collider_component(gs, selected, &crect,
+                                                       &collider_is_capsule, &capsule_radius, &capsule_half_height);
+                int hm = has_mesh_component(gs, selected, &mesh_visible);
+                int ha = has_animation_component(gs, selected, &anim_playing, &anim_clip, &anim_time, &anim_speed);
+                int hcam = has_camera_component(gs, selected, &cam_fov, &cam_near, &cam_far, &cam_target, &cam_up);
+                int hp = find_parent_component(gs, selected, &parent_idx);
+                int hpt = has_parent_transform_component(gs, selected, &parent_transform_idx);
+                int hpr = has_parent_rotation_component(gs, selected);
+
+                /* Entity header */
+                snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Entity %d", selected);
+                { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                  CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {240, 240, 240, 255}, .fontSize = UI_FONT_BODY})); }
+                line_i++;
+
+                /* -- Transform -- */
+                if (ht) {
+                    INSP_SECTION("Transform", "Tr");
+                    INSP_FLOAT_ROW(INSP_FIELD_TRANSFORM_X, "X", tpos.x);
+                    INSP_FLOAT_ROW(INSP_FIELD_TRANSFORM_Y, "Y", tpos.y);
+                    INSP_FLOAT_ROW(INSP_FIELD_TRANSFORM_Z, "Z", tpos.z);
+                }
+
+                /* -- Rotation -- */
+                if (hr) {
+                    INSP_SECTION("Rotation", "Rt");
+                    INSP_FLOAT_ROW(INSP_FIELD_ROTATION_Y, "Y", ry);
+                }
+
+                /* -- Scale -- */
+                if (hsc) {
+                    INSP_SECTION("Scale", "Sc");
+                    INSP_FLOAT_ROW(INSP_FIELD_SCALE_X, "X", tscale.x);
+                    INSP_FLOAT_ROW(INSP_FIELD_SCALE_Y, "Y", tscale.y);
+                    INSP_FLOAT_ROW(INSP_FIELD_SCALE_Z, "Z", tscale.z);
+                }
+
+                /* -- Velocity -- */
+                if (hv) {
+                    INSP_SECTION("Velocity", "Vl");
+                    INSP_FLOAT_ROW(INSP_FIELD_VELOCITY_X, "X", vvel.x);
+                    INSP_FLOAT_ROW(INSP_FIELD_VELOCITY_Y, "Y", vvel.y);
+                    INSP_FLOAT_ROW(INSP_FIELD_VELOCITY_Z, "Z", vvel.z);
+                }
+
+                /* -- Character Controller -- */
+                if (hcc) {
+                    INSP_SECTION("Character Controller", "CC");
+                    INSP_FLOAT_ROW(INSP_FIELD_CC_MOVE_SPEED, "Move", cc_move);
+                    INSP_FLOAT_ROW(INSP_FIELD_CC_JUMP_SPEED, "Jump", cc_jump);
+                }
+
+                /* -- Health -- */
+                if (hh) {
+                    INSP_SECTION("Health", "Hl");
+                    INSP_FLOAT_ROW(INSP_FIELD_HEALTH_CUR, "Cur", hcur);
+                    INSP_FLOAT_ROW(INSP_FIELD_HEALTH_MAX, "Max", hmax);
+                }
+
+                /* -- Collider -- */
+                if (hcol) {
+                    if (collider_is_capsule) {
+                        INSP_SECTION("Capsule Collider", "CpC");
+                        INSP_FLOAT_ROW(INSP_FIELD_CAPSULE_RADIUS, "R", capsule_radius);
+                        INSP_FLOAT_ROW(INSP_FIELD_CAPSULE_HALF_HEIGHT, "H", capsule_half_height);
+                    } else {
+                        INSP_SECTION("Box Collider", "BxC");
+                        INSP_FLOAT_ROW(INSP_FIELD_BOX_X, "X", crect.x);
+                        INSP_FLOAT_ROW(INSP_FIELD_BOX_Y, "Y", crect.y);
+                        INSP_FLOAT_ROW(INSP_FIELD_BOX_W, "W", crect.w);
+                        INSP_FLOAT_ROW(INSP_FIELD_BOX_H, "H", crect.h);
+                    }
+                }
+
+                /* -- Mesh (read-only info + visible flag) -- */
+                if (hm) {
+                    INSP_SECTION("Mesh", "Ms");
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "visible=%d", mesh_visible);
+                    { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY(CLAY_ID("INMeshInfo"), {
+                          .layout = { .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                      .padding = { .left = UI_SPACE_SM, .top = 1, .bottom = 1 } }
+                      }) {
+                          CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {190, 220, 255, 255}, .fontSize = UI_FONT_SECONDARY}));
+                      }
+                    }
+                    line_i++;
+                }
+
+                /* -- Animation -- */
+                if (ha) {
+                    INSP_SECTION("Animation", "An");
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]),
+                             "playing=%d  clip=%d  time=%.2f", anim_playing, anim_clip, anim_time);
+                    { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY(CLAY_ID("INAnimInfo"), {
+                          .layout = { .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                      .padding = { .left = UI_SPACE_SM, .top = 1, .bottom = 1 } }
+                      }) {
+                          CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {164, 198, 236, 255}, .fontSize = UI_FONT_SECONDARY}));
+                      }
+                    }
+                    line_i++;
+                    INSP_FLOAT_ROW(INSP_FIELD_ANIM_SPEED, "Spd", anim_speed);
+                }
+
+                /* -- Camera -- */
+                if (hcam) {
+                    INSP_SECTION("Camera", "Cm");
+                    INSP_FLOAT_ROW(INSP_FIELD_CAM_FOV,  "FOV",  cam_fov);
+                    INSP_FLOAT_ROW(INSP_FIELD_CAM_NEAR, "Near", cam_near);
+                    INSP_FLOAT_ROW(INSP_FIELD_CAM_FAR,  "Far",  cam_far);
+                }
+
+                /* -- Parent relationships (read-only) -- */
+                if (hp) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Parent: entity %d", parent_idx);
+                    { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 210, 255, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                    line_i++;
+                }
+                if (hpt) {
+                    snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "Parent Transform: entity %d", parent_transform_idx);
+                    { Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                      CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {170, 255, 190, 255}, .fontSize = UI_FONT_SECONDARY})); }
+                    line_i++;
+                }
+                if (hpr) {
+                    CLAY_TEXT(CLAY_STRING("Parent Rotation"),
+                        CLAY_TEXT_CONFIG({.textColor = {255, 210, 170, 255}, .fontSize = UI_FONT_SECONDARY}));
+                }
+
+                /* -- Add Component button -- */
+                {
+                    CLAY(CLAY_ID("INAddCompBtn"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = UI_SPACE_SM, .right = UI_SPACE_SM,
+                                         .top = UI_SPACE_XS, .bottom = UI_SPACE_XS },
+                            .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                        },
+                        .backgroundColor = e->insp_add_comp_open
+                            ? ((Clay_Color){70, 80, 110, 255})
+                            : ((Clay_Color){50, 60, 84, 255}),
+                        .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
+                    }) {
+                        CLAY_TEXT(CLAY_STRING("+ Add Component"), CLAY_TEXT_CONFIG({
+                            .textColor = {180, 200, 230, 255}, .fontSize = UI_FONT_SECONDARY}));
+                    }
+                    if (Clay_Hovered() && click) {
+                        e->insp_add_comp_open = !e->insp_add_comp_open;
+                        clicked_any_field = 1;
+                    }
+
+                    /* Dropdown list */
+                    if (e->insp_add_comp_open) {
+                        CLAY(CLAY_ID("INAddCompList"), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                .padding = CLAY_PADDING_ALL(UI_SPACE_XS),
+                                .childGap = 1,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM
+                            },
+                            .backgroundColor = {30, 36, 48, 255},
+                            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
+                        }) {
+                            int ci;
+                            for (ci = 0; ci < INSP_COMP_COUNT; ci++) {
+                                if (insp_entity_has_comp(gs, selected, ci)) continue;
+                                snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "%s", insp_comp_names[ci]);
+                                CLAY(CLAY_IDI("INAddCI", ci), {
+                                    .layout = {
+                                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                        .padding = { .left = UI_SPACE_SM, .right = UI_SPACE_SM,
+                                                     .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS }
+                                    },
+                                    .backgroundColor = {40, 48, 64, 255},
+                                    .cornerRadius = CLAY_CORNER_RADIUS(2)
+                                }) {
+                                    Clay_String cs = {false, (int32_t)strlen(line_bufs[line_i]), line_bufs[line_i]};
+                                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({
+                                        .textColor = {200, 210, 230, 255}, .fontSize = UI_FONT_SECONDARY}));
+                                }
+                                if (Clay_Hovered() && click) {
+                                    insp_add_component(gs, selected, ci);
+                                    e->insp_add_comp_open = 0;
+                                    clicked_any_field = 1;
+                                }
+                                line_i++;
+                            }
+                        }
+                    }
+                }
+
+                }
+            }
+        }
+    }
+
+    /* If user clicked in the inspector but not on any field, commit the active edit */
+    if (click && !clicked_any_field && e->insp_edit_field >= 0) {
+        insp_commit_edit(gs, e);
+    }
+
+#undef INSP_FLOAT_ROW
+#undef INSP_SECTION
+#undef INSP_FIELD_BG_IDLE
+#undef INSP_FIELD_BG_HOVER
+#undef INSP_FIELD_BG_ACTIVE
+#undef INSP_LABEL_COLOR
+#undef INSP_VALUE_COLOR
+#undef INSP_VALUE_ACTIVE_CLR
+#undef INSP_HEADER_BG
+#undef INSP_HEADER_COLOR
+
+    e->inspector_click = 0;
+}
+static void menu_bar_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    int win_w = 1600;
+    int win_h = 900;
+    int play_mode = editor_is_play_mode(gs);
+    int menu_click_handled = 0;
+
+    if (!d || !d->windows[0].in_use || !d->windows[0].sdl_window) return;
+
+    SDL_GetWindowSize((SDL_Window *)d->windows[0].sdl_window, &win_w, &win_h);
+    if (win_w < 1) win_w = 1;
+    if (win_h < 1) win_h = 1;
+
+    CLAY(CLAY_ID("MenuBarRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(MENU_BAR_HEIGHT) },
+            .padding = { .left = UI_SPACE_SM, .right = UI_SECTION_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+            .childGap = UI_SPACE_SM,
+            .layoutDirection = CLAY_LEFT_TO_RIGHT,
+            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+        CLAY(CLAY_ID("MenuFile"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
+                .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+                .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+            },
+            .backgroundColor = (e->menu_open == MENU_FILE || Clay_Hovered())
+                             ? ((Clay_Color){56, 66, 84, 240})
+                             : ((Clay_Color){0, 0, 0, 0}),
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            int hovered = Clay_Hovered();
+            if (hovered && e->menu_click) {
+                e->menu_open = (e->menu_open == MENU_FILE) ? MENU_NONE : MENU_FILE;
+                e->menu_hover = -1;
+                menu_click_handled = 1;
+            }
+
+            CLAY_TEXT(CLAY_STRING("File"), CLAY_TEXT_CONFIG({
+                .textColor = {224, 230, 240, 255},
+                .fontSize = UI_FONT_BODY
+            }));
+
+            if (e->menu_open == MENU_FILE) {
+                int i;
+                CLAY(CLAY_ID("FileDropdown"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(190), CLAY_SIZING_FIT({0}) },
+                        .padding = CLAY_PADDING_ALL(UI_SPACE_XS),
+                        .childGap = UI_SPACE_XXS,
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .floating = {
+                        .attachTo = CLAY_ATTACH_TO_PARENT,
+                        .attachPoints = {
+                            .element = CLAY_ATTACH_POINT_LEFT_TOP,
+                            .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM
+                        }
+                    },
+                    .backgroundColor = {38, 44, 58, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {
+                    for (i = 0; i < FILE_MENU_ACTION_COUNT; i++) {
+                        CLAY(CLAY_IDI("FileMenuItem", i), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(24) },
+                                .padding = {
+                                    .left = UI_ROW_PADDING_X,
+                                    .right = UI_ROW_PADDING_X,
+                                    .top = UI_SPACE_XS,
+                                    .bottom = UI_SPACE_XS
+                                },
+                                .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                            },
+                            .backgroundColor = Clay_Hovered()
+                                             ? ((Clay_Color){68, 86, 120, 255})
+                                             : ((Clay_Color){0, 0, 0, 0}),
+                            .cornerRadius = CLAY_CORNER_RADIUS(3)
+                        }) {
+                            int item_hovered = Clay_Hovered();
+                            if (item_hovered) e->menu_hover = i;
+                            if (item_hovered && e->menu_click) {
+                                editor_dispatch_file_menu_action(gs, es, i);
+                                e->menu_open = MENU_NONE;
+                                e->menu_hover = -1;
+                                menu_click_handled = 1;
+                            }
+
+                            {
+                                Clay_String item_label = {
+                                    true,
+                                    (int32_t)strlen(file_menu_action_labels[i]),
+                                    file_menu_action_labels[i]
+                                };
+                                CLAY_TEXT(item_label, CLAY_TEXT_CONFIG({
+                                    .textColor = {226, 232, 244, 255},
+                                    .fontSize = UI_FONT_BODY
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        CLAY(CLAY_ID("MenuFill"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(1) }
+            }
+        }) {}
+
+        /* Collab status indicator */
+        if (e->collab.connected || e->collab.connecting) {
+            Clay_Color collab_color = e->collab.connected
+                ? ((Clay_Color){46, 204, 113, 255})   /* green = connected */
+                : ((Clay_Color){241, 196, 15, 255});   /* yellow = connecting */
+            CLAY(CLAY_ID("MenuCollabStatus"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
+                    .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+                    .childGap = UI_SPACE_XS,
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                },
+                .backgroundColor = {38, 44, 58, 200},
+                .cornerRadius = CLAY_CORNER_RADIUS(4)
+            }) {
+                /* Status dot */
+                CLAY(CLAY_ID("CollabDot"), {
+                    .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
+                    .backgroundColor = collab_color,
+                    .cornerRadius = CLAY_CORNER_RADIUS(4)
+                }) {}
+                {
+                    Clay_String status_str = {
+                        false,
+                        (int32_t)strlen(e->collab.status_msg),
+                        e->collab.status_msg
+                    };
+                    CLAY_TEXT(status_str, CLAY_TEXT_CONFIG({
+                        .textColor = {200, 210, 224, 255},
+                        .fontSize = UI_FONT_BODY
+                    }));
+                }
+                /* Peer dots */
+                {
+                    int pi;
+                    for (pi = 0; pi < COLLAB_MAX_CLIENTS; pi++) {
+                        if (e->collab.peers[pi].active) {
+                            uint32_t pc = e->collab.peers[pi].color;
+                            Clay_Color peer_c = {
+                                (float)((pc >> 16) & 0xFF),
+                                (float)((pc >> 8) & 0xFF),
+                                (float)(pc & 0xFF),
+                                255.0f
+                            };
+                            CLAY(CLAY_IDI("PeerDot", pi), {
+                                .layout = { .sizing = { CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(8) } },
+                                .backgroundColor = peer_c,
+                                .cornerRadius = CLAY_CORNER_RADIUS(4)
+                            }) {}
+                        }
+                    }
+                }
+            }
+        }
+
+        CLAY(CLAY_ID("MenuPlayMode"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
+                .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+                .childGap = UI_SPACE_SM,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+            },
+            .backgroundColor = play_mode
+                             ? ((Clay_Color){146, 72, 72, 240})
+                             : ((Clay_Color){68, 122, 76, 240}),
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            if (Clay_Hovered() && e->menu_click) {
+                editor_set_play_mode(gs, e, !play_mode);
+                play_mode = editor_is_play_mode(gs);
+                menu_click_handled = 1;
+            }
+            {
+                const char *icon_label = play_mode ? UI_ICON_STOP_FILL : UI_ICON_PLAY_FILL;
+                const char *text_label = play_mode ? "Stop" : "Play";
+                Clay_String icon_text = { false, (int32_t)strlen(icon_label), icon_label };
+                Clay_String word_text = { false, (int32_t)strlen(text_label), text_label };
+
+                CLAY_TEXT(icon_text, CLAY_TEXT_CONFIG({
+                    .textColor = {238, 242, 248, 255},
+                    .fontSize = UI_FONT_BODY
+                }));
+                CLAY_TEXT(word_text, CLAY_TEXT_CONFIG({
+                    .textColor = {238, 242, 248, 255},
+                    .fontSize = UI_FONT_BODY
+                }));
+            }
+        }
+
+        CLAY(CLAY_ID("MenuPlayRemote"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIXED(22) },
+                .padding = { .left = UI_PANEL_PADDING, .right = UI_PANEL_PADDING, .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS },
+                .childGap = UI_SPACE_SM,
+                .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+            },
+            .backgroundColor = (Clay_Color){56, 100, 140, 240},
+            .cornerRadius = CLAY_CORNER_RADIUS(4)
+        }) {
+            if (Clay_Hovered() && e->menu_click) {
+                editor_launch_remote(gs, e);
+                menu_click_handled = 1;
+            }
+            {
+                Clay_String icon_text = { false, (int32_t)strlen(UI_ICON_DISPLAY), UI_ICON_DISPLAY };
+                Clay_String word_text = CLAY_STRING("Remote");
+
+                CLAY_TEXT(icon_text, CLAY_TEXT_CONFIG({
+                    .textColor = {238, 242, 248, 255},
+                    .fontSize = UI_FONT_BODY
+                }));
+                CLAY_TEXT(word_text, CLAY_TEXT_CONFIG({
+                    .textColor = {238, 242, 248, 255},
+                    .fontSize = UI_FONT_BODY
+                }));
+            }
+        }
+    }
+
+    /* Close menu if click outside */
+    if (e->menu_click && e->menu_open == MENU_FILE && !menu_click_handled) {
+        if (!point_in_rect(e->menu_mouse_x, e->menu_mouse_y, 0.0f, 0.0f, (float)win_w, (float)MENU_BAR_HEIGHT) &&
+            !file_menu_dropdown_contains_point(e->menu_mouse_x, e->menu_mouse_y)) {
+            e->menu_open = MENU_NONE;
+            e->menu_hover = -1;
+        }
+    }
+
+}
+static void editor_toolbar_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    int perspective_active;
+    int play_active;
+
+    (void)gs;
+
+    if (e->panel_w < 1.0f || e->panel_h < 1.0f) return;
+
+    perspective_active = (e->cam_projection_mode != EDITOR_CAMERA_ORTHOGRAPHIC);
+    play_active = editor_is_play_mode(gs);
+
+    CLAY(CLAY_ID("EDToolbarRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = {
+                .left = (uint16_t)EDITOR_VIEWBAR_MARGIN_X,
+                .right = (uint16_t)EDITOR_VIEWBAR_MARGIN_X,
+                .top = (uint16_t)EDITOR_VIEWBAR_MARGIN_Y,
+                .bottom = 0
+            },
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        }
+    }) {
+        CLAY(CLAY_ID("EDToolbarRow"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(EDITOR_VIEWBAR_ROW_HEIGHT) },
+                .padding = {
+                    .left = (uint16_t)EDITOR_VIEWBAR_ROW_PADDING_X,
+                    .right = (uint16_t)EDITOR_VIEWBAR_ROW_PADDING_X,
+                    .top = (uint16_t)((EDITOR_VIEWBAR_ROW_HEIGHT - EDITOR_VIEWBAR_BUTTON_HEIGHT) * 0.5f),
+                    .bottom = (uint16_t)((EDITOR_VIEWBAR_ROW_HEIGHT - EDITOR_VIEWBAR_BUTTON_HEIGHT) * 0.5f)
+                },
+                .childGap = (uint16_t)EDITOR_VIEWBAR_GROUP_GAP,
+                .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                .layoutDirection = CLAY_LEFT_TO_RIGHT
+            },
+            .backgroundColor = {28, 34, 44, 224},
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_LG)
+        }) {
+            CLAY(CLAY_ID("EDToolbarProjectionGroup"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIT({0}) },
+                    .childGap = (uint16_t)EDITOR_VIEWBAR_BUTTON_GAP,
+                    .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                CLAY(CLAY_ID("EDToolbarPerspective"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_TOGGLE_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = perspective_active
+                                       ? ((Clay_Color){80, 120, 176, 230})
+                                       : ((Clay_Color){56, 66, 84, 220}),
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
+                }) {
+                    Clay_String cs = CLAY_STRING(UI_ICON_CAMERA " Perspective");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
+                }
+
+                CLAY(CLAY_ID("EDToolbarOrthographic"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_TOGGLE_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = perspective_active
+                                       ? ((Clay_Color){56, 66, 84, 220})
+                                       : ((Clay_Color){80, 120, 176, 230}),
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
+                }) {
+                    Clay_String cs = CLAY_STRING(UI_ICON_BOUNDING_BOX " Orthographic");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
+                }
+            }
+
+            CLAY(CLAY_ID("EDToolbarViewGroup"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_FIT({0}), CLAY_SIZING_FIT({0}) },
+                    .childGap = (uint16_t)EDITOR_VIEWBAR_BUTTON_GAP,
+                    .childAlignment = {CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER},
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                CLAY(CLAY_ID("EDToolbarFront"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_VIEW_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = {56, 66, 84, 220},
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
+                }) {
+                    Clay_String cs = CLAY_STRING(UI_ICON_ARROW_LEFT " Front");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
+                }
+
+                CLAY(CLAY_ID("EDToolbarSide"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_VIEW_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = {56, 66, 84, 220},
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
+                }) {
+                    Clay_String cs = CLAY_STRING(UI_ICON_ARROW_RIGHT " Side");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
+                }
+
+                CLAY(CLAY_ID("EDToolbarTop"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(EDITOR_VIEWBAR_VIEW_WIDTH),
+                                    CLAY_SIZING_FIXED(EDITOR_VIEWBAR_BUTTON_HEIGHT) },
+                        .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}
+                    },
+                    .backgroundColor = {56, 66, 84, 220},
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_MD)
+                }) {
+                    Clay_String cs = CLAY_STRING(UI_ICON_ARROW_UP " Top");
+                    CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = {236, 240, 248, 255}, .fontSize = UI_FONT_BODY}));
+                }
+            }
+
+
+        }
+    }
+}
+static void cache_profiler_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    int win_idx, node;
+    int win_w, win_h;
+    cache_prof_frame *frame;
+    int i;
+    static char bufs[CACHE_PROF_MAX_ZONES][6][32];
+
+    (void)gs;
+
+    node = dock_find_leaf_for_panel_global(d, PANEL_CACHE_PROFILER, &win_idx);
+    if (node >= 0) {
+        DockNode *pn = &d->nodes[node];
+        win_w = (int)pn->w;
+        win_h = (int)(pn->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    } else {
+        win_w = 800;
+        win_h = 600;
+    }
+
+    EDITOR_CPU_ZONE_BEGIN(e, "cache_clay_layout");
+    CLAY(CLAY_ID("CPRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 4,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {25, 25, 30, 255}
+    }) {
+        /* Title */
+        {
+            Clay_String ts = CLAY_STRING("Cache Profiler");
+            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+        }
+
+        /* Always show backend status */
+        {
+            const char *status = cache_prof_status_message();
+            if (status && status[0]) {
+                Clay_Color sc = cache_prof_is_hardware_backend()
+                    ? (Clay_Color){100, 180, 100, 255}
+                    : (Clay_Color){170, 150, 100, 255};
+                Clay_String msg = { false, (int32_t)strlen(status), (char *)status };
+                CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = sc, .fontSize = 12}));
+            }
+        }
+
+        if (!cache_prof_available()) {
+            Clay_String msg = CLAY_STRING("No profiler backend active");
+            CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = {170, 120, 120, 255}, .fontSize = 14}));
+        } else {
+            /* Column headers */
+            CLAY(CLAY_ID("CPHeader"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 },
+                    .childGap = 8,
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                CLAY(CLAY_IDI("CPHCol", 0), { .layout = { .sizing = { CLAY_SIZING_FIXED(140), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Zone");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                    Clay_String h = CLAY_STRING("L1D Miss");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 2), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                    Clay_String h = CLAY_STRING("L2 Miss");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 3), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                    Clay_String h = CLAY_STRING("Branch Miss");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 4), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                    Clay_String h = CLAY_STRING("Instructions");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CPHCol", 5), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                    Clay_String h = CLAY_STRING("Cycles");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+            }
+
+            /* Zone rows -- sorted by L1D misses descending */
+            frame = cache_prof_get_frame();
+            cache_prof_sort_zones();
+
+            /* Scrollable zone list */
+            CLAY(CLAY_ID("CPScroll"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+            }) {
+                for (i = 0; i < frame->count && i < CACHE_PROF_MAX_ZONES; i++) {
+                    /* Each row */
+                    CLAY(CLAY_IDI("CPRow", i), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = 8, .right = 8, .top = 3, .bottom = 3 },
+                            .childGap = 8,
+                            .layoutDirection = CLAY_LEFT_TO_RIGHT
+                        },
+                        .backgroundColor = (i % 2 == 0) ? (Clay_Color){35, 35, 40, 255} : (Clay_Color){30, 30, 35, 255}
+                    }) {
+                        /* Zone name */
+                        CLAY(CLAY_IDI("CPName", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(140), CLAY_SIZING_FIT({0}) } } }) {
+                            Clay_String ns = {false, (int32_t)strlen(frame->names[i]), (char*)frame->names[i]};
+                            CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14}));
+                        }
+                        /* L1D miss */
+                        CLAY(CLAY_IDI("CPL1D", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                            snprintf(bufs[i][0], sizeof(bufs[i][0]), "%llu", (unsigned long long)frame->l1d_miss[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][0]), bufs[i][0]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 180, 100, 255}, .fontSize = 14}));
+                            }
+                        }
+                        /* L2 miss */
+                        CLAY(CLAY_IDI("CPL2", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                            snprintf(bufs[i][1], sizeof(bufs[i][1]), "%llu", (unsigned long long)frame->l2_miss[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][1]), bufs[i][1]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 140, 140, 255}, .fontSize = 14}));
+                            }
+                        }
+                        /* Branch miss */
+                        CLAY(CLAY_IDI("CPBr", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                            snprintf(bufs[i][2], sizeof(bufs[i][2]), "%llu", (unsigned long long)frame->branch_miss[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][2]), bufs[i][2]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {180, 200, 255, 255}, .fontSize = 14}));
+                            }
+                        }
+                        /* Instructions */
+                        CLAY(CLAY_IDI("CPIns", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                            if (frame->instructions[i] > 1000000)
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fM", (double)frame->instructions[i] / 1000000.0);
+                            else if (frame->instructions[i] > 1000)
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%.1fK", (double)frame->instructions[i] / 1000.0);
+                            else
+                                snprintf(bufs[i][3], sizeof(bufs[i][3]), "%llu", (unsigned long long)frame->instructions[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][3]), bufs[i][3]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
+                            }
+                        }
+                        /* Cycles */
+                        CLAY(CLAY_IDI("CPCyc", i), { .layout = { .sizing = { CLAY_SIZING_FIXED(90), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                            if (frame->cycles[i] > 1000000)
+                                snprintf(bufs[i][4], sizeof(bufs[i][4]), "%.1fM", (double)frame->cycles[i] / 1000000.0);
+                            else if (frame->cycles[i] > 1000)
+                                snprintf(bufs[i][4], sizeof(bufs[i][4]), "%.1fK", (double)frame->cycles[i] / 1000.0);
+                            else
+                                snprintf(bufs[i][4], sizeof(bufs[i][4]), "%llu", (unsigned long long)frame->cycles[i]);
+                            {
+                                Clay_String vs = {false, (int32_t)strlen(bufs[i][4]), bufs[i][4]};
+                                CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {170, 170, 180, 255}, .fontSize = 14}));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    EDITOR_CPU_ZONE_END(e); /* cache_clay_layout */
+
+    e->cache_prof_click = 0;
+}
+static void cpu_profiler_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    int win_idx, node;
+    int win_w, win_h;
+    cpu_prof_frame *frame = NULL;
+    uint64_t frame_id = 0;
+    int history_count = 0;
+    int i, j;
+    int hovered_zone = -1;
+    int clicked_zone = -1;
+    static char bufs[CPU_PROF_MAX_ZONES][4][80];
+    int first_child[CPU_PROF_MAX_ZONES];
+    int last_child[CPU_PROF_MAX_ZONES];
+    int next_sibling[CPU_PROF_MAX_ZONES];
+    int root_next[CPU_PROF_MAX_ZONES];
+    uint8_t zoom_visible[CPU_PROF_MAX_ZONES];
+    uint16_t root_order[CPU_PROF_MAX_ZONES];
+    uint16_t child_order[CPU_PROF_MAX_ZONES];
+    uint16_t tree_stack_idx[CPU_PROF_MAX_ZONES];
+    uint16_t tree_stack_depth[CPU_PROF_MAX_ZONES];
+    int root_first = -1;
+    int root_last = -1;
+    char *frame_info;
+    char *hover_line;
+    char *flame_title;
+    char *list_info;
+    float minimap_view_ratio = 1.0f;
+    int minimap_has_view = 0;
+
+    if (!e->cpu_prof_text_arena) return;
+
+    arena_reset(e->cpu_prof_text_arena);
+    frame_info = (char *)arena_alloc(e->cpu_prof_text_arena, 128, 1, "cpu_frame_info");
+    hover_line = (char *)arena_alloc(e->cpu_prof_text_arena, 192, 1, "cpu_hover_line");
+    flame_title = (char *)arena_alloc(e->cpu_prof_text_arena, 160, 1, "cpu_flame_title");
+    list_info = (char *)arena_alloc(e->cpu_prof_text_arena, 128, 1, "cpu_list_info");
+    if (!frame_info || !hover_line || !flame_title || !list_info) return;
+    frame_info[0] = '\0';
+    hover_line[0] = '\0';
+    flame_title[0] = '\0';
+    list_info[0] = '\0';
+
+    node = dock_find_leaf_for_panel_global(d, PANEL_CPU_PROFILER, &win_idx);
+    if (node >= 0) {
+        DockNode *pn = &d->nodes[node];
+        win_w = (int)pn->w;
+        win_h = (int)(pn->h - DOCK_HEADER_HEIGHT);
+        if (win_h < 1) win_h = 1;
+    } else {
+        win_w = 800;
+        win_h = 600;
+    }
+
+    e->cpu_prof_hover_zone_active = 0;
+    e->cpu_prof_hover_zone_name[0] = '\0';
+
+    history_count = cpu_prof_get_history_count();
+    if (history_count > 0) {
+        uint64_t latest_frame_id = cpu_prof_get_frame_id_at_offset(0);
+        int k;
+
+        if (!e->cpu_prof_timeline_paused) {
+            e->cpu_prof_timeline_offset = 0;
+            e->cpu_prof_timeline_frame_id = latest_frame_id;
+        } else {
+            int found = -1;
+            if (e->cpu_prof_timeline_frame_id == 0) {
+                e->cpu_prof_timeline_frame_id = latest_frame_id;
+            }
+            for (k = 0; k < history_count; k++) {
+                if (cpu_prof_get_frame_id_at_offset((uint16_t)k) == e->cpu_prof_timeline_frame_id) {
+                    found = k;
+                    break;
+                }
+            }
+            if (found >= 0) {
+                e->cpu_prof_timeline_offset = found;
+            } else {
+                e->cpu_prof_timeline_offset = history_count - 1;
+                e->cpu_prof_timeline_frame_id =
+                    cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+            }
+        }
+
+        if (e->cpu_prof_timeline_offset < 0) e->cpu_prof_timeline_offset = 0;
+        if (e->cpu_prof_timeline_offset >= history_count) e->cpu_prof_timeline_offset = history_count - 1;
+
+        frame = cpu_prof_get_frame_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+        frame_id = cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+        if (!frame) {
+            e->cpu_prof_timeline_offset = 0;
+            frame = cpu_prof_get_frame_at_offset(0);
+            frame_id = cpu_prof_get_frame_id_at_offset(0);
+            e->cpu_prof_timeline_frame_id = frame_id;
+        }
+    }
+
+    CLAY(CLAY_ID("CURoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(12),
+            .childGap = 4,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {25, 25, 30, 255}
+    }) {
+        /* Title */
+        {
+            Clay_String ts = CLAY_STRING("CPU Profiler");
+            CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = {220, 220, 220, 255}, .fontSize = 16}));
+        }
+
+        if (history_count <= 0 || !frame) {
+            Clay_String msg = CLAY_STRING("No CPU frame history yet");
+            CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = {168, 168, 178, 255}, .fontSize = 14}));
+        } else {
+            CLAY(CLAY_ID("CUTimelineControls"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                    .childGap = 8,
+                    .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                }
+            }) {
+                CLAY(CLAY_ID("CUPauseBtn"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(72), CLAY_SIZING_FIXED(22) },
+                        .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = e->cpu_prof_timeline_paused
+                        ? (Clay_Color){96, 72, 72, 255}
+                        : (Clay_Color){62, 92, 72, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    Clay_String ps = e->cpu_prof_timeline_paused
+                        ? CLAY_STRING("Paused")
+                        : CLAY_STRING("Live");
+                    CLAY_TEXT(ps, CLAY_TEXT_CONFIG({.textColor = {236, 238, 244, 255}, .fontSize = 13}));
+                    if (Clay_Hovered() && e->cpu_prof_click) {
+                        if (e->cpu_prof_timeline_paused) {
+                            e->cpu_prof_timeline_paused = 0;
+                            e->cpu_prof_timeline_offset = 0;
+                            e->cpu_prof_timeline_frame_id = cpu_prof_get_frame_id_at_offset(0);
+                        } else {
+                            e->cpu_prof_timeline_paused = 1;
+                            e->cpu_prof_timeline_frame_id =
+                                frame_id ? frame_id : cpu_prof_get_frame_id_at_offset(0);
+                        }
+                    }
+                }
+
+                CLAY(CLAY_ID("CUPrevBtn"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(26), CLAY_SIZING_FIXED(22) },
+                        .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = {48, 54, 68, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    Clay_String s = CLAY_STRING(UI_ICON_ARROW_LEFT);
+                    CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = {220, 224, 236, 255}, .fontSize = 13}));
+                    if (Clay_Hovered() && e->cpu_prof_click) {
+                        e->cpu_prof_timeline_paused = 1;
+                        if (e->cpu_prof_timeline_offset + 1 < history_count) e->cpu_prof_timeline_offset++;
+                        e->cpu_prof_timeline_frame_id =
+                            cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+                    }
+                }
+
+                CLAY(CLAY_ID("CUNextBtn"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_FIXED(26), CLAY_SIZING_FIXED(22) },
+                        .childAlignment = { CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER }
+                    },
+                    .backgroundColor = {48, 54, 68, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    Clay_String s = CLAY_STRING(UI_ICON_ARROW_RIGHT);
+                    CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = {220, 224, 236, 255}, .fontSize = 13}));
+                    if (Clay_Hovered() && e->cpu_prof_click) {
+                        if (e->cpu_prof_timeline_offset > 0) {
+                            e->cpu_prof_timeline_paused = 1;
+                            e->cpu_prof_timeline_offset--;
+                            e->cpu_prof_timeline_frame_id =
+                                cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+                        } else {
+                            e->cpu_prof_timeline_paused = 0;
+                            e->cpu_prof_timeline_offset = 0;
+                            e->cpu_prof_timeline_frame_id = cpu_prof_get_frame_id_at_offset(0);
+                        }
+                    }
+                }
+
+                snprintf(frame_info, 128,
+                         "Frame #%llu (%s, %d back, %d stored)",
+                         (unsigned long long)frame_id,
+                         e->cpu_prof_timeline_paused ? "paused" : "live",
+                         e->cpu_prof_timeline_offset,
+                         history_count);
+                {
+                    Clay_String info = {false, (int32_t)strlen(frame_info), frame_info};
+                    CLAY_TEXT(info, CLAY_TEXT_CONFIG({.textColor = {182, 190, 206, 255}, .fontSize = 13}));
+                }
+            }
+
+            CLAY(CLAY_ID("CUTimelineOuter"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(26) },
+                    .padding = CLAY_PADDING_ALL(3),
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {19, 20, 25, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                float timeline_w = (float)win_w - 40.0f;
+                float bar_w;
+                if (timeline_w < 80.0f) timeline_w = 80.0f;
+                bar_w = timeline_w / (float)history_count;
+                if (bar_w < 0.1f) bar_w = 0.1f;
+
+                CLAY(CLAY_ID("CUTimelineStrip"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                        .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                        .childGap = 0
+                    },
+                    .backgroundColor = {15, 16, 20, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(2)
+                }) {
+                    for (i = 0; i < history_count; i++) {
+                        int offset = history_count - 1 - i;
+                        cpu_prof_frame *f = cpu_prof_get_frame_at_offset((uint16_t)offset);
+                        uint64_t max_dur = 0;
+                        Clay_Color c = {58, 64, 76, 255};
+                        int selected = e->cpu_prof_timeline_paused && (offset == e->cpu_prof_timeline_offset);
+                        if (f) {
+                            for (j = 0; j < f->count; j++) {
+                                if (f->duration_ns[j] > max_dur) max_dur = f->duration_ns[j];
+                            }
+                            if (max_dur > 12000000ULL) c = (Clay_Color){212, 96, 88, 255};
+                            else if (max_dur > 6000000ULL) c = (Clay_Color){188, 120, 92, 255};
+                            else if (max_dur > 2000000ULL) c = (Clay_Color){142, 124, 86, 255};
+                            else if (max_dur > 1000000ULL) c = (Clay_Color){102, 122, 92, 255};
+                        }
+                        if (selected) c = (Clay_Color){92, 150, 232, 255};
+
+                        CLAY(CLAY_IDI("CUTimelineBar", i), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_FIXED(bar_w), CLAY_SIZING_GROW({0}) }
+                            },
+                            .backgroundColor = Clay_Hovered()
+                                ? (Clay_Color){(uint8_t)(c.r + 20), (uint8_t)(c.g + 20), (uint8_t)(c.b + 20), 255}
+                                : c
+                        }) {
+                            if (Clay_Hovered() && e->cpu_prof_click) {
+                                e->cpu_prof_timeline_paused = 1;
+                                e->cpu_prof_timeline_offset = offset;
+                                e->cpu_prof_timeline_frame_id =
+                                    cpu_prof_get_frame_id_at_offset((uint16_t)offset);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (frame->count <= 0) {
+                Clay_String msg = CLAY_STRING("Selected frame has no zones");
+                CLAY_TEXT(msg, CLAY_TEXT_CONFIG({.textColor = {168, 168, 178, 255}, .fontSize = 14}));
+            } else {
+            uint64_t min_start = UINT64_MAX;
+            uint64_t max_end = 0;
+            uint16_t max_depth = 0;
+            int zone_count = frame->count < CPU_PROF_MAX_ZONES ? frame->count : CPU_PROF_MAX_ZONES;
+            int zoom_visible_count = 0;
+            double full_span;
+            double zoom;
+            double center;
+            double view_span;
+            double view_start;
+            double view_end;
+            float flame_w;
+            float flame_h;
+            const float bar_h = 18.0f;
+            const float bar_gap = 2.0f;
+            const uint64_t span_ns_min = 1ULL;
+
+            if (e->cpu_prof_tree_frame_id != frame_id) {
+                memset(e->cpu_prof_tree_collapsed, 0, sizeof(e->cpu_prof_tree_collapsed));
+                e->cpu_prof_tree_frame_id = frame_id;
+            }
+
+            root_first = -1;
+            root_last = -1;
+            for (i = 0; i < zone_count; i++) {
+                uint64_t zstart = frame->start_ns[i];
+                uint64_t zend = zstart + frame->duration_ns[i];
+                if (zstart < min_start) min_start = zstart;
+                if (zend > max_end) max_end = zend;
+                if (frame->depth[i] > max_depth) max_depth = frame->depth[i];
+                first_child[i] = -1;
+                last_child[i] = -1;
+                next_sibling[i] = -1;
+                root_next[i] = -1;
+                zoom_visible[i] = 0;
+            }
+
+            for (i = 0; i < zone_count; i++) {
+                uint16_t parent = frame->parent[i];
+                if (parent != CPU_PROF_INVALID_PARENT && parent < (uint16_t)zone_count) {
+                    if (first_child[parent] < 0) {
+                        first_child[parent] = i;
+                    } else {
+                        next_sibling[last_child[parent]] = i;
+                    }
+                    last_child[parent] = i;
+                } else {
+                    if (root_first < 0) {
+                        root_first = i;
+                    } else {
+                        root_next[root_last] = i;
+                    }
+                    root_last = i;
+                }
+            }
+
+            if (max_end <= min_start) max_end = min_start + span_ns_min;
+            full_span = (double)(max_end - min_start);
+            if (full_span < 1.0) full_span = 1.0;
+
+            zoom = (double)e->cpu_prof_flame_zoom;
+            center = (double)e->cpu_prof_flame_center;
+            if (zoom < 1.0) zoom = 1.0;
+            if (zoom > 256.0) zoom = 256.0;
+            if (center < 0.0) center = 0.0;
+            if (center > 1.0) center = 1.0;
+
+            if (e->cpu_prof_flame_zoom_wheel != 0.0f && e->cpu_prof_flame_w > 1.0f) {
+                double anchor = 0.5;
+                double old_view_span;
+                double old_view_start;
+                double anchor_ns;
+                double new_zoom;
+                double new_view_span;
+                double new_view_start;
+
+                anchor = (double)((e->cpu_prof_mouse_x - e->cpu_prof_flame_x) / e->cpu_prof_flame_w);
+                if (anchor < 0.0) anchor = 0.0;
+                if (anchor > 1.0) anchor = 1.0;
+
+                old_view_span = full_span / zoom;
+                if (old_view_span < 1.0) old_view_span = 1.0;
+                if (old_view_span > full_span) old_view_span = full_span;
+                old_view_start = (double)min_start + center * full_span - old_view_span * 0.5;
+                if (old_view_start < (double)min_start) old_view_start = (double)min_start;
+                if (old_view_start + old_view_span > (double)max_end)
+                    old_view_start = (double)max_end - old_view_span;
+
+                anchor_ns = old_view_start + anchor * old_view_span;
+                new_zoom = zoom * pow(1.2, (double)e->cpu_prof_flame_zoom_wheel);
+                if (new_zoom < 1.0) new_zoom = 1.0;
+                if (new_zoom > 256.0) new_zoom = 256.0;
+
+                new_view_span = full_span / new_zoom;
+                if (new_view_span < 1.0) new_view_span = 1.0;
+                if (new_view_span > full_span) new_view_span = full_span;
+                new_view_start = anchor_ns - anchor * new_view_span;
+                if (new_view_start < (double)min_start) new_view_start = (double)min_start;
+                if (new_view_start + new_view_span > (double)max_end)
+                    new_view_start = (double)max_end - new_view_span;
+
+                center = ((new_view_start + new_view_span * 0.5) - (double)min_start) / full_span;
+                if (center < 0.0) center = 0.0;
+                if (center > 1.0) center = 1.0;
+                zoom = new_zoom;
+            }
+            e->cpu_prof_flame_zoom_wheel = 0.0f;
+
+            if (e->cpu_prof_flame_pan_wheel != 0.0f && zoom > 1.0) {
+                double pan_step = (double)e->cpu_prof_flame_pan_wheel * 0.10;
+                center += pan_step / zoom;
+                if (center < 0.0) center = 0.0;
+                if (center > 1.0) center = 1.0;
+            }
+            e->cpu_prof_flame_pan_wheel = 0.0f;
+
+            e->cpu_prof_flame_zoom = (float)zoom;
+            e->cpu_prof_flame_center = (float)center;
+
+            view_span = full_span / zoom;
+            if (view_span < 1.0) view_span = 1.0;
+            if (view_span > full_span) view_span = full_span;
+            view_start = (double)min_start + center * full_span - view_span * 0.5;
+            if (view_start < (double)min_start) view_start = (double)min_start;
+            if (view_start + view_span > (double)max_end)
+                view_start = (double)max_end - view_span;
+            view_end = view_start + view_span;
+            minimap_view_ratio = (float)(view_span / full_span);
+            if (minimap_view_ratio < 0.0f) minimap_view_ratio = 0.0f;
+            if (minimap_view_ratio > 1.0f) minimap_view_ratio = 1.0f;
+            minimap_has_view = 1;
+
+            for (i = 0; i < zone_count; i++) {
+                double zstart = (double)frame->start_ns[i];
+                double zend = zstart + (double)frame->duration_ns[i];
+                if (zend > view_start && zstart < view_end) {
+                    zoom_visible[i] = 1;
+                    zoom_visible_count++;
+                } else {
+                    zoom_visible[i] = 0;
+                }
+            }
+
+            flame_w = (float)win_w - 24.0f - 8.0f;
+            if (flame_w < 160.0f) flame_w = 160.0f;
+            flame_h = (float)(max_depth + 1) * (bar_h + bar_gap) + 4.0f;
+            if (flame_h < 28.0f) flame_h = 28.0f;
+
+            /* Flame graph title */
+            snprintf(flame_title, 160,
+                     "Flame Graph (current frame)  x%.2f", (double)zoom);
+            CLAY(CLAY_ID("CUFlameTitleRow"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                Clay_String h = {false, (int32_t)strlen(flame_title), flame_title};
+                CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {172, 178, 190, 255}, .fontSize = 13}));
+            }
+
+            {
+                const float mini_h = 14.0f;
+                double ratio_start = (view_start - (double)min_start) / full_span;
+                float mini_view_x;
+                float mini_view_w;
+
+                if (ratio_start < 0.0) ratio_start = 0.0;
+                if (ratio_start > 1.0) ratio_start = 1.0;
+                mini_view_x = (float)(ratio_start * (double)flame_w);
+                mini_view_w = minimap_view_ratio * flame_w;
+                if (mini_view_w < 6.0f) mini_view_w = 6.0f;
+                if (mini_view_w > flame_w) mini_view_w = flame_w;
+                if (mini_view_x < 0.0f) mini_view_x = 0.0f;
+                if (mini_view_x + mini_view_w > flame_w) mini_view_x = flame_w - mini_view_w;
+
+                CLAY(CLAY_ID("CUFlameMiniOuter"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(mini_h + 8.0f) },
+                        .padding = CLAY_PADDING_ALL(4),
+                        .layoutDirection = CLAY_TOP_TO_BOTTOM
+                    },
+                    .backgroundColor = {20, 20, 24, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(3)
+                }) {
+                    CLAY(CLAY_ID("CUFlameMiniMap"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(mini_h) }
+                        },
+                        .backgroundColor = {14, 15, 20, 255},
+                        .cornerRadius = CLAY_CORNER_RADIUS(2)
+                    }) {
+                        for (i = 0; i < frame->count && i < CPU_PROF_MAX_ZONES; i++) {
+                            double zstart = (double)frame->start_ns[i];
+                            double zdur = (double)frame->duration_ns[i];
+                            float mx;
+                            float mw;
+                            Clay_Color mc;
+
+                            if (zdur <= 0.0) continue;
+                            mx = (float)(((zstart - (double)min_start) / full_span) * (double)flame_w);
+                            mw = (float)((zdur / full_span) * (double)flame_w);
+                            if (mw < 1.0f) mw = 1.0f;
+                            if (mx < 0.0f) mx = 0.0f;
+                            if (mx >= flame_w) continue;
+                            if (mx + mw > flame_w) mw = flame_w - mx;
+                            if (mw <= 0.0f) continue;
+
+                            mc = cpu_prof_flame_color(frame->names[i], frame->depth[i]);
+                            CLAY(CLAY_IDI("CUFlameMiniBar", i), {
+                                .layout = { .sizing = { CLAY_SIZING_FIXED(mw), CLAY_SIZING_FIXED(mini_h) } },
+                                .floating = {
+                                    .attachTo = CLAY_ATTACH_TO_PARENT,
+                                    .attachPoints = {
+                                        .element = CLAY_ATTACH_POINT_LEFT_TOP,
+                                        .parent = CLAY_ATTACH_POINT_LEFT_TOP
+                                    },
+                                    .offset = { mx, 0.0f },
+                                    .clipTo = CLAY_CLIP_TO_ATTACHED_PARENT
+                                },
+                                .backgroundColor = (Clay_Color){
+                                    (uint8_t)((mc.r * 7) / 10),
+                                    (uint8_t)((mc.g * 7) / 10),
+                                    (uint8_t)((mc.b * 7) / 10),
+                                    220
+                                }
+                            }) {}
+                        }
+
+                        CLAY(CLAY_ID("CUFlameMiniView"), {
+                            .layout = { .sizing = { CLAY_SIZING_FIXED(mini_view_w), CLAY_SIZING_FIXED(mini_h) } },
+                            .floating = {
+                                .attachTo = CLAY_ATTACH_TO_PARENT,
+                                .attachPoints = {
+                                    .element = CLAY_ATTACH_POINT_LEFT_TOP,
+                                    .parent = CLAY_ATTACH_POINT_LEFT_TOP
+                                },
+                                .offset = { mini_view_x, 0.0f },
+                                .clipTo = CLAY_CLIP_TO_ATTACHED_PARENT
+                            },
+                            .backgroundColor = Clay_Hovered()
+                                ? (Clay_Color){130, 176, 248, 128}
+                                : (Clay_Color){106, 152, 236, 96},
+                            .cornerRadius = CLAY_CORNER_RADIUS(2)
+                        }) {}
+                    }
+                }
+            }
+
+            CLAY(CLAY_ID("CUFlameOuter"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(flame_h + 8.0f) },
+                    .padding = CLAY_PADDING_ALL(4),
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .backgroundColor = {20, 20, 24, 255},
+                .cornerRadius = CLAY_CORNER_RADIUS(3)
+            }) {
+                CLAY(CLAY_ID("CUFlameCanvas"), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIXED(flame_h) }
+                    },
+                    .backgroundColor = {16, 16, 20, 255},
+                    .cornerRadius = CLAY_CORNER_RADIUS(2)
+                }) {
+                    for (i = 0; i < frame->count && i < CPU_PROF_MAX_ZONES; i++) {
+                        double zstart = (double)frame->start_ns[i];
+                        double zdur = (double)frame->duration_ns[i];
+                        double zend = zstart + zdur;
+                        double clip_start;
+                        double clip_end;
+                        float fx;
+                        float fw;
+                        float fy;
+                        Clay_Color c;
+
+                        if (zdur == 0) continue;
+                        if (zend <= view_start || zstart >= view_end) continue;
+
+                        clip_start = zstart < view_start ? view_start : zstart;
+                        clip_end = zend > view_end ? view_end : zend;
+                        if (clip_end <= clip_start) continue;
+
+                        fx = (float)(((clip_start - view_start) / view_span) * (double)flame_w);
+                        fw = (float)(((clip_end - clip_start) / view_span) * (double)flame_w);
+                        if (fw < 1.0f) fw = 1.0f;
+                        if (fx < 0.0f) fx = 0.0f;
+                        if (fx + fw > flame_w) fw = flame_w - fx;
+                        if (fw <= 0.0f) continue;
+                        fy = 2.0f + (float)frame->depth[i] * (bar_h + bar_gap);
+
+                        c = cpu_prof_flame_color(frame->names[i], frame->depth[i]);
+
+                        CLAY(CLAY_IDI("CUFlameBar", i), {
+                            .layout = { .sizing = { CLAY_SIZING_FIXED(fw), CLAY_SIZING_FIXED(bar_h) } },
+                            .floating = {
+                                .attachTo = CLAY_ATTACH_TO_PARENT,
+                                .attachPoints = {
+                                    .element = CLAY_ATTACH_POINT_LEFT_TOP,
+                                    .parent = CLAY_ATTACH_POINT_LEFT_TOP
+                                },
+                                .offset = { fx, fy },
+                                .clipTo = CLAY_CLIP_TO_ATTACHED_PARENT
+                            },
+                            .backgroundColor = Clay_Hovered()
+                                ? (Clay_Color){(uint8_t)(c.r + 18), (uint8_t)(c.g + 18), (uint8_t)(c.b + 18), 255}
+                                : c,
+                            .cornerRadius = CLAY_CORNER_RADIUS(2)
+                        }) {
+                            if (fw > 56.0f && frame->names[i]) {
+                                Clay_String ns = {false, (int32_t)strlen(frame->names[i]), (char*)frame->names[i]};
+                                CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {236, 236, 242, 255}, .fontSize = 12}));
+                            }
+                            if (Clay_Hovered()) {
+                                hovered_zone = i;
+                                if (e->cpu_prof_click) clicked_zone = i;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (hovered_zone >= 0 && hovered_zone < frame->count) {
+                uint64_t duration_ns = frame->duration_ns[hovered_zone];
+                snprintf(hover_line, 192, "Hovered: %s | %.1f us | depth %u",
+                         frame->names[hovered_zone] ? frame->names[hovered_zone] : "(null)",
+                         (double)duration_ns / 1000.0,
+                         (unsigned)frame->depth[hovered_zone]);
+                {
+                    Clay_String hs = {false, (int32_t)strlen(hover_line), hover_line};
+                    CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = {196, 206, 228, 255}, .fontSize = 13}));
+                }
+            }
+
+            snprintf(list_info, 128, "Calls in zoom: %d / %d", zoom_visible_count, zone_count);
+            {
+                Clay_String li = {false, (int32_t)strlen(list_info), list_info};
+                CLAY_TEXT(li, CLAY_TEXT_CONFIG({.textColor = {164, 172, 188, 255}, .fontSize = 13}));
+            }
+
+            /* Column headers for zoom-filtered nested call tree. */
+            CLAY(CLAY_ID("CUHeader"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                    .padding = { .left = 8, .right = 8, .top = 4, .bottom = 4 },
+                    .childGap = 8,
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                CLAY(CLAY_IDI("CUHCol", 0), { .layout = { .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) } } }) {
+                    Clay_String h = CLAY_STRING("Name (nested)");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+                CLAY(CLAY_IDI("CUHCol", 1), { .layout = { .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) }, .childAlignment = { CLAY_ALIGN_X_RIGHT, CLAY_ALIGN_Y_CENTER } } }) {
+                    Clay_String h = CLAY_STRING("Duration (us)");
+                    CLAY_TEXT(h, CLAY_TEXT_CONFIG({.textColor = {150, 150, 160, 255}, .fontSize = 14}));
+                }
+            }
+
+            /* Scrollable nested zone list, filtered to visible zoom window. */
+            CLAY(CLAY_ID("CUScroll"), {
+                .layout = {
+                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                    .childGap = 2,
+                    .layoutDirection = CLAY_TOP_TO_BOTTOM
+                },
+                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+            }) {
+                if (zoom_visible_count <= 0) {
+                    CLAY(CLAY_ID("CUZoomEmpty"), {
+                        .layout = {
+                            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                            .padding = { .left = 8, .right = 8, .top = 6, .bottom = 6 }
+                        }
+                    }) {
+                        Clay_String zs = CLAY_STRING("No calls intersect this zoom range");
+                        CLAY_TEXT(zs, CLAY_TEXT_CONFIG({.textColor = {156, 162, 176, 255}, .fontSize = 13}));
+                    }
+                } else {
+                    int row_count = 0;
+                    int root_count = 0;
+                    int stack_count = 0;
+                    int r = root_first;
+                    while (r >= 0 && root_count < zone_count) {
+                        if (zoom_visible[r]) {
+                            root_order[root_count++] = (uint16_t)r;
+                        }
+                        r = root_next[r];
+                    }
+                    for (i = root_count - 1; i >= 0; i--) {
+                        tree_stack_idx[stack_count] = root_order[i];
+                        tree_stack_depth[stack_count] = 0;
+                        stack_count++;
+                    }
+
+                    while (stack_count > 0 && row_count < zone_count) {
+                        uint16_t idx;
+                        uint16_t tree_depth;
+                        uint16_t parent;
+                        const char *name;
+                        int child_idx;
+                        int child_count = 0;
+                        int has_visible_children = 0;
+                        int toggle_clicked = 0;
+                        int row_hovered = 0;
+                        uint16_t indent_px;
+
+                        stack_count--;
+                        idx = tree_stack_idx[stack_count];
+                        tree_depth = tree_stack_depth[stack_count];
+                        if (idx >= (uint16_t)zone_count) continue;
+                        if (!zoom_visible[idx]) continue;
+
+                        child_idx = first_child[idx];
+                        while (child_idx >= 0 && child_count < zone_count) {
+                            if (zoom_visible[child_idx]) {
+                                child_order[child_count++] = (uint16_t)child_idx;
+                                has_visible_children = 1;
+                            }
+                            child_idx = next_sibling[child_idx];
+                        }
+
+                        parent = frame->parent[idx];
+                        name = frame->names[idx] ? frame->names[idx] : "(null)";
+                        indent_px = (uint16_t)(tree_depth * 12);
+                        if (indent_px > 240) indent_px = 240;
+
+                        CLAY(CLAY_IDI("CURow", row_count), {
+                            .layout = {
+                                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                .padding = { .left = 8, .right = 8, .top = 3, .bottom = 3 },
+                                .childGap = 8,
+                                .layoutDirection = CLAY_LEFT_TO_RIGHT
+                            },
+                            .backgroundColor = (idx == hovered_zone)
+                                ? (Clay_Color){48, 58, 78, 255}
+                                : ((row_count % 2 == 0) ? (Clay_Color){35, 35, 40, 255} : (Clay_Color){30, 30, 35, 255})
+                        }) {
+                            row_hovered = Clay_Hovered();
+
+                            CLAY(CLAY_IDI("CUName", row_count), {
+                                .layout = {
+                                    .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                                    .padding = { .left = indent_px, .right = 0, .top = 0, .bottom = 0 },
+                                    .childGap = 4,
+                                    .layoutDirection = CLAY_LEFT_TO_RIGHT,
+                                    .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                                },
+                                .clip = { .horizontal = true }
+                            }) {
+                                const char *toggle_label = " ";
+                                if (has_visible_children) {
+                                    toggle_label = e->cpu_prof_tree_collapsed[idx]
+                                        ? UI_ICON_ARROW_RIGHT
+                                        : UI_ICON_ARROW_DOWN;
+                                }
+                                CLAY(CLAY_IDI("CUToggle", idx), {
+                                    .layout = { .sizing = { CLAY_SIZING_FIXED(10), CLAY_SIZING_FIT({0}) } }
+                                }) {
+                                    Clay_String ts = {false, (int32_t)strlen(toggle_label), (char *)toggle_label};
+                                    CLAY_TEXT(ts, CLAY_TEXT_CONFIG({
+                                        .textColor = has_visible_children
+                                            ? ((Clay_Color){206, 214, 230, 255})
+                                            : ((Clay_Color){120, 124, 134, 255}),
+                                        .fontSize = 13
+                                    }));
+                                    if (has_visible_children && Clay_Hovered() && e->cpu_prof_click) {
+                                        e->cpu_prof_tree_collapsed[idx] = e->cpu_prof_tree_collapsed[idx] ? 0 : 1;
+                                        toggle_clicked = 1;
+                                    }
+                                }
+                                {
+                                    Clay_String ns = {false, (int32_t)strlen(name), (char*)name};
+                                    CLAY_TEXT(ns, CLAY_TEXT_CONFIG({.textColor = {200, 200, 210, 255}, .fontSize = 14, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                                }
+                            }
+
+                            /* Duration -- right-aligned via manual padding. */
+                            {
+                                uint64_t duration_ns = frame->duration_ns[idx];
+                                int num_digits;
+                                float digit_px = e->font_advances['0'] * 14.0f;
+                                uint16_t dur_left_pad;
+                                snprintf(bufs[row_count][0], sizeof(bufs[row_count][0]), "%u", (unsigned)(duration_ns / 1000));
+                                num_digits = (int)strlen(bufs[row_count][0]);
+                                {
+                                    float pad_f = 100.0f - num_digits * digit_px;
+                                    dur_left_pad = (pad_f > 0.0f) ? (uint16_t)pad_f : 0;
+                                }
+                                CLAY(CLAY_IDI("CUDur", row_count), {
+                                    .layout = {
+                                        .sizing = { CLAY_SIZING_FIXED(100), CLAY_SIZING_FIT({0}) },
+                                        .padding = { dur_left_pad, 0, 0, 0 },
+                                        .childAlignment = { 0, CLAY_ALIGN_Y_CENTER }
+                                    }
+                                }) {
+                                    Clay_String vs = {false, (int32_t)strlen(bufs[row_count][0]), bufs[row_count][0]};
+                                    CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = {255, 200, 120, 255}, .fontSize = 14}));
+                                }
+                            }
+
+                            if (row_hovered) {
+                                hovered_zone = idx;
+                                if (e->cpu_prof_click && !toggle_clicked) clicked_zone = idx;
+                            }
+                        }
+
+                        if (has_visible_children && !e->cpu_prof_tree_collapsed[idx]) {
+                            for (j = child_count - 1; j >= 0 && stack_count < zone_count; j--) {
+                                tree_stack_idx[stack_count] = child_order[j];
+                                tree_stack_depth[stack_count] = tree_depth + 1;
+                                stack_count++;
+                            }
+                        }
+                        row_count++;
+                    }
+                }
+            }
+            }
+        }
+    }
+
+    /* Post-layout exports (kept from original) */
+    if (!e->cpu_prof_mouse_down) {
+        e->cpu_prof_minimap_dragging = 0;
+    }
+    if (minimap_has_view) {
+        Clay_ElementData mm = Clay_GetElementData(CLAY_ID("CUFlameMiniMap"));
+        if (mm.found) {
+            float ratio = 0.5f;
+            float view_ratio = minimap_view_ratio;
+            float view_start_ratio;
+
+            if (view_ratio < 0.0f) view_ratio = 0.0f;
+            if (view_ratio > 1.0f) view_ratio = 1.0f;
+
+            ratio = (e->cpu_prof_mouse_x - mm.boundingBox.x) /
+                    (mm.boundingBox.width > 1.0f ? mm.boundingBox.width : 1.0f);
+            if (ratio < 0.0f) ratio = 0.0f;
+            if (ratio > 1.0f) ratio = 1.0f;
+
+            view_start_ratio = e->cpu_prof_flame_center - view_ratio * 0.5f;
+            if (view_start_ratio < 0.0f) view_start_ratio = 0.0f;
+            if (view_start_ratio + view_ratio > 1.0f) view_start_ratio = 1.0f - view_ratio;
+            if (view_start_ratio < 0.0f) view_start_ratio = 0.0f;
+
+            if (e->cpu_prof_minimap_dragging && e->cpu_prof_mouse_down && view_ratio < 0.999f) {
+                float new_start = ratio - e->cpu_prof_minimap_drag_offset * view_ratio;
+                if (new_start < 0.0f) new_start = 0.0f;
+                if (new_start + view_ratio > 1.0f) new_start = 1.0f - view_ratio;
+                if (new_start < 0.0f) new_start = 0.0f;
+                e->cpu_prof_flame_center = new_start + view_ratio * 0.5f;
+            }
+
+            if (e->cpu_prof_click &&
+                e->cpu_prof_mouse_x >= mm.boundingBox.x &&
+                e->cpu_prof_mouse_x <= mm.boundingBox.x + mm.boundingBox.width &&
+                e->cpu_prof_mouse_y >= mm.boundingBox.y &&
+                e->cpu_prof_mouse_y <= mm.boundingBox.y + mm.boundingBox.height) {
+                if (view_ratio < 0.999f &&
+                    ratio >= view_start_ratio &&
+                    ratio <= view_start_ratio + view_ratio) {
+                    e->cpu_prof_minimap_dragging = 1;
+                    e->cpu_prof_minimap_drag_offset = (ratio - view_start_ratio) /
+                                                      (view_ratio > 0.0001f ? view_ratio : 1.0f);
+                } else {
+                    e->cpu_prof_flame_center = ratio;
+                    if (view_ratio < 1.0f) {
+                        if (e->cpu_prof_flame_center < view_ratio * 0.5f)
+                            e->cpu_prof_flame_center = view_ratio * 0.5f;
+                        if (e->cpu_prof_flame_center > 1.0f - view_ratio * 0.5f)
+                            e->cpu_prof_flame_center = 1.0f - view_ratio * 0.5f;
+                    } else {
+                        e->cpu_prof_flame_center = 0.5f;
+                    }
+                    e->cpu_prof_minimap_dragging = (view_ratio < 0.999f) ? 1 : 0;
+                    e->cpu_prof_minimap_drag_offset = 0.5f;
+                }
+            }
+        } else {
+            e->cpu_prof_minimap_dragging = 0;
+        }
+    } else {
+        e->cpu_prof_minimap_dragging = 0;
+    }
+    {
+        Clay_ElementData fe = Clay_GetElementData(CLAY_ID("CUFlameCanvas"));
+        if (fe.found) {
+            e->cpu_prof_flame_x = fe.boundingBox.x;
+            e->cpu_prof_flame_y = fe.boundingBox.y;
+            e->cpu_prof_flame_w = fe.boundingBox.width;
+            e->cpu_prof_flame_h = fe.boundingBox.height;
+        } else {
+            e->cpu_prof_flame_x = 0.0f;
+            e->cpu_prof_flame_y = 0.0f;
+            e->cpu_prof_flame_w = 0.0f;
+            e->cpu_prof_flame_h = 0.0f;
+        }
+    }
+    if (frame && hovered_zone >= 0 && hovered_zone < frame->count && frame->names[hovered_zone]) {
+        snprintf(e->cpu_prof_hover_zone_name, sizeof(e->cpu_prof_hover_zone_name), "%s",
+                 frame->names[hovered_zone]);
+        e->cpu_prof_hover_zone_active = 1;
+    }
+    if (frame && clicked_zone >= 0 && clicked_zone < frame->count && frame->names[clicked_zone]) {
+        snprintf(e->cpu_prof_selected_zone_name, sizeof(e->cpu_prof_selected_zone_name), "%s",
+                 frame->names[clicked_zone]);
+        e->cpu_prof_selected_zone_active = 1;
+    }
+    if (history_count > 0 && e->cpu_prof_click) {
+        Clay_ElementData tl = Clay_GetElementData(CLAY_ID("CUTimelineStrip"));
+        if (tl.found) {
+            float mx = e->cpu_prof_mouse_x;
+            float my = e->cpu_prof_mouse_y;
+            if (mx >= tl.boundingBox.x && mx <= tl.boundingBox.x + tl.boundingBox.width &&
+                my >= tl.boundingBox.y && my <= tl.boundingBox.y + tl.boundingBox.height) {
+                float rel = (mx - tl.boundingBox.x) / (tl.boundingBox.width > 1.0f ? tl.boundingBox.width : 1.0f);
+                int idx = (int)(rel * (float)history_count);
+                if (idx < 0) idx = 0;
+                if (idx >= history_count) idx = history_count - 1;
+                e->cpu_prof_timeline_paused = 1;
+                e->cpu_prof_timeline_offset = history_count - 1 - idx;
+                e->cpu_prof_timeline_frame_id =
+                    cpu_prof_get_frame_id_at_offset((uint16_t)e->cpu_prof_timeline_offset);
+            }
+        }
+    }
+    e->cpu_prof_click = 0;
+}
+
+static void dock_to_clay(dock_state *d, int node_idx, game_state *gs, editor_state *es) {
+    DockNode *n;
+    if (node_idx < 0 || node_idx >= MAX_DOCK_NODES) return;
+    n = &d->nodes[node_idx];
+    if (!n->in_use) return;
+
+    if (n->type == DOCK_SPLIT_H || n->type == DOCK_SPLIT_V) {
+        CLAY(CLAY_IDI("DockSplit", node_idx), {
+            .layout = {
+                .sizing = {
+                    .width = CLAY_SIZING_FIXED(n->w),
+                    .height = CLAY_SIZING_FIXED(n->h)
+                },
+                .layoutDirection = (n->type == DOCK_SPLIT_H)
+                    ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM
+            }
+        }) {
+            dock_to_clay(d, n->children[0], gs, es);
+            dock_to_clay(d, n->children[1], gs, es);
+        }
+    } else if (n->type == DOCK_TABS) {
+        PanelId pid;
+        float pw, ph;
+        if (n->panel_count == 0) return;
+        pid = n->panels[n->active_tab];
+        pw = n->w;
+        ph = n->h - DOCK_HEADER_HEIGHT;
+        if (pw <= 0 || ph <= 0) return;
+
+        CLAY(CLAY_IDI("DockLeaf", node_idx), {
+            .layout = {
+                .sizing = {
+                    .width = CLAY_SIZING_FIXED(n->w),
+                    .height = CLAY_SIZING_FIXED(n->h)
+                },
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            }
+        }) {
+            /* Header spacer — compositor draws tab headers in this region */
+            CLAY(CLAY_IDI("TabSpacer", node_idx), {
+                .layout = {
+                    .sizing = {
+                        .width = CLAY_SIZING_GROW({0}),
+                        .height = CLAY_SIZING_FIXED(DOCK_HEADER_HEIGHT)
+                    }
+                }
+            }) {}
+
+            /* Panel content area — clipping only, no scroll (inner functions manage scroll) */
+            CLAY(CLAY_IDI("PanelContent", (int)pid), {
+                .layout = {
+                    .sizing = {
+                        .width = CLAY_SIZING_FIXED(pw),
+                        .height = CLAY_SIZING_FIXED(ph)
+                    }
+                },
+                .clip = { .vertical = true }
+            }) {
+                switch (pid) {
+                    case PANEL_PROFILER:        profiler_layout_inner(gs, es); break;
+                    case PANEL_SCENE_TREE:      scene_tree_layout_inner(gs, es); break;
+                    case PANEL_ASSETS:          project_browser_layout_inner(gs, es); break;
+                    case PANEL_INSPECTOR:       inspector_layout_inner(gs, es); break;
+                    case PANEL_CACHE_PROFILER:  cache_profiler_layout_inner(gs, es); break;
+                    case PANEL_CPU_PROFILER:    cpu_profiler_layout_inner(gs, es); break;
+                    case PANEL_EDITOR:
+                        editor_toolbar_layout_inner(gs, es);
+                        break;
+                    case PANEL_GAME:            break;
+                    default: break;
+                }
+            }
+        }
+    }
+}
+
+static void unified_layout(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    dock_state *d = (dock_state *)e->dock;
+    int win_w, win_h;
+    Clay_RenderCommandArray commands;
+
+    if (!e->clay_ctx) return;
+
+    SDL_GetWindowSize((SDL_Window *)d->windows[0].sdl_window, &win_w, &win_h);
+    if (win_w < 1) win_w = 1;
+    if (win_h < 1) win_h = 1;
+
+    Clay_SetCurrentContext((Clay_Context *)e->clay_ctx);
+    Clay_SetLayoutDimensions((Clay_Dimensions){(float)win_w, (float)win_h});
+    Clay_SetPointerState(
+        (Clay_Vector2){e->window_mouse_x, e->window_mouse_y},
+        (bool)e->window_mouse_down
+    );
+    Clay_UpdateScrollContainers(true, (Clay_Vector2){0, e->window_scroll_y}, gs->dt);
+    e->window_scroll_y = 0;
+    e->window_mouse_click = 0;
+    Clay_SetDebugModeEnabled((bool)e->clay_debug_open);
+
+    Clay_BeginLayout();
+
+    CLAY(CLAY_ID("EditorRoot"), {
+        .layout = {
+            .sizing = { .width = CLAY_SIZING_GROW({0}), .height = CLAY_SIZING_GROW({0}) },
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        }
+    }) {
+        menu_bar_layout_inner(gs, es);
+
+        CLAY(CLAY_ID("DockArea"), {
+            .layout = {
+                .sizing = { .width = CLAY_SIZING_GROW({0}), .height = CLAY_SIZING_GROW({0}) }
+            }
+        }) {
+            if (d->windows[0].root_node >= 0) {
+                dock_to_clay(d, d->windows[0].root_node, gs, es);
+            }
+        }
+    }
+
+    commands = Clay_EndLayout();
+    e->clay_cmd_count = commands.length;
+    e->clay_cmd_array = commands.internalArray;
+
+    /* Sync back: Clay's debug close button clears debugModeEnabled during EndLayout */
+    e->clay_debug_open = ((Clay_Context *)e->clay_ctx)->debugModeEnabled;
+}
+
 EXPORT void update_editor(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
@@ -7223,52 +10077,17 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     }
     EDITOR_CPU_ZONE_END(e);
 
-    /* ── Profiler Clay layout (produces render commands for externals) ── */
+    /* ── Clay layout (produces render commands for externals) ── */
     EDITOR_CPU_ZONE_BEGIN(e, "editor_layout_prepass");
     {
         int scene_count = gs->scene_entities ? gs->scene_entity_count : 0;
         editor_scene_selection_sync(e, scene_count);
     }
     EDITOR_CPU_ZONE_END(e);
-    if (dock_is_panel_visible(d, PANEL_PROFILER)) {
-        EDITOR_CPU_ZONE_BEGIN(e, "layout_memory_profiler");
-        profiler_layout(gs, es);
-        EDITOR_CPU_ZONE_END(e);
-    }
-    if (dock_is_panel_visible(d, PANEL_SCENE_TREE)) {
-        EDITOR_CPU_ZONE_BEGIN(e, "layout_scene_tree");
-        scene_tree_layout(gs, es);
-        EDITOR_CPU_ZONE_END(e);
-    }
-    if (dock_is_panel_visible(d, PANEL_ASSETS)) {
-        EDITOR_CPU_ZONE_BEGIN(e, "layout_project_browser");
-        project_browser_layout(gs, es);
-        EDITOR_CPU_ZONE_END(e);
-    }
-    if (dock_is_panel_visible(d, PANEL_INSPECTOR)) {
-        EDITOR_CPU_ZONE_BEGIN(e, "layout_inspector");
-        inspector_layout(gs, es);
-        EDITOR_CPU_ZONE_END(e);
-    }
-    /* Menu bar is always visible when editor is open */
-    EDITOR_CPU_ZONE_BEGIN(e, "layout_menu_bar");
-    menu_bar_layout(gs, es);
+    /* Unified Clay layout — single context, single pass */
+    EDITOR_CPU_ZONE_BEGIN(e, "layout_unified_clay");
+    unified_layout(gs, es);
     EDITOR_CPU_ZONE_END(e);
-    if (dock_is_panel_visible(d, PANEL_EDITOR)) {
-        EDITOR_CPU_ZONE_BEGIN(e, "layout_editor_toolbar");
-        editor_toolbar_layout(gs, es);
-        EDITOR_CPU_ZONE_END(e);
-    }
-    if (dock_is_panel_visible(d, PANEL_CACHE_PROFILER)) {
-        EDITOR_CPU_ZONE_BEGIN(e, "layout_cache_profiler");
-        cache_profiler_layout(gs, es);
-        EDITOR_CPU_ZONE_END(e);
-    }
-    if (dock_is_panel_visible(d, PANEL_CPU_PROFILER)) {
-        EDITOR_CPU_ZONE_BEGIN(e, "layout_cpu_profiler");
-        cpu_profiler_layout(gs, es);
-        EDITOR_CPU_ZONE_END(e);
-    }
 
     /* ── Camera, gizmo, lines (existing editor behavior) ── */
     EDITOR_CPU_ZONE_BEGIN(e, "editor_camera_and_gizmo");
@@ -7336,6 +10155,22 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     ResizeState *resize = &d->resize;
     SDL_Window *evwin;
 
+    /* ── Window-wide mouse state (for unified Clay context) ── */
+    if (ev->type == SDL_EVENT_MOUSE_MOTION) {
+        e->window_mouse_x = ev->motion.x;
+        e->window_mouse_y = ev->motion.y;
+    }
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev->button.button == SDL_BUTTON_LEFT) {
+        e->window_mouse_click = 1;
+        e->window_mouse_down = 1;
+    }
+    if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT) {
+        e->window_mouse_down = 0;
+    }
+    if (ev->type == SDL_EVENT_MOUSE_WHEEL) {
+        e->window_scroll_y += ev->wheel.y;
+    }
+
     /* ── Menu bar input (main window top strip) ── */
     if (ev->type == SDL_EVENT_MOUSE_MOTION) {
         evwin = SDL_GetWindowFromEvent(ev);
@@ -7347,7 +10182,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 return 1;
             }
             /* Consume motion over Clay debug view panel */
-            if (e->menu_bar_clay_ctx &&
+            if (e->clay_ctx &&
                 e->clay_debug_open) {
                 int ww = 0;
                 SDL_GetWindowSize(evwin, &ww, NULL);
@@ -7371,7 +10206,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 return 1;
             }
             /* Consume clicks over Clay debug view panel (right side) */
-            if (e->menu_bar_clay_ctx &&
+            if (e->clay_ctx &&
                 e->clay_debug_open) {
                 int ww = 0;
                 SDL_GetWindowSize(evwin, &ww, NULL);

@@ -1640,14 +1640,7 @@ typedef struct UIRenderState {
 } UIRenderState;
 
 static UIRenderState ui_game = {0};
-static UIRenderState ui_profiler = {0};
-static UIRenderState ui_scene_tree = {0};
-static UIRenderState ui_project_browser = {0};
-static UIRenderState ui_inspector = {0};
-static UIRenderState ui_menu_bar = {0};
-static UIRenderState ui_editor_toolbar = {0};
-static UIRenderState ui_cache_profiler = {0};
-static UIRenderState ui_cpu_profiler = {0};
+static UIRenderState ui_editor_clay = {0};  /* unified editor Clay UI */
 
 static void ui_push_font_quad(UIRenderState *ui, int use_icon_font,
                               float gx, float gy, float glyph_w, float glyph_h,
@@ -2063,15 +2056,15 @@ static int SDLCALL editor_thread_fn(void *userdata) {
             /* 1. Run Clay layout (writes cmd_array / cmd_count fields in editor_state) */
             g_editor_update(&g_mem->game, &g_mem->editor);
 
-            /* 2. Build vertices for all 8 editor panels */
+            /* 2. Build vertices from unified Clay commands */
             editor_state *e = &g_mem->editor;
 
-            if (e->profiler_cmd_count > 0 && e->profiler_cmd_array) {
+            if (e->clay_cmd_count > 0 && e->clay_cmd_array) {
                 Clay_RenderCommandArray cmds;
-                cmds.length = e->profiler_cmd_count;
-                cmds.internalArray = (Clay_RenderCommand *)e->profiler_cmd_array;
-                ui_build_vertices(&ui_profiler, cmds);
-                /* Append scrollbar thumb */
+                cmds.length = e->clay_cmd_count;
+                cmds.internalArray = (Clay_RenderCommand *)e->clay_cmd_array;
+                ui_build_vertices(&ui_editor_clay, cmds);
+                /* Append profiler scrollbar thumb */
                 {
                     float content_h = e->prof_content_h;
                     float container_h = e->prof_container_h;
@@ -2084,8 +2077,8 @@ static int SDLCALL editor_thread_fn(void *userdata) {
                         float scroll_frac = (-e->prof_scroll_pos) / (content_h - container_h);
                         float thumb_y = e->prof_track_y + scroll_frac * (track_h - thumb_h);
                         float sb_x = e->prof_track_x + e->prof_track_w - sb_w - 2;
-                        if (ui_profiler.rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
-                            ui_rect_vertex *v = &ui_profiler.rect_verts[ui_profiler.rect_vert_count];
+                        if (ui_editor_clay.rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
+                            ui_rect_vertex *v = &ui_editor_clay.rect_verts[ui_editor_clay.rect_vert_count];
                             float r = 1.0f, g2 = 1.0f, b = 1.0f, a = 0.3f;
                             v[0] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
                             v[1] = (ui_rect_vertex){sb_x + sb_w, thumb_y,          r, g2, b, a};
@@ -2093,53 +2086,10 @@ static int SDLCALL editor_thread_fn(void *userdata) {
                             v[3] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
                             v[4] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
                             v[5] = (ui_rect_vertex){sb_x,        thumb_y + thumb_h, r, g2, b, a};
-                            ui_profiler.rect_vert_count += 6;
+                            ui_editor_clay.rect_vert_count += 6;
                         }
                     }
                 }
-            }
-
-            if (e->scene_tree_cmd_count > 0 && e->scene_tree_cmd_array) {
-                Clay_RenderCommandArray cmds;
-                cmds.length = e->scene_tree_cmd_count;
-                cmds.internalArray = (Clay_RenderCommand *)e->scene_tree_cmd_array;
-                ui_build_vertices(&ui_scene_tree, cmds);
-            }
-            if (e->project_browser_cmd_count > 0 && e->project_browser_cmd_array) {
-                Clay_RenderCommandArray cmds;
-                cmds.length = e->project_browser_cmd_count;
-                cmds.internalArray = (Clay_RenderCommand *)e->project_browser_cmd_array;
-                ui_build_vertices(&ui_project_browser, cmds);
-            }
-            if (e->inspector_cmd_count > 0 && e->inspector_cmd_array) {
-                Clay_RenderCommandArray cmds;
-                cmds.length = e->inspector_cmd_count;
-                cmds.internalArray = (Clay_RenderCommand *)e->inspector_cmd_array;
-                ui_build_vertices(&ui_inspector, cmds);
-            }
-            if (e->cache_prof_cmd_count > 0 && e->cache_prof_cmd_array) {
-                Clay_RenderCommandArray cmds;
-                cmds.length = e->cache_prof_cmd_count;
-                cmds.internalArray = (Clay_RenderCommand *)e->cache_prof_cmd_array;
-                ui_build_vertices(&ui_cache_profiler, cmds);
-            }
-            if (e->cpu_prof_cmd_count > 0 && e->cpu_prof_cmd_array) {
-                Clay_RenderCommandArray cmds;
-                cmds.length = e->cpu_prof_cmd_count;
-                cmds.internalArray = (Clay_RenderCommand *)e->cpu_prof_cmd_array;
-                ui_build_vertices(&ui_cpu_profiler, cmds);
-            }
-            if (e->editor_toolbar_cmd_count > 0 && e->editor_toolbar_cmd_array) {
-                Clay_RenderCommandArray cmds;
-                cmds.length = e->editor_toolbar_cmd_count;
-                cmds.internalArray = (Clay_RenderCommand *)e->editor_toolbar_cmd_array;
-                ui_build_vertices(&ui_editor_toolbar, cmds);
-            }
-            if (e->menu_bar_cmd_count > 0 && e->menu_bar_cmd_array) {
-                Clay_RenderCommandArray cmds;
-                cmds.length = e->menu_bar_cmd_count;
-                cmds.internalArray = (Clay_RenderCommand *)e->menu_bar_cmd_array;
-                ui_build_vertices(&ui_menu_bar, cmds);
             }
         }
 
@@ -2148,17 +2098,21 @@ static int SDLCALL editor_thread_fn(void *userdata) {
     return 0;
 }
 
-// Profiler window: upload vertices (built by editor thread) + grid texture
+// Profiler grid texture upload (vertices now handled by unified Clay UI)
 static void profiler_upload(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
-    ui_upload(cmd_buf, &ui_profiler);
-
     /* Upload grid pixel buffer to GPU texture + build quad vertex buffer (copy pass) */
     FRAME_CPU_ZONE_BEGIN("prof_grid_gpu_upload");
     {
         editor_state *e = &g->editor;
+        dock_state *dock_s = (dock_state *)e->dock;
         int gw = e->prof_grid_w, gh = e->prof_grid_h;
-        float panel_w = (float)panel_tex_w[PANEL_PROFILER] / display_density;
-        float panel_h = (float)panel_tex_h[PANEL_PROFILER] / display_density;
+        int win_w_log = 1, win_h_log = 1;
+        float panel_w, panel_h;
+        if (dock_s && dock_s->windows[0].sdl_window)
+            SDL_GetWindowSize((SDL_Window *)dock_s->windows[0].sdl_window, &win_w_log, &win_h_log);
+        /* SDL_GetWindowSize returns logical (screen-coordinate) size — matches Clay coordinate space */
+        panel_w = (float)win_w_log;
+        panel_h = (float)win_h_log;
 
         /* Release previous frame's quad buffer */
         if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
@@ -2257,35 +2211,7 @@ static void profiler_upload(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     FRAME_CPU_ZONE_END(); /* prof_grid_gpu_upload */
 }
 
-static void scene_tree_upload(SDL_GPUCommandBuffer *cmd_buf) {
-    ui_upload(cmd_buf, &ui_scene_tree);
-}
-
-static void project_browser_upload(SDL_GPUCommandBuffer *cmd_buf) {
-    ui_upload(cmd_buf, &ui_project_browser);
-}
-
-static void inspector_upload(SDL_GPUCommandBuffer *cmd_buf) {
-    ui_upload(cmd_buf, &ui_inspector);
-}
-
-static void cache_profiler_upload(SDL_GPUCommandBuffer *cmd_buf) {
-    ui_upload(cmd_buf, &ui_cache_profiler);
-}
-
-static void cpu_profiler_upload(SDL_GPUCommandBuffer *cmd_buf) {
-    ui_upload(cmd_buf, &ui_cpu_profiler);
-}
-
-static void editor_toolbar_upload(SDL_GPUCommandBuffer *cmd_buf) {
-    ui_upload(cmd_buf, &ui_editor_toolbar);
-}
-
-static void menu_bar_upload(SDL_GPUCommandBuffer *cmd_buf) {
-    ui_upload(cmd_buf, &ui_menu_bar);
-}
-
-/* Draw the grid texture quad during the profiler render pass.
+/* Draw the grid texture quad during the composite render pass.
    All GPU resources were prepared by profiler_upload (copy phase). */
 static void grid_tex_draw(SDL_GPURenderPass *pass, SDL_GPUCommandBuffer *cmd_buf) {
     if (!grid_texture || !grid_tex_pipeline || !grid_quad_buf || !grid_sampler)
@@ -2936,8 +2862,7 @@ EXPORT int init_externals(const char *project_path) {
         pipe_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         pipe_info.target_info.color_target_descriptions = &color_target;
         pipe_info.target_info.num_color_targets = 1;
-        pipe_info.target_info.has_depth_stencil_target = true;
-        pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        pipe_info.target_info.has_depth_stencil_target = false;
 
         ui_rect_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
         if (!ui_rect_pipeline) {
@@ -3002,8 +2927,7 @@ EXPORT int init_externals(const char *project_path) {
         pipe_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         pipe_info.target_info.color_target_descriptions = &color_target;
         pipe_info.target_info.num_color_targets = 1;
-        pipe_info.target_info.has_depth_stencil_target = true;
-        pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        pipe_info.target_info.has_depth_stencil_target = false;
 
         font_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
         if (!font_pipeline) {
@@ -3421,8 +3345,7 @@ EXPORT int init_externals(const char *project_path) {
         pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         pi.target_info.color_target_descriptions = &ct;
         pi.target_info.num_color_targets = 1;
-        pi.target_info.has_depth_stencil_target = true;
-        pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        pi.target_info.has_depth_stencil_target = false;
 
         grid_tex_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pi);
         if (!grid_tex_pipeline) {
@@ -4196,22 +4119,11 @@ EXPORT int update_externals(void) {
     ui_prepare_game(cmd_buf, g_mem);
     FRAME_CPU_ZONE_END();
 
-    // --- Upload editor panel vertices (built by editor thread) ---
-    menu_bar_upload(cmd_buf);
-    if (panel_color[PANEL_PROFILER] && panel_visible[PANEL_PROFILER])
+    // --- Upload unified Clay UI vertices (built by editor thread) ---
+    ui_upload(cmd_buf, &ui_editor_clay);
+    // Profiler grid texture upload (kept separate from Clay UI)
+    if (panel_visible[PANEL_PROFILER])
         profiler_upload(cmd_buf, g_mem);
-    if (panel_color[PANEL_SCENE_TREE] && panel_visible[PANEL_SCENE_TREE])
-        scene_tree_upload(cmd_buf);
-    if (panel_color[PANEL_ASSETS] && panel_visible[PANEL_ASSETS])
-        project_browser_upload(cmd_buf);
-    if (panel_color[PANEL_INSPECTOR] && panel_visible[PANEL_INSPECTOR])
-        inspector_upload(cmd_buf);
-    if (panel_color[PANEL_CACHE_PROFILER] && panel_visible[PANEL_CACHE_PROFILER])
-        cache_profiler_upload(cmd_buf);
-    if (panel_color[PANEL_CPU_PROFILER] && panel_visible[PANEL_CPU_PROFILER])
-        cpu_profiler_upload(cmd_buf);
-    if (panel_color[PANEL_EDITOR] && panel_visible[PANEL_EDITOR])
-        editor_toolbar_upload(cmd_buf);
 
     FRAME_CPU_ZONE_END(); /* ui_prepare_all */
 
@@ -4448,136 +4360,10 @@ EXPORT int update_externals(void) {
         FRAME_CPU_ZONE_END();
     }
 
-    // --- PROFILER PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_PROFILER] && panel_visible[PANEL_PROFILER]) {
-        FRAME_CPU_ZONE_BEGIN("render_memory_profiler_panel");
-        Uint32 pw = (Uint32)panel_tex_w[PANEL_PROFILER];
-        Uint32 ph = (Uint32)panel_tex_h[PANEL_PROFILER];
-
-        SDL_GPUColorTargetInfo prof_ct = {0};
-        prof_ct.texture = panel_color[PANEL_PROFILER];
-        prof_ct.clear_color = (SDL_FColor){0.10f, 0.10f, 0.12f, 1.0f};
-        prof_ct.load_op = SDL_GPU_LOADOP_CLEAR;
-        prof_ct.store_op = SDL_GPU_STOREOP_STORE;
-
-        SDL_GPUDepthStencilTargetInfo prof_dt = {0};
-        prof_dt.texture = panel_depth[PANEL_PROFILER];
-        prof_dt.clear_depth = 1.0f;
-        prof_dt.load_op = SDL_GPU_LOADOP_CLEAR;
-        prof_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
-        prof_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-        prof_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-
-        SDL_GPURenderPass *prof_pass = SDL_BeginGPURenderPass(cmd_buf, &prof_ct, 1, &prof_dt);
-
-        uniform_data prof_uniforms;
-        float prof_lw = (float)pw / display_density;
-        float prof_lh = (float)ph / display_density;
-        float prof_ortho[16] = {
-            2.0f/prof_lw,    0,               0,     0,
-            0,              -2.0f/prof_lh,     0,     0,
-            0,               0,              -1.0f,  0,
-           -1.0f,            1.0f,             0,     1.0f
-        };
-        memcpy(prof_uniforms.projection, prof_ortho, sizeof(prof_ortho));
-        float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-        memcpy(prof_uniforms.view, identity, sizeof(identity));
-
-        FRAME_CPU_ZONE_BEGIN("prof_ui_draw");
-        ui_draw(prof_pass, cmd_buf, &prof_uniforms, &ui_profiler);
-        FRAME_CPU_ZONE_END();
-
-        FRAME_CPU_ZONE_BEGIN("prof_grid_draw");
-        grid_tex_draw(prof_pass, cmd_buf);
-        FRAME_CPU_ZONE_END();
-
-        SDL_EndGPURenderPass(prof_pass);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- SCENE TREE PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_SCENE_TREE] && panel_depth[PANEL_SCENE_TREE] && panel_visible[PANEL_SCENE_TREE]) {
-        FRAME_CPU_ZONE_BEGIN("render_scene_tree_panel");
-        Uint32 sw = (Uint32)panel_tex_w[PANEL_SCENE_TREE];
-        Uint32 sh = (Uint32)panel_tex_h[PANEL_SCENE_TREE];
-
-        SDL_GPUColorTargetInfo st_ct = {0};
-        st_ct.texture = panel_color[PANEL_SCENE_TREE];
-        st_ct.clear_color = (SDL_FColor){0.09f, 0.12f, 0.16f, 1.0f};
-        st_ct.load_op = SDL_GPU_LOADOP_CLEAR;
-        st_ct.store_op = SDL_GPU_STOREOP_STORE;
-
-        SDL_GPUDepthStencilTargetInfo st_dt = {0};
-        st_dt.texture = panel_depth[PANEL_SCENE_TREE];
-        st_dt.clear_depth = 1.0f;
-        st_dt.load_op = SDL_GPU_LOADOP_CLEAR;
-        st_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
-        st_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-        st_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-
-        SDL_GPURenderPass *st_pass = SDL_BeginGPURenderPass(cmd_buf, &st_ct, 1, &st_dt);
-
-        {
-            uniform_data st_uniforms;
-            float st_lw = (float)sw / display_density;
-            float st_lh = (float)sh / display_density;
-            float st_ortho[16] = {
-                2.0f/st_lw,    0,             0,     0,
-                0,            -2.0f/st_lh,    0,     0,
-                0,             0,            -1.0f,  0,
-               -1.0f,          1.0f,          0,     1.0f
-            };
-            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-            memcpy(st_uniforms.projection, st_ortho, sizeof(st_ortho));
-            memcpy(st_uniforms.view, identity, sizeof(identity));
-            ui_draw(st_pass, cmd_buf, &st_uniforms, &ui_scene_tree);
-        }
-
-        SDL_EndGPURenderPass(st_pass);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- PROJECT BROWSER PANEL RENDER PASS (offscreen) ---
+    /* Thumbnail 3D preview pass for project browser (kept — renders into panel texture) */
     if (panel_color[PANEL_ASSETS] && panel_depth[PANEL_ASSETS] && panel_visible[PANEL_ASSETS]) {
-        FRAME_CPU_ZONE_BEGIN("render_project_panel");
         Uint32 aw = (Uint32)panel_tex_w[PANEL_ASSETS];
         Uint32 ah = (Uint32)panel_tex_h[PANEL_ASSETS];
-
-        SDL_GPUColorTargetInfo pb_ct = {0};
-        pb_ct.texture = panel_color[PANEL_ASSETS];
-        pb_ct.clear_color = (SDL_FColor){0.09f, 0.12f, 0.16f, 1.0f};
-        pb_ct.load_op = SDL_GPU_LOADOP_CLEAR;
-        pb_ct.store_op = SDL_GPU_STOREOP_STORE;
-
-        SDL_GPUDepthStencilTargetInfo pb_dt = {0};
-        pb_dt.texture = panel_depth[PANEL_ASSETS];
-        pb_dt.clear_depth = 1.0f;
-        pb_dt.load_op = SDL_GPU_LOADOP_CLEAR;
-        pb_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
-        pb_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-        pb_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-
-        SDL_GPURenderPass *pb_pass = SDL_BeginGPURenderPass(cmd_buf, &pb_ct, 1, &pb_dt);
-
-        {
-            uniform_data pb_uniforms;
-            float pb_lw = (float)aw / display_density;
-            float pb_lh = (float)ah / display_density;
-            float pb_ortho[16] = {
-                2.0f/pb_lw,    0,             0,     0,
-                0,            -2.0f/pb_lh,    0,     0,
-                0,             0,            -1.0f,  0,
-               -1.0f,          1.0f,          0,     1.0f
-            };
-            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-            memcpy(pb_uniforms.projection, pb_ortho, sizeof(pb_ortho));
-            memcpy(pb_uniforms.view, identity, sizeof(identity));
-            ui_draw(pb_pass, cmd_buf, &pb_uniforms, &ui_project_browser);
-        }
-
-        SDL_EndGPURenderPass(pb_pass);
-
-        /* Thumbnail 3D preview pass over project-browser swatches. */
         if (g_mem->editor.pb_thumbnail_count > 0 && mesh_pipeline && bone_identity_buffer) {
             FRAME_CPU_ZONE_BEGIN("render_project_thumbnails");
             SDL_GPUColorTargetInfo tb_ct = {0};
@@ -4772,129 +4558,6 @@ EXPORT int update_externals(void) {
             SDL_EndGPURenderPass(tb_pass);
             FRAME_CPU_ZONE_END();
         }
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- INSPECTOR PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_INSPECTOR] && panel_depth[PANEL_INSPECTOR] && panel_visible[PANEL_INSPECTOR]) {
-        FRAME_CPU_ZONE_BEGIN("render_inspector_panel");
-        Uint32 iw = (Uint32)panel_tex_w[PANEL_INSPECTOR];
-        Uint32 ih = (Uint32)panel_tex_h[PANEL_INSPECTOR];
-
-        SDL_GPUColorTargetInfo in_ct = {0};
-        in_ct.texture = panel_color[PANEL_INSPECTOR];
-        in_ct.clear_color = (SDL_FColor){0.09f, 0.12f, 0.16f, 1.0f};
-        in_ct.load_op = SDL_GPU_LOADOP_CLEAR;
-        in_ct.store_op = SDL_GPU_STOREOP_STORE;
-
-        SDL_GPUDepthStencilTargetInfo in_dt = {0};
-        in_dt.texture = panel_depth[PANEL_INSPECTOR];
-        in_dt.clear_depth = 1.0f;
-        in_dt.load_op = SDL_GPU_LOADOP_CLEAR;
-        in_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
-        in_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-        in_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-
-        SDL_GPURenderPass *in_pass = SDL_BeginGPURenderPass(cmd_buf, &in_ct, 1, &in_dt);
-
-        {
-            uniform_data in_uniforms;
-            float in_lw = (float)iw / display_density;
-            float in_lh = (float)ih / display_density;
-            float in_ortho[16] = {
-                2.0f/in_lw,    0,             0,     0,
-                0,            -2.0f/in_lh,    0,     0,
-                0,             0,            -1.0f,  0,
-               -1.0f,          1.0f,          0,     1.0f
-            };
-            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-            memcpy(in_uniforms.projection, in_ortho, sizeof(in_ortho));
-            memcpy(in_uniforms.view, identity, sizeof(identity));
-            ui_draw(in_pass, cmd_buf, &in_uniforms, &ui_inspector);
-        }
-
-        SDL_EndGPURenderPass(in_pass);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- CACHE PROFILER PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_CACHE_PROFILER] && panel_depth[PANEL_CACHE_PROFILER] && panel_visible[PANEL_CACHE_PROFILER]) {
-        FRAME_CPU_ZONE_BEGIN("render_cache_profiler_panel");
-        Uint32 cpw = (Uint32)panel_tex_w[PANEL_CACHE_PROFILER];
-        Uint32 cph = (Uint32)panel_tex_h[PANEL_CACHE_PROFILER];
-
-        SDL_GPUColorTargetInfo cp_ct = {0};
-        cp_ct.texture = panel_color[PANEL_CACHE_PROFILER];
-        cp_ct.clear_color = (SDL_FColor){0.10f, 0.10f, 0.12f, 1.0f};
-        cp_ct.load_op = SDL_GPU_LOADOP_CLEAR;
-        cp_ct.store_op = SDL_GPU_STOREOP_STORE;
-
-        SDL_GPUDepthStencilTargetInfo cp_dt = {0};
-        cp_dt.texture = panel_depth[PANEL_CACHE_PROFILER];
-        cp_dt.clear_depth = 1.0f;
-        cp_dt.load_op = SDL_GPU_LOADOP_CLEAR;
-        cp_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
-        cp_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-        cp_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-
-        SDL_GPURenderPass *cp_pass = SDL_BeginGPURenderPass(cmd_buf, &cp_ct, 1, &cp_dt);
-        {
-            uniform_data cp_uniforms;
-            float cp_lw = (float)cpw / display_density;
-            float cp_lh = (float)cph / display_density;
-            float cp_ortho[16] = {
-                2.0f/cp_lw,    0,             0,     0,
-                0,            -2.0f/cp_lh,    0,     0,
-                0,             0,            -1.0f,  0,
-               -1.0f,          1.0f,          0,     1.0f
-            };
-            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-            memcpy(cp_uniforms.projection, cp_ortho, sizeof(cp_ortho));
-            memcpy(cp_uniforms.view, identity, sizeof(identity));
-            ui_draw(cp_pass, cmd_buf, &cp_uniforms, &ui_cache_profiler);
-        }
-        SDL_EndGPURenderPass(cp_pass);
-        FRAME_CPU_ZONE_END();
-    }
-
-    // --- CPU PROFILER PANEL RENDER PASS (offscreen) ---
-    if (panel_color[PANEL_CPU_PROFILER] && panel_depth[PANEL_CPU_PROFILER] && panel_visible[PANEL_CPU_PROFILER]) {
-        FRAME_CPU_ZONE_BEGIN("render_cpu_profiler_panel");
-        Uint32 cpuw = (Uint32)panel_tex_w[PANEL_CPU_PROFILER];
-        Uint32 cpuh = (Uint32)panel_tex_h[PANEL_CPU_PROFILER];
-
-        SDL_GPUColorTargetInfo cpu_ct = {0};
-        cpu_ct.texture = panel_color[PANEL_CPU_PROFILER];
-        cpu_ct.clear_color = (SDL_FColor){0.10f, 0.10f, 0.12f, 1.0f};
-        cpu_ct.load_op = SDL_GPU_LOADOP_CLEAR;
-        cpu_ct.store_op = SDL_GPU_STOREOP_STORE;
-
-        SDL_GPUDepthStencilTargetInfo cpu_dt = {0};
-        cpu_dt.texture = panel_depth[PANEL_CPU_PROFILER];
-        cpu_dt.clear_depth = 1.0f;
-        cpu_dt.load_op = SDL_GPU_LOADOP_CLEAR;
-        cpu_dt.store_op = SDL_GPU_STOREOP_DONT_CARE;
-        cpu_dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
-        cpu_dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-
-        SDL_GPURenderPass *cpu_pass = SDL_BeginGPURenderPass(cmd_buf, &cpu_ct, 1, &cpu_dt);
-        {
-            uniform_data cpu_uniforms;
-            float cpu_lw = (float)cpuw / display_density;
-            float cpu_lh = (float)cpuh / display_density;
-            float cpu_ortho[16] = {
-                2.0f/cpu_lw,    0,              0,     0,
-                0,             -2.0f/cpu_lh,    0,     0,
-                0,              0,             -1.0f,  0,
-               -1.0f,           1.0f,           0,     1.0f
-            };
-            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-            memcpy(cpu_uniforms.projection, cpu_ortho, sizeof(cpu_ortho));
-            memcpy(cpu_uniforms.view, identity, sizeof(identity));
-            ui_draw(cpu_pass, cmd_buf, &cpu_uniforms, &ui_cpu_profiler);
-        }
-        SDL_EndGPURenderPass(cpu_pass);
-        FRAME_CPU_ZONE_END();
     }
 
     // --- EDITOR PANEL RENDER PASS (offscreen) ---
@@ -4973,22 +4636,7 @@ EXPORT int update_externals(void) {
             SDL_DrawGPUPrimitives(ed_pass, (Uint32)editor_vert_count, 1, 0, 0);
         }
 
-        /* 3. Editor toolbar UI overlay */
-        {
-            uniform_data ed_ui_uniforms;
-            float ed_lw = (float)ew / display_density;
-            float ed_lh = (float)eh / display_density;
-            float ed_ortho[16] = {
-                2.0f/ed_lw,    0,             0,     0,
-                0,            -2.0f/ed_lh,    0,     0,
-                0,             0,            -1.0f,  0,
-               -1.0f,          1.0f,          0,     1.0f
-            };
-            float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-            memcpy(ed_ui_uniforms.projection, ed_ortho, sizeof(ed_ortho));
-            memcpy(ed_ui_uniforms.view, identity, sizeof(identity));
-            ui_draw(ed_pass, cmd_buf, &ed_ui_uniforms, &ui_editor_toolbar);
-        }
+        /* Editor toolbar now drawn as part of unified Clay UI in composite pass */
 
         SDL_EndGPURenderPass(ed_pass);
         FRAME_CPU_ZONE_END();
@@ -5063,22 +4711,26 @@ EXPORT int update_externals(void) {
             }
             FRAME_CPU_ZONE_END();
 
-            if (cwi == 0 && (ui_menu_bar.rect_vert_count > 0 ||
-                             ui_menu_bar.font_vert_count > 0 ||
-                             ui_menu_bar.icon_font_vert_count > 0)) {
-                uniform_data menu_uniforms;
-                float menu_lw = (float)sc_w / display_density;
-                float menu_lh = (float)sc_h / display_density;
-                float menu_ortho[16] = {
-                    2.0f/menu_lw,  0,             0,     0,
-                    0,            -2.0f/menu_lh,  0,     0,
-                    0,             0,            -1.0f,  0,
-                   -1.0f,          1.0f,          0,     1.0f
+            /* Draw unified editor Clay UI over the composited result (main window only) */
+            if (cwi == 0 && (ui_editor_clay.rect_vert_count > 0 ||
+                             ui_editor_clay.font_vert_count > 0 ||
+                             ui_editor_clay.icon_font_vert_count > 0)) {
+                uniform_data ui_uniforms;
+                float ui_lw = (float)sc_w / display_density;
+                float ui_lh = (float)sc_h / display_density;
+                float ui_ortho[16] = {
+                    2.0f/ui_lw,  0,             0,     0,
+                    0,          -2.0f/ui_lh,    0,     0,
+                    0,           0,            -1.0f,  0,
+                   -1.0f,        1.0f,          0,     1.0f
                 };
                 float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-                memcpy(menu_uniforms.projection, menu_ortho, sizeof(menu_ortho));
-                memcpy(menu_uniforms.view, identity, sizeof(identity));
-                ui_draw(comp_pass, cmd_buf, &menu_uniforms, &ui_menu_bar);
+                memcpy(ui_uniforms.projection, ui_ortho, sizeof(ui_ortho));
+                memcpy(ui_uniforms.view, identity, sizeof(identity));
+                ui_draw(comp_pass, cmd_buf, &ui_uniforms, &ui_editor_clay);
+
+                /* Profiler grid texture overlay */
+                grid_tex_draw(comp_pass, cmd_buf);
             }
 
             SDL_EndGPURenderPass(comp_pass);
@@ -5120,12 +4772,7 @@ EXPORT int update_externals(void) {
         }
     }
     ui_release_buffers(&ui_game);
-    ui_release_buffers(&ui_profiler);
-    ui_release_buffers(&ui_scene_tree);
-    ui_release_buffers(&ui_project_browser);
-    ui_release_buffers(&ui_inspector);
-    ui_release_buffers(&ui_menu_bar);
-    ui_release_buffers(&ui_editor_toolbar);
+    ui_release_buffers(&ui_editor_clay);
     if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
     FRAME_CPU_ZONE_END();
 
@@ -5294,14 +4941,7 @@ EXPORT void end_externals(void) {
 
     /* Release persistent UI buffers before GPU device is destroyed */
     ui_destroy_buffers(&ui_game);
-    ui_destroy_buffers(&ui_profiler);
-    ui_destroy_buffers(&ui_scene_tree);
-    ui_destroy_buffers(&ui_project_browser);
-    ui_destroy_buffers(&ui_inspector);
-    ui_destroy_buffers(&ui_menu_bar);
-    ui_destroy_buffers(&ui_editor_toolbar);
-    ui_destroy_buffers(&ui_cache_profiler);
-    ui_destroy_buffers(&ui_cpu_profiler);
+    ui_destroy_buffers(&ui_editor_clay);
 
     /* Shutdown profilers */
     cache_prof_shutdown();

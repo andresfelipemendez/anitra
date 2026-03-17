@@ -895,6 +895,17 @@ typedef struct editor_state {
     float font_advances[128];
     float font_line_height;    /* (ascent - descent + lineGap) normalized to 1px */
 
+    /* Unified Clay context — single layout tree for all editor UI */
+    void *clay_ctx;            /* Clay_Context* in editor_arena */
+    int   clay_cmd_count;      /* number of Clay_RenderCommand items */
+    void *clay_cmd_array;      /* Clay_RenderCommand* in Clay arena memory */
+
+    /* Window-wide mouse state — used by unified Clay context */
+    float window_mouse_x, window_mouse_y; /* mouse position in window coords */
+    int   window_mouse_down;              /* left button held (any panel) */
+    int   window_mouse_click;             /* 1 on the frame left button was pressed (any panel) */
+    float window_scroll_y;                /* scroll wheel delta this frame (any panel) */
+
     /* Profiler Clay render output — written by editor each frame, read by externals for GPU upload.
        profiler_clay_ctx survives hot-reload (lives in editor_arena). */
     void *profiler_clay_ctx;       /* Clay_Context* in editor_arena */

@@ -1024,6 +1024,20 @@ static int build_exe(void)
     return 0;
 }
 
+/* ------- builder DLL ---------------------------------------------------- */
+static int build_builder(void)
+{
+    printf("\n=== Building builder DLL ===\n");
+    if (ensure_dirs() != 0) return 1;
+    printf(">> " TCC_BUILDER_DLL_CMD "\n");
+    fflush(stdout);
+    if (system(TCC_BUILDER_DLL_CMD) != 0) {
+        printf("!! builder DLL build failed.\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* ------- sdl3 (DLL) ----------------------------------------------------- */
 
 /*
@@ -2313,7 +2327,6 @@ static int build_all(void)
     if (build_core() != 0) return 1;
     if (build_engine() != 0) return 1;
     if (build_editor() != 0) return 1;
-    if (build_exe() != 0) return 1;
 
     printf("\n=== All targets built successfully. ===\n");
     return 0;
@@ -2329,46 +2342,19 @@ static int build_all(void)
 /* main                                                                       */
 /* ========================================================================= */
 
-int main(int argc, char **argv)
+#ifdef BUILD_DLL
+/* DLL entry point — called by anitra.exe via loadlibrary */
+__declspec(dllexport) int init_builder(void)
 {
     if (find_tools() != 0) return 1;
-
-    if (argc > 1 && strcmp(argv[1], "watch") == 0) {
-        return build_forge(argc, argv);
-    }
-    if (argc > 1 && strcmp(argv[1], "collab") == 0) {
-        return build_collab();
-    }
-    if (argc > 1 && strcmp(argv[1], "server") == 0) {
-        return build_server();
-    }
-    if (argc > 1 && strcmp(argv[1], "test") == 0) {
-        return build_test();
-    }
-    if (argc > 1 && strcmp(argv[1], "play_test") == 0) {
-        return build_play_test();
-    }
-    if (argc > 1 && strcmp(argv[1], "nanoprof2chrome") == 0) {
-        return build_nanoprof2chrome();
-    }
-    if (argc > 1 && strcmp(argv[1], "remote") == 0) {
-        return build_remote();
-    }
-    if (argc > 1 && strcmp(argv[1], "remote-sync") == 0) {
-        remote_config cfg;
-        if (read_remote_config(&cfg) != 0) return 1;
-        /* Delete cached sysroot to force re-download */
-        remove(REMOTE_SYSROOT "/.synced");
-        return build_remote_sync_sysroot(&cfg);
-    }
-#ifdef _WIN32
-    if (argc > 1 && strcmp(argv[1], "profile") == 0) {
-        return build_and_profile();
-    }
-    if (argc > 1 && strcmp(argv[1], "debug") == 0) {
-        return build_and_debug();
-    }
-#endif
-
     return build_all();
 }
+#else
+/* EXE entry point — bootstrapped by build.bat */
+int main(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    if (find_tools() != 0) return 1;
+    return build_all();
+}
+#endif

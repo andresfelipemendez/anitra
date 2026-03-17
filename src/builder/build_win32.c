@@ -61,10 +61,15 @@ static int watch_and_rebuild(void);
 #define TCC_EXE_CMD \
     "tcc\\tcc.exe -Blib/tcc-windows" \
     " -o build/Debug/AnitraEngine.exe" \
-    " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
-    " -Ilib/SDL3/include" \
+    " -Isrc -Isrc/core" \
     " src/main.c" \
     " src/core/loadlibrary_windows.c"
+
+#define TCC_BUILDER_DLL_CMD \
+    "tcc\\tcc.exe -Blib/tcc-windows -shared" \
+    " -DBUILD_DLL" \
+    " -o build/Debug/build.dll" \
+    " src/builder/build.c"
 
 #define TCC_TEST_CMD \
     "tcc\\tcc.exe -Blib/tcc-windows -g" \
@@ -360,16 +365,7 @@ static HANDLE g_engine_process = NULL;
 
 static int build_forge(int argc, char **argv)
 {
-    int i;
-    DWORD target_pid = 0;
-
-    /* Parse --pid <PID> to optionally watch a process for exit */
-    for (i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
-            target_pid = (DWORD)atol(argv[i + 1]);
-            i++;
-        }
-    }
+    DWORD target_pid = (argc > 1) ? (DWORD)atol(argv[1]) : 0;
 
     if (target_pid) {
         g_engine_process = OpenProcess(SYNCHRONIZE, FALSE, target_pid);
