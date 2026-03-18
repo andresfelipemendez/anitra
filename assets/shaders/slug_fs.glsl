@@ -153,6 +153,6 @@ float slug_render(vec2 render_coord, vec4 band_transform, ivec4 glyph_data) {
 
 void main() {
     float coverage = slug_render(v_texcoord, v_banding, v_glyph);
-    coverage = sqrt(coverage);  /* approximate gamma correction */
-    out_color = v_color * coverage;
+    coverage = sqrt(coverage);  /* perceptual gamma correction (SLUG_WEIGHT) */
+    out_color = vec4(v_color.rgb, v_color.a * coverage);
 }
