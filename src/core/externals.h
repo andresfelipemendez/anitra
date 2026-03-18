@@ -28,6 +28,11 @@ typedef void (*destroy_editor_func)(void);
 EXPORT void reload_project(void);
 typedef void (*reload_project_func)(void);
 
+/* Ensure editor thread is idle before DLL reload.
+   Blocks until the editor thread finishes its current frame. */
+EXPORT void sync_editor_thread(void);
+typedef void (*sync_editor_thread_func)(void);
+
 /* Engine DLL callback assignment — new typed function pointers */
 DECLARE_FUNC_VOID_pENGINE_INIT(assign_init)
 DECLARE_FUNC_VOID_pENGINE_DESTROY(assign_destroy)
@@ -39,7 +44,7 @@ DECLARE_FUNC_VOID_pEDITOR_DESTROY(assign_editor_destroy)
 DECLARE_FUNC_VOID_pEDITOR_UPDATE(assign_editor_update)
 DECLARE_FUNC_VOID_pEDITOR_HANDLE_EVENT(assign_editor_handle_event)
 
-/* Profiler zone wrappers (thin forwarding to Tracy/cpu_profiler) */
+/* Profiler zone wrappers (stubs — Tracy replaces the old CPU profiler) */
 EXPORT void ext_cache_zone_begin(const char *name);
 EXPORT void ext_cache_zone_end(void);
 EXPORT void ext_cpu_zone_begin(const char *name);

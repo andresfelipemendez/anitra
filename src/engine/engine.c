@@ -1,6 +1,7 @@
 #include <game.h>
 #include <export.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <ctype.h>
@@ -1957,8 +1958,7 @@ EXPORT void init_engine(game_state *gs) {
             uint32_t old_size = gs->mig_hdr->struct_size;
             uint32_t copy_size = old_size < sizeof(game_state)
                                ? old_size : (uint32_t)sizeof(game_state);
-            void *old_copy = arena_alloc(gs->gameplay, copy_size, 8,
-                                          "mig_game_old");
+            void *old_copy = malloc(copy_size);
             if (old_copy) {
                 mig_header *old_hdr = gs->mig_hdr;
                 struct arena *saved_root = gs->root_arena;
@@ -1974,6 +1974,7 @@ EXPORT void init_engine(game_state *gs) {
                 gs->mig_hdr = NULL;
                 fprintf(stderr, "Migrated game_state (%u -> %u bytes)\n",
                         old_size, (uint32_t)sizeof(game_state));
+                free(old_copy);
             }
         }
     }
@@ -2767,4 +2768,8 @@ EXPORT void update_engine(game_state *gs) {
 
 EXPORT void destroy_engine(game_state *gs) {
     (void)gs;
+    /* Safety net: free gltf texture cache if still active.
+       Normally freed at the end of load_scene_model_assets(),
+       but guard against DLL unload between init and free. */
+    gltf_tex_cache_free();
 }

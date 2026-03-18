@@ -25,12 +25,10 @@
 #include <hb.h>
 #include <hb-ot.h>
 
-#define CACHE_PROF_IMPL
-#include "cache_profiler.h"
-
-#define CPU_PROF_DLL_EXPORT
-#define CPU_PROF_IMPL
-#include "cpu_profiler.h"
+/* ── Tracy profiler (direct C API) ──────────────────────────────────────── */
+#ifdef TRACY_ENABLE
+#include <tracy/TracyC.h>
+#endif
 
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
@@ -112,12 +110,7 @@ static SDL_GPUGraphicsPipeline *composite_pipeline = NULL;
 static SDL_GPUSampler *composite_sampler = NULL;
 static SDL_GPUTextureFormat offscreen_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
 
-// Grid texture pipeline (draws profiler grid texture into profiler render pass)
-static SDL_GPUGraphicsPipeline *grid_tex_pipeline = NULL;
-static SDL_GPUSampler *grid_sampler = NULL;
-static SDL_GPUTexture *grid_texture = NULL;
-static int grid_tex_w = 0, grid_tex_h = 0;
-static SDL_GPUBuffer *grid_quad_buf = NULL;  /* 6 composite_vertex for the textured quad */
+/* Grid texture pipeline removed — memory profiler panel deleted */
 
 // Pre-rendered tab header textures (CPU-rasterized text, created once at init)
 static SDL_GPUTexture *header_textures[PANEL_COUNT] = {0};
@@ -137,8 +130,7 @@ static editor_init_fn g_editor_init = NULL;
 static editor_destroy_fn g_editor_destroy = NULL;
 static editor_update_fn g_editor_update = NULL;
 static editor_handle_event_fn g_editor_handle_event = NULL;
-static int cpu_prof_capture_paused = 0;
-static int cpu_prof_capture_was_paused = 0;
+/* cpu_prof capture state removed — Tracy replaces it */
 
 /* ── Editor thread state ──────────────────────────────────────── */
 static SDL_Thread    *editor_thread         = NULL;
@@ -147,10 +139,51 @@ static SDL_Semaphore *editor_sem_done       = NULL;
 static SDL_AtomicInt  editor_thread_quit;
 static int            editor_thread_should_run = 0;
 
-#define FRAME_CPU_ZONE_BEGIN(name) do { if (!cpu_prof_capture_paused) cpu_zone_begin(name); } while (0)
-#define FRAME_CPU_ZONE_END()       do { if (!cpu_prof_capture_paused) cpu_zone_end(); } while (0)
-#define FRAME_CACHE_ZONE_BEGIN(name) do { cache_zone_begin(name); } while (0)
-#define FRAME_CACHE_ZONE_END()       do { cache_zone_end(); } while (0)
+/* ── Tracy CPU zone macros (per-thread context stack) ────────────────── */
+#ifdef TRACY_ENABLE
+#define TRACY_ZONE_STACK_MAX 32
+typedef struct {
+    TracyCZoneCtx stack[TRACY_ZONE_STACK_MAX];
+    int depth;
+} TracyZoneStack;
+
+static SDL_TLSID tracy_tls_id_;
+static TracyZoneStack tracy_zone_stacks_[4]; /* main + editor + spare */
+static int tracy_zone_stack_count_ = 0;
+
+static TracyZoneStack *tracy_get_zone_stack_(void) {
+    TracyZoneStack *zs = (TracyZoneStack *)SDL_GetTLS(&tracy_tls_id_);
+    if (!zs && tracy_zone_stack_count_ < 4) {
+        zs = &tracy_zone_stacks_[tracy_zone_stack_count_++];
+        zs->depth = 0;
+        SDL_SetTLS(&tracy_tls_id_, zs, NULL);
+    }
+    return zs;
+}
+
+#define FRAME_CPU_ZONE_BEGIN(name) do { \
+    static const struct ___tracy_source_location_data srcloc_ = \
+        { name, __func__, __FILE__, (uint32_t)__LINE__, 0 }; \
+    TracyZoneStack *zs_ = tracy_get_zone_stack_(); \
+    if (zs_ && zs_->depth < TRACY_ZONE_STACK_MAX) { \
+        zs_->stack[zs_->depth++] = \
+            ___tracy_emit_zone_begin(&srcloc_, 1); \
+    } \
+} while(0)
+
+#define FRAME_CPU_ZONE_END() do { \
+    TracyZoneStack *zs_ = tracy_get_zone_stack_(); \
+    if (zs_ && zs_->depth > 0) { \
+        ___tracy_emit_zone_end(zs_->stack[--zs_->depth]); \
+    } \
+} while(0)
+#else
+#define FRAME_CPU_ZONE_BEGIN(name) do { (void)(name); } while (0)
+#define FRAME_CPU_ZONE_END()       do { } while (0)
+#endif
+
+#define FRAME_CACHE_ZONE_BEGIN(name) do { (void)(name); } while (0)
+#define FRAME_CACHE_ZONE_END()       do { } while (0)
 
 // ---------------------------------------------------------------------------
 // Vertex structures
@@ -257,17 +290,17 @@ static int build_tree_quads(dock_state *d, int node_idx,
         content_h = n->h - DOCK_HEADER_HEIGHT;
         if (pw <= 0 || content_h <= 0) return qi;
 
-        /* Tab header quads — one per panel, side by side */
+        /* Tab header quads — solid color backgrounds (slug text drawn via Clay UI) */
         tab_w = pw / (float)n->panel_count;
         for (ti = 0; ti < n->panel_count; ti++) {
             float tx = px + tab_w * ti;
-            float u_right = tab_w / 1600.0f;
-            /* Active tab: bright, inactive: dimmed */
-            float tint = (ti == n->active_tab) ? 1.0f : 0.5f;
-            if (u_right > 1.0f) u_right = 1.0f;
+            /* Active tab: slightly brighter background, inactive: darker */
+            float r = (ti == n->active_tab) ? 0.18f : 0.12f;
+            float g = (ti == n->active_tab) ? 0.18f : 0.12f;
+            float b = (ti == n->active_tab) ? 0.21f : 0.14f;
             build_composite_quad(&verts[qi * 6], tx, n->y, tab_w, (float)DOCK_HEADER_HEIGHT,
-                                 win_w, win_h, 0.0f, 0.0f, u_right, 1.0f,
-                                 tint, tint, tint, 1.0f);
+                                 win_w, win_h, 0.0f, 0.0f, 1.0f, 1.0f,
+                                 r, g, b, 1.0f);
             if (*qcount < max_quads) {
                 quads_out[*qcount].type = CQUAD_HEADER;
                 quads_out[*qcount].panel = n->panels[ti];
@@ -487,7 +520,6 @@ static int precache_thread_fn(void *userdata) {
         len = ftell(f);
         fseek(f, 0, SEEK_SET);
         s_precache[i].data = malloc((size_t)len);
-        cpu_prof_alloc(s_precache[i].data, (size_t)len);
         if (s_precache[i].data) {
             s_precache[i].size = fread(s_precache[i].data, 1, (size_t)len, f);
         }
@@ -515,7 +547,6 @@ static void *precache_get(const char *path, size_t *out_size) {
 static void precache_free(void) {
     int i;
     for (i = 0; i < s_precache_count; i++) {
-        cpu_prof_free(s_precache[i].data);
         free(s_precache[i].data);
         s_precache[i].data = NULL;
     }
@@ -823,12 +854,14 @@ static int font_load_slug(const char *path) {
         void *cached = precache_get(path, &cached_size);
         if (cached) {
             font_ttf_buffer = (unsigned char *)SDL_malloc(cached_size);
-            cpu_prof_alloc(font_ttf_buffer, cached_size);
             memcpy(font_ttf_buffer, cached, cached_size);
             size = cached_size;
         } else {
             font_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
         }
+#ifdef TRACY_ENABLE
+        if (font_ttf_buffer) TracyCAllocN(font_ttf_buffer, size, "font_ttf");
+#endif
     }
     if (!font_ttf_buffer) {
         fprintf(stderr, "Failed to load font: %s\n", path);
@@ -982,12 +1015,14 @@ static int icon_font_load_slug(const char *path) {
         void *cached = precache_get(path, &cached_size);
         if (cached) {
             icon_ttf_buffer = (unsigned char *)SDL_malloc(cached_size);
-            cpu_prof_alloc(icon_ttf_buffer, cached_size);
             memcpy(icon_ttf_buffer, cached, cached_size);
             size = cached_size;
         } else {
             icon_ttf_buffer = (unsigned char*)SDL_LoadFile(path, &size);
         }
+#ifdef TRACY_ENABLE
+        if (icon_ttf_buffer) TracyCAllocN(icon_ttf_buffer, size, "icon_ttf");
+#endif
     }
     if (!icon_ttf_buffer) {
         fprintf(stderr, "Failed to load icon font: %s\n", path);
@@ -1231,7 +1266,6 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     stbtt_GetFontVMetrics(&font_stb_info, &ascent_i, &descent_i, &line_gap_i);
 
     pixels = (unsigned char *)calloc((size_t)(header_w * header_h * 4), 1);
-    cpu_prof_alloc(pixels, (size_t)(header_w * header_h * 4));
     if (!pixels) return NULL;
 
     /* Fill with header background color */
@@ -1289,7 +1323,7 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     tex_info.num_levels = 1;
     tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
     tex = SDL_CreateGPUTexture(gpu_device, &tex_info);
-    if (!tex) { cpu_prof_free(pixels); free(pixels); return NULL; }
+    if (!tex) { free(pixels); return NULL; }
 
     /* Upload via transfer buffer */
     memset(&tbi, 0, sizeof(tbi));
@@ -1319,7 +1353,6 @@ static SDL_GPUTexture *create_header_texture(const char *text, int *out_w) {
     SDL_SubmitGPUCommandBuffer(cmd);
     SDL_ReleaseGPUTransferBuffer(gpu_device, transfer);
 
-    cpu_prof_free(pixels);
     free(pixels);
     *out_w = (int)((x_cursor + 8) / display_density); /* text width + padding, in logical pixels */
     return tex;
@@ -1367,7 +1400,10 @@ typedef struct UIRenderState {
 } UIRenderState;
 
 static UIRenderState ui_game = {0};
-static UIRenderState ui_editor_clay = {0};  /* unified editor Clay UI */
+/* Double-buffered editor UI: editor thread writes [back], main thread renders [front] */
+static UIRenderState ui_editor_bufs[2] = {0};
+static int ui_editor_back = 0;  /* index editor thread writes to */
+#define ui_editor_clay ui_editor_bufs[1 - ui_editor_back] /* front: main thread reads */
 
 
 static void slug_push_glyph_quad(UIRenderState *ui, int use_icon_font,
@@ -1821,51 +1857,39 @@ static void ui_prepare_game(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
 /* ── Editor thread: Clay layout + vertex building ─────────────────── */
 static int SDLCALL editor_thread_fn(void *userdata) {
     (void)userdata;
-    cpu_prof_register_thread("editor");
+#ifdef TRACY_ENABLE
+    ___tracy_set_thread_name("editor");
+#endif
     for (;;) {
         SDL_WaitSemaphore(editor_sem_start);
         if (SDL_GetAtomicInt(&editor_thread_quit)) break;
 
         if (editor_thread_should_run) {
+            UIRenderState *back = &ui_editor_bufs[ui_editor_back];
 
             /* 1. Run Clay layout (writes cmd_array / cmd_count fields in editor_state) */
+            FRAME_CPU_ZONE_BEGIN("editor_clay_layout");
             g_editor_update(&g_mem->game, &g_mem->editor);
+            FRAME_CPU_ZONE_END();
 
-            /* 2. Build vertices from unified Clay commands */
+            /* 2. Build vertices into back buffer */
             editor_state *e = &g_mem->editor;
 
             if (e->clay_cmd_count > 0 && e->clay_cmd_array) {
+                FRAME_CPU_ZONE_BEGIN("editor_build_verts");
                 Clay_RenderCommandArray cmds;
                 cmds.length = e->clay_cmd_count;
                 cmds.internalArray = (Clay_RenderCommand *)e->clay_cmd_array;
-                ui_build_vertices(&ui_editor_clay, cmds);
-                /* Append profiler scrollbar thumb */
-                {
-                    float content_h = e->prof_content_h;
-                    float container_h = e->prof_container_h;
-                    float track_h = e->prof_track_h;
-                    if (content_h > container_h && track_h > 0) {
-                        float sb_w = 6;
-                        float thumb_frac = container_h / content_h;
-                        float thumb_h = track_h * thumb_frac;
-                        if (thumb_h < 20) thumb_h = 20;
-                        float scroll_frac = (-e->prof_scroll_pos) / (content_h - container_h);
-                        float thumb_y = e->prof_track_y + scroll_frac * (track_h - thumb_h);
-                        float sb_x = e->prof_track_x + e->prof_track_w - sb_w - 2;
-                        if (ui_editor_clay.rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
-                            ui_rect_vertex *v = &ui_editor_clay.rect_verts[ui_editor_clay.rect_vert_count];
-                            float r = 1.0f, g2 = 1.0f, b = 1.0f, a = 0.3f;
-                            v[0] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
-                            v[1] = (ui_rect_vertex){sb_x + sb_w, thumb_y,          r, g2, b, a};
-                            v[2] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
-                            v[3] = (ui_rect_vertex){sb_x,        thumb_y,          r, g2, b, a};
-                            v[4] = (ui_rect_vertex){sb_x + sb_w, thumb_y + thumb_h, r, g2, b, a};
-                            v[5] = (ui_rect_vertex){sb_x,        thumb_y + thumb_h, r, g2, b, a};
-                            ui_editor_clay.rect_vert_count += 6;
-                        }
-                    }
-                }
+                ui_build_vertices(back, cmds);
+                FRAME_CPU_ZONE_END();
+            } else {
+                back->rect_vert_count = 0;
+                back->slug_vert_count = 0;
+                back->icon_slug_vert_count = 0;
             }
+
+            /* 3. Swap: back becomes front (main thread can now read it) */
+            ui_editor_back = 1 - ui_editor_back;
         }
 
         SDL_SignalSemaphore(editor_sem_done);
@@ -1873,7 +1897,7 @@ static int SDLCALL editor_thread_fn(void *userdata) {
     return 0;
 }
 
-// Profiler grid texture upload (vertices now handled by unified Clay UI)
+#if 0 /* profiler_upload removed — memory profiler panel deleted */
 static void profiler_upload(SDL_GPUCommandBuffer *cmd_buf, memory *g) {
     /* Upload grid pixel buffer to GPU texture + build quad vertex buffer (copy pass) */
     FRAME_CPU_ZONE_BEGIN("prof_grid_gpu_upload");
@@ -2005,6 +2029,7 @@ static void grid_tex_draw(SDL_GPURenderPass *pass, SDL_GPUCommandBuffer *cmd_buf
 
     SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
 }
+#endif /* end of dead profiler_upload / grid_tex_draw code */
 
 // Draw UI during render pass (works for any UIRenderState)
 static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_buf,
@@ -2103,13 +2128,18 @@ EXPORT int init_externals(const char *project_path) {
     s_boot_t0 = SDL_GetPerformanceCounter();
     BOOT_PROF_BEGIN(TP_BOOT);
     BOOT_PROF_BEGIN(TP_INIT_EXTERNALS);
+#ifdef TRACY_ENABLE
+    ___tracy_set_thread_name("main");
+#endif
     BOOT_PROF_BEGIN(TP_EXT_ALLOC_MEMORY);
 
     /* Allocate and zero the memory struct */
     g_mem = (memory *)malloc(sizeof(memory));
     if (!g_mem) { fprintf(stderr, "Failed to allocate memory\n"); return -1; }
-    cpu_prof_alloc(g_mem, sizeof(memory));
     memset(g_mem, 0, sizeof(*g_mem));
+#ifdef TRACY_ENABLE
+    TracyCAllocN(g_mem, sizeof(memory), "game_memory");
+#endif
 
     /* Set default asset paths */
     g_mem->game.default_model_path = "assets/models/Knight.glb";
@@ -2330,11 +2360,6 @@ EXPORT int init_externals(const char *project_path) {
 
     /* Initialize profilers */
     BOOT_PROF_BEGIN(TP_EXT_PROFILERS_INIT);
-    cache_prof_init();
-    cpu_prof_init();
-    cpu_prof_capture_paused = 0;
-    cpu_prof_capture_was_paused = 0;
-
     // 5. Claim window
     BOOT_PROF_BEGIN(TP_EXT_CLAIM_WINDOW);
     if (!SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
@@ -3009,7 +3034,9 @@ EXPORT int init_externals(const char *project_path) {
     {
         uint32_t arena_size = 500 * 1024 * 1024; // 500 MB
         void *arena_mem = malloc(arena_size);
-        cpu_prof_alloc(arena_mem, arena_size);
+#ifdef TRACY_ENABLE
+        TracyCAllocN(arena_mem, arena_size, "arena_backing");
+#endif
         arena_init(&g_mem->arena, arena_mem, arena_size);
         printf("Arena initialized (%u bytes)\n", arena_size);
     }
@@ -3117,61 +3144,7 @@ EXPORT int init_externals(const char *project_path) {
         composite_sampler = SDL_CreateGPUSampler(gpu_device, &si);
     }
 
-    // Create grid texture pipeline (reuses composite shaders from task 6)
-    BOOT_PROF_BEGIN(TP_EXT_SHADER_GRID);
-    {
-        SDL_GPUVertexBufferDescription vbuf_desc = {0};
-        vbuf_desc.slot = 0;
-        vbuf_desc.pitch = sizeof(composite_vertex);
-        vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-
-        SDL_GPUVertexAttribute attrs[3] = {0};
-        attrs[0].location = 0; attrs[0].buffer_slot = 0;
-        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; attrs[0].offset = 0;
-        attrs[1].location = 1; attrs[1].buffer_slot = 0;
-        attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2; attrs[1].offset = sizeof(float)*2;
-        attrs[2].location = 2; attrs[2].buffer_slot = 0;
-        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4; attrs[2].offset = sizeof(float)*4;
-
-        SDL_GPUColorTargetDescription ct = {0};
-        ct.format = offscreen_format;
-        ct.blend_state.enable_blend = true;
-        ct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-        ct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-        ct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-        ct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-
-        SDL_GPUGraphicsPipelineCreateInfo pi = {0};
-        pi.vertex_shader = all_vs[5];  /* reuse composite shaders */
-        pi.fragment_shader = all_fs[5];
-        pi.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
-        pi.vertex_input_state.num_vertex_buffers = 1;
-        pi.vertex_input_state.vertex_attributes = attrs;
-        pi.vertex_input_state.num_vertex_attributes = 3;
-        pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-        pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-        pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-        pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-        pi.target_info.color_target_descriptions = &ct;
-        pi.target_info.num_color_targets = 1;
-        pi.target_info.has_depth_stencil_target = false;
-
-        grid_tex_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pi);
-        if (!grid_tex_pipeline) {
-            fprintf(stderr, "Failed to create grid texture pipeline: %s\n", SDL_GetError());
-            return -1;
-        }
-        /* Nearest-neighbor sampler for crisp pixel cells */
-        SDL_GPUSamplerCreateInfo gsi = {0};
-        gsi.min_filter = SDL_GPU_FILTER_NEAREST;
-        gsi.mag_filter = SDL_GPU_FILTER_NEAREST;
-        gsi.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        gsi.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        gsi.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        grid_sampler = SDL_CreateGPUSampler(gpu_device, &gsi);
-    }
+    /* Grid texture pipeline removed — memory profiler panel deleted */
 
     /* Release all compiled shaders — pipelines keep internal references */
     {
@@ -3182,17 +3155,9 @@ EXPORT int init_externals(const char *project_path) {
         }
     }
 
-    // Create pre-rendered tab header textures (once at init)
+    // Tab headers now use slug text via Clay UI — no pre-rendered textures needed
     BOOT_PROF_BEGIN(TP_EXT_HEADER_TEXTURES);
-    {
-        int i;
-        for (i = 0; i < PANEL_COUNT; i++) {
-            header_textures[i] = create_header_texture(panel_names[i], &header_tex_w[i]);
-            if (!header_textures[i]) {
-                fprintf(stderr, "Failed to create header texture for panel %d\n", i);
-            }
-        }
-    }
+    BOOT_PROF_END(TP_EXT_HEADER_TEXTURES);
 
     // Allocate rendering sub-arena (draw_commands, mesh_commands, debug_lines, debug_vertices)
     BOOT_PROF_BEGIN(TP_EXT_RENDERING_ARENA);
@@ -3819,13 +3784,10 @@ EXPORT int update_externals(void) {
         FRAME_CPU_ZONE_END();
     }
 
-    // --- Update editor (dock layout, panel rects, profiler Clay, camera, gizmo, lines) ---
-    // Editor.dll now does: dock_layout for all windows, game panel size, editor panel
-    // Wait for editor thread to finish building vertices from previous frame
+    // --- Editor thread: no blocking wait needed (double-buffered UI) ---
+    // The editor thread writes to the back buffer; main thread reads front buffer.
+    // We only need to wait before signaling the NEXT frame's editor start.
     BOOT_PROF_BEGIN(TP_FRAME_EDITOR_UPDATE);
-    FRAME_CPU_ZONE_BEGIN("wait_editor_done");
-    SDL_WaitSemaphore(editor_sem_done);
-    FRAME_CPU_ZONE_END();
     BOOT_PROF_END(TP_FRAME_EDITOR_UPDATE);
 
     // --- Panel textures (after dock_layout in editor, which set node rects) ---
@@ -3859,8 +3821,7 @@ EXPORT int update_externals(void) {
     BOOT_PROF_BEGIN(TP_FRAME_ENGINE_UPDATE);
     FRAME_CPU_ZONE_BEGIN("engine_update_call");
     FRAME_CACHE_ZONE_BEGIN("engine_update_call");
-    cache_prof_frame_reset();
-    g_update(&g_mem->game);
+    if (g_update) g_update(&g_mem->game);
     FRAME_CACHE_ZONE_END();
     FRAME_CPU_ZONE_END();
     BOOT_PROF_END(TP_FRAME_ENGINE_UPDATE);
@@ -3952,9 +3913,6 @@ EXPORT int update_externals(void) {
 
     // --- Upload unified Clay UI vertices (built by editor thread) ---
     ui_upload(cmd_buf, &ui_editor_clay);
-    // Profiler grid texture upload (kept separate from Clay UI)
-    if (panel_visible[PANEL_PROFILER])
-        profiler_upload(cmd_buf, g_mem);
 
     FRAME_CPU_ZONE_END(); /* ui_prepare_all */
 
@@ -4536,8 +4494,8 @@ EXPORT int update_externals(void) {
                     SDL_GPUTextureSamplerBinding tex_bind = {0};
 
                     if (cq->type == CQUAD_HEADER) {
-                        if (!header_textures[cq->panel]) continue;
-                        tex_bind.texture = header_textures[cq->panel];
+                        if (!white_texture) continue;
+                        tex_bind.texture = white_texture;
                     } else if (cq->type == CQUAD_DROP_ZONE) {
                         if (!white_texture) continue;
                         tex_bind.texture = white_texture;
@@ -4569,9 +4527,6 @@ EXPORT int update_externals(void) {
                 memcpy(ui_uniforms.projection, ui_ortho, sizeof(ui_ortho));
                 memcpy(ui_uniforms.view, identity, sizeof(identity));
                 ui_draw(comp_pass, cmd_buf, &ui_uniforms, &ui_editor_clay);
-
-                /* Profiler grid texture overlay */
-                grid_tex_draw(comp_pass, cmd_buf);
             }
 
             SDL_EndGPURenderPass(comp_pass);
@@ -4586,7 +4541,14 @@ EXPORT int update_externals(void) {
     FRAME_CPU_ZONE_END();
     BOOT_PROF_END(TP_FRAME_GPU_SUBMIT);
 
-    /* Signal editor thread to start Clay layout + vertex building for next frame */
+#ifdef TRACY_ENABLE
+    ___tracy_emit_frame_mark(0);
+#endif
+
+    /* Wait for editor thread to finish previous frame (if still running), then start next */
+    FRAME_CPU_ZONE_BEGIN("wait_editor_done");
+    SDL_WaitSemaphore(editor_sem_done);
+    FRAME_CPU_ZONE_END();
     editor_thread_should_run = (g_mem->editor.open && g_editor_update != NULL);
     if (clay_arena_game && clay_context)
         clay_arena_game->used = (uint32_t)clay_context->internalArena.nextAllocation;
@@ -4613,24 +4575,11 @@ EXPORT int update_externals(void) {
         }
     }
     ui_release_buffers(&ui_game);
-    ui_release_buffers(&ui_editor_clay);
-    if (grid_quad_buf) { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
+    ui_release_buffers(&ui_editor_bufs[0]);
+    ui_release_buffers(&ui_editor_bufs[1]);
     FRAME_CPU_ZONE_END();
 
     FRAME_CPU_ZONE_END(); /* update_externals */
-
-    /* Commit the completed frame to the ring buffer.
-       ALL zones (externals + editor + engine) are now recorded. */
-    cpu_prof_capture_paused = (g_mem->editor.cpu_prof_timeline_paused != 0);
-    cpu_prof_set_capture_enabled(!cpu_prof_capture_paused);
-    if (!cpu_prof_capture_paused) {
-        if (cpu_prof_capture_was_paused) {
-            cpu_prof_clear_current_frame();
-        } else {
-            cpu_prof_frame_end();
-        }
-    }
-    cpu_prof_capture_was_paused = cpu_prof_capture_paused;
 
     return g_mem->game.play;
 }
@@ -4688,11 +4637,7 @@ EXPORT void end_externals(void) {
     // Composite pipeline + sampler + header textures
     if (composite_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, composite_pipeline); composite_pipeline = NULL; }
     if (composite_sampler)  { SDL_ReleaseGPUSampler(gpu_device, composite_sampler); composite_sampler = NULL; }
-    // Grid texture pipeline + resources
-    if (grid_tex_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, grid_tex_pipeline); grid_tex_pipeline = NULL; }
-    if (grid_sampler)      { SDL_ReleaseGPUSampler(gpu_device, grid_sampler); grid_sampler = NULL; }
-    if (grid_texture)      { SDL_ReleaseGPUTexture(gpu_device, grid_texture); grid_texture = NULL; }
-    if (grid_quad_buf)     { SDL_ReleaseGPUBuffer(gpu_device, grid_quad_buf); grid_quad_buf = NULL; }
+    /* Grid texture pipeline resources removed — memory profiler panel deleted */
     {
         int i;
         for (i = 0; i < PANEL_COUNT; i++) {
@@ -4718,6 +4663,10 @@ EXPORT void end_externals(void) {
     if (slug_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, slug_pipeline); slug_pipeline = NULL; }
     icon_slug_count = 0;
 
+#ifdef TRACY_ENABLE
+    if (font_ttf_buffer) TracyCFreeN(font_ttf_buffer, "font_ttf");
+    if (icon_ttf_buffer) TracyCFreeN(icon_ttf_buffer, "icon_ttf");
+#endif
     if (font_ttf_buffer) { SDL_free(font_ttf_buffer); font_ttf_buffer = NULL; font_ttf_size = 0; }
     if (icon_ttf_buffer) { SDL_free(icon_ttf_buffer); icon_ttf_buffer = NULL; icon_ttf_size = 0; }
 
@@ -4780,11 +4729,8 @@ EXPORT void end_externals(void) {
 
     /* Release persistent UI buffers before GPU device is destroyed */
     ui_destroy_buffers(&ui_game);
-    ui_destroy_buffers(&ui_editor_clay);
-
-    /* Shutdown profilers */
-    cache_prof_shutdown();
-    cpu_prof_shutdown();
+    ui_destroy_buffers(&ui_editor_bufs[0]);
+    ui_destroy_buffers(&ui_editor_bufs[1]);
 
     // Main window & device
     if (gpu_device) {
@@ -4801,12 +4747,16 @@ EXPORT void end_externals(void) {
 
     // Free arena (single free for all engine memory)
     if (g_mem->arena.base) {
-        cpu_prof_free(g_mem->arena.base);
+#ifdef TRACY_ENABLE
+        TracyCFreeN(g_mem->arena.base, "arena_backing");
+#endif
         free(g_mem->arena.base);
         g_mem->arena.base = NULL;
     }
 
-    cpu_prof_free(g_mem);
+#ifdef TRACY_ENABLE
+    TracyCFreeN(g_mem, "game_memory");
+#endif
     free(g_mem);
     g_mem = NULL;
 
@@ -4818,13 +4768,21 @@ EXPORT void end_externals(void) {
 // ---------------------------------------------------------------------------
 
 EXPORT void init_engine(void) {
+    if (!g_init) return;
     BOOT_PROF_BEGIN(TP_INIT_ENGINE);
     g_init(&g_mem->game);
     BOOT_PROF_END(TP_INIT_ENGINE);
 }
 
 EXPORT void destroy_engine(void) {
+    if (!g_destroy) return;
     g_destroy(&g_mem->game);
+}
+
+EXPORT void sync_editor_thread(void) {
+    if (!editor_sem_done) return;
+    SDL_WaitSemaphore(editor_sem_done);
+    SDL_SignalSemaphore(editor_sem_done);
 }
 
 EXPORT void assign_init(engine_init_fn func) {
@@ -4844,8 +4802,9 @@ EXPORT void assign_update(engine_update_fn func) {
 // ---------------------------------------------------------------------------
 
 EXPORT void init_editor(void) {
+    if (!g_editor_init) return;
     BOOT_PROF_BEGIN(TP_INIT_EDITOR);
-    if (g_editor_init) g_editor_init(&g_mem->game, &g_mem->editor);
+    g_editor_init(&g_mem->game, &g_mem->editor);
     BOOT_PROF_END(TP_INIT_EDITOR);
 
     /* Boot profiler continues into first frame — destroyed in update_externals */
@@ -4853,7 +4812,8 @@ EXPORT void init_editor(void) {
 }
 
 EXPORT void destroy_editor(void) {
-    if (g_editor_destroy) g_editor_destroy(&g_mem->game, &g_mem->editor);
+    if (!g_editor_destroy) return;
+    g_editor_destroy(&g_mem->game, &g_mem->editor);
 }
 
 EXPORT void assign_editor_init(editor_init_fn func) {
@@ -4884,17 +4844,28 @@ EXPORT void reload_project(void) {
     }
 }
 
-/* Profiler zone wrappers — called by core.dll, forwarded to engine.dll via function pointers */
-EXPORT void ext_cache_zone_begin(const char *name) { cache_zone_begin(name); }
-EXPORT void ext_cache_zone_end(void) { cache_zone_end(); }
+/* Profiler zone wrappers — Tracy direct API */
+EXPORT void ext_cache_zone_begin(const char *name) { (void)name; }
+EXPORT void ext_cache_zone_end(void) { }
 EXPORT void ext_cpu_zone_begin(const char *name) {
-    if (!cpu_prof_capture_paused) cpu_zone_begin(name);
+#ifdef TRACY_ENABLE
+    /* Dynamic zone name — use alloc_srcloc for runtime names */
+    TracyZoneStack *zs_ = tracy_get_zone_stack_();
+    if (zs_ && zs_->depth < TRACY_ZONE_STACK_MAX) {
+        uint64_t srcloc = ___tracy_alloc_srcloc_name(
+            (uint32_t)0, __FILE__, strlen(__FILE__),
+            __func__, strlen(__func__),
+            name, strlen(name), 0);
+        zs_->stack[zs_->depth++] =
+            ___tracy_emit_zone_begin_alloc(srcloc, 1);
+    }
+#else
+    (void)name;
+#endif
 }
 EXPORT void ext_cpu_zone_end(void) {
-    if (!cpu_prof_capture_paused) cpu_zone_end();
+    FRAME_CPU_ZONE_END();
 }
-EXPORT void ext_cache_prof_frame_reset(void) { cache_prof_frame_reset(); }
-EXPORT void ext_cpu_prof_frame_end(void) {
-    if (!cpu_prof_capture_paused) cpu_prof_frame_end();
-}
+EXPORT void ext_cache_prof_frame_reset(void) { }
+EXPORT void ext_cpu_prof_frame_end(void) { }
 

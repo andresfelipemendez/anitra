@@ -14,12 +14,7 @@
 /* ── Editor persistent state (lives in memory struct, survives hot-reload) ── */
 
 #define EDITOR_MAX_LINES 2048
-#define PROF_GRID_MAX_COLS 32
-#define PROF_GRID_MAX_ROWS 512
-#define PROFILER_TREE_MAX_NODES 65536
 #define SCENE_TREE_MAX_ENTITIES 512
-#define EDITOR_CPU_TREE_MAX_ZONES 256
-
 /* Project browser icon grid */
 #define PB_ICON_SIZE         80
 #define PB_ICON_GAP          6
@@ -91,13 +86,10 @@ enum {
 static const char *panel_names[PANEL_COUNT] = {
     "Game",
     "Editor",
-    "Profiler",
     "Scene Tree",
     "Inspector",
     "Outline",
-    "Project",
-    "Cache Profiler",
-    "CPU Profiler"
+    "Project"
 };
 
 /* Dock node structure */
@@ -292,7 +284,7 @@ static void dock_init_default(dock_state *d) {
     d->nodes[left].panel_count = 1;
     d->nodes[left].active_tab = 0;
 
-    /* Right side: horizontal split (center area | Profiler/Inspector) */
+    /* Right side: horizontal split (center area | Inspector) */
     d->nodes[center_right_split].type = DOCK_SPLIT_H;
     d->nodes[center_right_split].ratio = 0.78f;
 
@@ -313,12 +305,9 @@ static void dock_init_default(dock_state *d) {
     /* Bottom of center: Assets panel */
     d->nodes[assets_leaf].panels[0] = PANEL_ASSETS;
     d->nodes[assets_leaf].panel_count = 1;
-    d->nodes[right].panels[0] = PANEL_PROFILER;
-    d->nodes[right].panels[1] = PANEL_INSPECTOR;
-    d->nodes[right].panels[2] = PANEL_CACHE_PROFILER;
-    d->nodes[right].panels[3] = PANEL_CPU_PROFILER;
-    d->nodes[right].panel_count = 4;
-    d->nodes[right].active_tab = 1;
+    d->nodes[right].panels[0] = PANEL_INSPECTOR;
+    d->nodes[right].panel_count = 1;
+    d->nodes[right].active_tab = 0;
 
     /* Wire up children */
     d->nodes[root].children[0] = left;
@@ -852,7 +841,7 @@ static void dock_free_subtree(dock_state *d, int idx) {
 
 typedef struct editor_state {
     /* Arena pointers — set by externals init, used by editor for allocation */
-    struct arena *root_arena;      /* pointer to memory.arena (for profiler arena display) */
+    struct arena *root_arena;      /* pointer to memory.arena */
     struct arena *editor_arena;    /* sub-arena for editor allocations */
     struct mig_header *mig_hdr;    /* migration header — persists in editor_arena */
 
@@ -867,6 +856,7 @@ typedef struct editor_state {
     float cam_ortho_size;      /* vertical orthographic span in world units */
     int   cam_mouse_look;
     uint8_t cam_mouse_button; /* SDL_BUTTON_LEFT / SDL_BUTTON_RIGHT while looking */
+    float cam_accum_dx, cam_accum_dy; /* accumulated mouse delta from events */
 
     /* Window state */
     void *window;        /* SDL_Window* — set by externals, read by editor */
@@ -914,12 +904,6 @@ typedef struct editor_state {
     int   window_mouse_click;             /* 1 on the frame left button was pressed (any panel) */
     float window_scroll_y;                /* scroll wheel delta this frame (any panel) */
 
-    /* Profiler Clay render output — written by editor each frame, read by externals for GPU upload.
-       profiler_clay_ctx survives hot-reload (lives in editor_arena). */
-    void *profiler_clay_ctx;       /* Clay_Context* in editor_arena */
-    int   profiler_cmd_count;      /* number of Clay_RenderCommand items */
-    void *profiler_cmd_array;      /* Clay_RenderCommand* in Clay arena memory */
-
     /* Scene tree Clay render output — written by editor each frame, read by externals. */
     void *scene_tree_clay_ctx;     /* Clay_Context* in editor_arena */
     int   scene_tree_cmd_count;    /* number of Clay_RenderCommand items */
@@ -932,21 +916,10 @@ typedef struct editor_state {
     void *inspector_cmd_array;     /* Clay_RenderCommand* in Clay arena memory */
 
     /* Hot-reload-persistent collapsed state */
-    int profiler_tree_collapsed[PROFILER_TREE_MAX_NODES];
     int scene_tree_collapsed[SCENE_TREE_MAX_ENTITIES];
     int scene_selected_entity;
     uint8_t scene_selection_mask[SCENE_TREE_MAX_ENTITIES];
     int scene_selection_count;
-
-    /* Profiler input — accumulated per frame by event handler, consumed by profiler_layout */
-    float prof_mouse_x, prof_mouse_y; /* mouse position in profiler-local coords */
-    float prof_scroll_y;              /* scroll wheel delta this frame */
-    int   prof_mouse_down;            /* left button held */
-    int   prof_click;                 /* 1 on the frame left button was pressed */
-    int   prof_hover_record;          /* hovered flat record index, -1 = none */
-    float prof_split_ratio;           /* tree/grid split: 0.1..0.9, default 0.35 */
-    int   prof_split_dragging;        /* 1 while dragging the split divider */
-    int   prof_split_cursor;          /* 1 when mouse is near split divider — show EW resize cursor */
 
     /* Scene tree input — accumulated per frame by event handler, consumed by scene_tree_layout */
     float scene_tree_mouse_x, scene_tree_mouse_y; /* mouse position in scene-tree-local coords */
@@ -969,20 +942,6 @@ typedef struct editor_state {
     pb_thumbnail_request pb_thumbnails[PB_MAX_THUMBNAILS];
     int   pb_thumbnail_count;
 
-    /* Scrollbar data — set by profiler_layout after EndLayout, read by externals renderer */
-    float prof_scroll_pos;            /* current scroll Y offset (<=0) */
-    float prof_content_h;             /* total content height */
-    float prof_container_h;           /* visible container height */
-    float prof_track_x, prof_track_y; /* PTreeScroll bounding box origin (Clay coords) */
-    float prof_track_w, prof_track_h; /* PTreeScroll bounding box size */
-
-    /* Grid texture — CPU pixel buffer built by editor, uploaded by externals.
-       Each pixel = one 64KB arena cell. Nearest-neighbor sampled to panel size. */
-    uint8_t  prof_grid_pixels[PROF_GRID_MAX_COLS * PROF_GRID_MAX_ROWS * 4]; /* RGBA */
-    int      prof_grid_w, prof_grid_h;    /* actual pixel dimensions this frame */
-    float    prof_grid_x, prof_grid_y;    /* Clay bounding box origin */
-    float    prof_grid_bw, prof_grid_bh;  /* Clay bounding box size */
-
     /* Menu bar Clay render output — written by editor each frame, read by externals. */
     void *menu_bar_clay_ctx;       /* Clay_Context* in editor_arena */
     int   menu_bar_cmd_count;      /* number of Clay_RenderCommand items */
@@ -999,42 +958,6 @@ typedef struct editor_state {
     float menu_scroll_y;           /* scroll wheel delta for Clay debug view */
     int   clay_debug_open;         /* 1 when Clay debug tools panel is visible */
 
-    /* Cache profiler panel — Clay render output */
-    void *cache_prof_clay_ctx;
-    int   cache_prof_cmd_count;
-    void *cache_prof_cmd_array;
-    float cache_prof_mouse_x, cache_prof_mouse_y;
-    float cache_prof_scroll_y;
-    int   cache_prof_mouse_down;
-    int   cache_prof_click;
-
-    /* CPU profiler panel — Clay render output */
-    void *cpu_prof_clay_ctx;
-    int   cpu_prof_cmd_count;
-    void *cpu_prof_cmd_array;
-    float cpu_prof_mouse_x, cpu_prof_mouse_y;
-    float cpu_prof_scroll_y;
-    int   cpu_prof_mouse_down;
-    int   cpu_prof_click;
-    int   cpu_prof_timeline_paused;
-    int   cpu_prof_timeline_offset;
-    uint64_t cpu_prof_timeline_frame_id;
-    float cpu_prof_flame_zoom;
-    float cpu_prof_flame_center;
-    float cpu_prof_flame_zoom_wheel;
-    float cpu_prof_flame_pan_wheel;
-    float cpu_prof_flame_x, cpu_prof_flame_y;
-    float cpu_prof_flame_w, cpu_prof_flame_h;
-    int   cpu_prof_minimap_dragging;
-    float cpu_prof_minimap_drag_offset;
-    struct arena *cpu_prof_text_arena;
-    struct arena *prof_text_arena;       /* per-frame scratch for profiler tree text */
-    uint8_t cpu_prof_tree_collapsed[EDITOR_CPU_TREE_MAX_ZONES];
-    uint64_t cpu_prof_tree_frame_id;
-    char  cpu_prof_hover_zone_name[64];
-    int   cpu_prof_hover_zone_active;
-    char  cpu_prof_selected_zone_name[64];
-    int   cpu_prof_selected_zone_active;
 
     /* Inspector input state */
     float inspector_mouse_x, inspector_mouse_y;

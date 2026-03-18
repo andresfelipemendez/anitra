@@ -4,6 +4,12 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Tracy integration: plot arena usage when Tracy is active */
+#if defined(TRACY_ENABLE) && !defined(ARENA_TRACY_PLOT)
+#include <tracy/TracyC.h>
+#define ARENA_TRACY_PLOT(name, val) TracyCPlotI(name, val)
+#endif
+
 #define ARENA_MAX_RECORDS 128
 
 typedef struct arena arena;

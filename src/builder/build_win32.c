@@ -690,93 +690,102 @@ static int build_and_debug(void)
     }
 }
 
+/* ------- forge thread state --------------------------------------------- */
+
+static HANDLE forge_stop_event   = NULL;
+static HANDLE forge_thread_handle = NULL;
+
 /* ------- watch (forge) — Windows ReadDirectoryChangesW ------------------ */
+
+/* Watch indices (order in waitHandles array) */
+#define WATCH_ENGINE  0
+#define WATCH_EDITOR  1
+#define WATCH_CORE    2
+#define WATCH_SRC     3
+#define WATCH_COLLAB  4
+#define WATCH_SHADERS 5
+#define WATCH_DIR_COUNT 6
+
+static HANDLE open_watch_dir(const char *path) {
+    return CreateFileA(path, FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
+}
 
 static int watch_and_rebuild(void)
 {
-    HANDLE hEngineDir, hEditorDir, hCoreDir;
-    char engine_buf[4096], editor_buf[4096], core_buf[4096];
-    OVERLAPPED engine_ov = {0}, editor_ov = {0}, core_ov = {0};
+    HANDLE hDirs[WATCH_DIR_COUNT];
+    char bufs[WATCH_DIR_COUNT][4096];
+    OVERLAPPED ovs[WATCH_DIR_COUNT];
     DWORD bytes;
+    int i;
 
-    printf("=== Forge: watching src/engine + src/editor + src/core for changes ===\n");
+    static const char *dir_paths[WATCH_DIR_COUNT] = {
+        "src/engine", "src/editor", "src/core",
+        "src", "src/collab", "assets/shaders"
+    };
+    /* src/ root watched non-recursively; all others recursive */
+    static const int dir_recursive[WATCH_DIR_COUNT] = {1, 1, 1, 0, 1, 1};
+
+    printf("=== Forge: watching src/{engine,editor,core,collab} + src/ + assets/shaders ===\n");
     fflush(stdout);
 
-    /* Open directory handles for watching */
-    hEngineDir = CreateFileA(
-        "src/engine", FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-    if (hEngineDir == INVALID_HANDLE_VALUE) {
-        printf("!! Failed to open src/engine for watching (error %lu)\n", GetLastError());
-        return 1;
-    }
+    memset(ovs, 0, sizeof(ovs));
 
-    hEditorDir = CreateFileA(
-        "src/editor", FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-    if (hEditorDir == INVALID_HANDLE_VALUE) {
-        printf("!! Failed to open src/editor for watching (error %lu)\n", GetLastError());
-        CloseHandle(hEngineDir);
-        return 1;
+    /* Open all directory handles */
+    for (i = 0; i < WATCH_DIR_COUNT; i++) {
+        hDirs[i] = open_watch_dir(dir_paths[i]);
+        if (hDirs[i] == INVALID_HANDLE_VALUE) {
+            printf("!! Failed to open %s for watching (error %lu)\n",
+                   dir_paths[i], GetLastError());
+            while (--i >= 0) CloseHandle(hDirs[i]);
+            return 1;
+        }
+        ovs[i].hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
     }
-
-    hCoreDir = CreateFileA(
-        "src/core", FILE_LIST_DIRECTORY,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
-    if (hCoreDir == INVALID_HANDLE_VALUE) {
-        printf("!! Failed to open src/core for watching (error %lu)\n", GetLastError());
-        CloseHandle(hEngineDir);
-        CloseHandle(hEditorDir);
-        return 1;
-    }
-
-    engine_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
-    editor_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
-    core_ov.hEvent   = CreateEventA(NULL, TRUE, FALSE, NULL);
 
     if (ensure_dirs() != 0) {
-        CloseHandle(engine_ov.hEvent);
-        CloseHandle(editor_ov.hEvent);
-        CloseHandle(core_ov.hEvent);
-        CloseHandle(hEngineDir);
-        CloseHandle(hEditorDir);
-        CloseHandle(hCoreDir);
+        for (i = 0; i < WATCH_DIR_COUNT; i++) {
+            CloseHandle(ovs[i].hEvent);
+            CloseHandle(hDirs[i]);
+        }
         return 1;
     }
 
-    /* Watch loop: wait on directory changes or target process exit */
+    /* Watch loop */
     while (1) {
-        HANDLE waitHandles[4];
-        DWORD handleCount = 3;
+        HANDLE waitHandles[WATCH_DIR_COUNT + 2];
+        DWORD handleCount = WATCH_DIR_COUNT;
         DWORD waitResult;
+        int stop_idx = -1, proc_idx = -1;
 
-        ReadDirectoryChangesW(hEngineDir, engine_buf, sizeof(engine_buf), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            &bytes, &engine_ov, NULL);
-        ReadDirectoryChangesW(hEditorDir, editor_buf, sizeof(editor_buf), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            &bytes, &editor_ov, NULL);
-        ReadDirectoryChangesW(hCoreDir, core_buf, sizeof(core_buf), TRUE,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            &bytes, &core_ov, NULL);
-
-        waitHandles[0] = engine_ov.hEvent;
-        waitHandles[1] = editor_ov.hEvent;
-        waitHandles[2] = core_ov.hEvent;
+        for (i = 0; i < WATCH_DIR_COUNT; i++) {
+            ReadDirectoryChangesW(hDirs[i], bufs[i], sizeof(bufs[i]),
+                dir_recursive[i],
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+                &bytes, &ovs[i], NULL);
+            waitHandles[i] = ovs[i].hEvent;
+        }
+        if (forge_stop_event) {
+            stop_idx = (int)handleCount;
+            waitHandles[handleCount++] = forge_stop_event;
+        }
         if (g_engine_process) {
-            waitHandles[3] = g_engine_process;
-            handleCount = 4;
+            proc_idx = (int)handleCount;
+            waitHandles[handleCount++] = g_engine_process;
         }
         waitResult = WaitForMultipleObjects(handleCount, waitHandles, FALSE, INFINITE);
 
-        /* Target process exited */
-        if (g_engine_process && waitResult == WAIT_OBJECT_0 + 3) {
+        /* Stop event signaled (forge thread mode) */
+        if (stop_idx >= 0 && waitResult == WAIT_OBJECT_0 + stop_idx) {
+            printf("\n--- Forge: stop requested, exiting watch. ---\n");
+            fflush(stdout);
+            break;
+        }
+
+        /* Target process exited (standalone mode) */
+        if (proc_idx >= 0 && waitResult == WAIT_OBJECT_0 + proc_idx) {
             printf("\n--- Target process exited, stopping watch. ---\n");
             fflush(stdout);
             break;
@@ -784,16 +793,16 @@ static int watch_and_rebuild(void)
 
         /* Debounce */
         Sleep(50);
-        CancelIo(hEngineDir);
-        CancelIo(hEditorDir);
-        CancelIo(hCoreDir);
-        ResetEvent(engine_ov.hEvent);
-        ResetEvent(editor_ov.hEvent);
-        ResetEvent(core_ov.hEvent);
+        for (i = 0; i < WATCH_DIR_COUNT; i++) {
+            CancelIo(hDirs[i]);
+            ResetEvent(ovs[i].hEvent);
+        }
 
-        if (waitResult == WAIT_OBJECT_0) {
+        switch (waitResult) {
+        case WAIT_OBJECT_0 + WATCH_ENGINE:
             printf("\n--- Engine change detected, recompiling... ---\n");
             fflush(stdout);
+            generate_migration_code();
             printf(">> " TCC_COMPILE_CMD "\n");
             fflush(stdout);
             if (system(TCC_COMPILE_CMD) == 0) {
@@ -801,9 +810,12 @@ static int watch_and_rebuild(void)
             } else {
                 printf("!! Engine compile failed.\n");
             }
-        } else if (waitResult == WAIT_OBJECT_0 + 1) {
+            break;
+
+        case WAIT_OBJECT_0 + WATCH_EDITOR:
             printf("\n--- Editor change detected, recompiling... ---\n");
             fflush(stdout);
+            generate_migration_code();
             printf(">> " TCC_EDITOR_CMD "\n");
             fflush(stdout);
             if (system(TCC_EDITOR_CMD) == 0) {
@@ -811,9 +823,12 @@ static int watch_and_rebuild(void)
             } else {
                 printf("!! Editor compile failed.\n");
             }
-        } else if (waitResult == WAIT_OBJECT_0 + 2) {
+            break;
+
+        case WAIT_OBJECT_0 + WATCH_CORE:
             printf("\n--- Core change detected, recompiling... ---\n");
             fflush(stdout);
+            generate_migration_code();
             printf(">> " TCC_CORE_CMD "\n");
             fflush(stdout);
             if (system(TCC_CORE_CMD) == 0) {
@@ -821,15 +836,87 @@ static int watch_and_rebuild(void)
             } else {
                 printf("!! Core compile failed.\n");
             }
+            break;
+
+        case WAIT_OBJECT_0 + WATCH_SRC:
+            /* Shared header changed — regenerate migration, rebuild all */
+            printf("\n--- Shared header change detected, rebuilding all... ---\n");
+            fflush(stdout);
+            generate_migration_code();
+            printf(">> " TCC_COMPILE_CMD "\n"); fflush(stdout);
+            system(TCC_COMPILE_CMD);
+            printf(">> " TCC_EDITOR_CMD "\n"); fflush(stdout);
+            system(TCC_EDITOR_CMD);
+            printf(">> " TCC_CORE_CMD "\n"); fflush(stdout);
+            system(TCC_CORE_CMD);
+            printf("   Rebuild all done.\n");
+            break;
+
+        case WAIT_OBJECT_0 + WATCH_COLLAB:
+            /* Collab sources compiled into editor.dll */
+            printf("\n--- Collab change detected, recompiling editor... ---\n");
+            fflush(stdout);
+            generate_migration_code();
+            printf(">> " TCC_EDITOR_CMD "\n");
+            fflush(stdout);
+            if (system(TCC_EDITOR_CMD) == 0) {
+                printf("   Compile OK.\n");
+            } else {
+                printf("!! Editor compile failed.\n");
+            }
+            break;
+
+        case WAIT_OBJECT_0 + WATCH_SHADERS:
+            /* GLSL changed — recompile to SPIR-V */
+            printf("\n--- Shader change detected, recompiling shaders... ---\n");
+            fflush(stdout);
+            if (build_shaders() == 0) {
+                printf("   Shaders compiled OK.\n");
+            } else {
+                printf("!! Shader compile failed.\n");
+            }
+            break;
         }
         fflush(stdout);
     }
 
-    CloseHandle(engine_ov.hEvent);
-    CloseHandle(editor_ov.hEvent);
-    CloseHandle(core_ov.hEvent);
-    CloseHandle(hEngineDir);
-    CloseHandle(hEditorDir);
-    CloseHandle(hCoreDir);
+    for (i = 0; i < WATCH_DIR_COUNT; i++) {
+        CloseHandle(ovs[i].hEvent);
+        CloseHandle(hDirs[i]);
+    }
     return 0;
+}
+
+/* ------- forge thread entry point -------------------------------------- */
+
+static DWORD WINAPI forge_thread_proc(LPVOID param)
+{
+    (void)param;
+    watch_and_rebuild();
+    return 0;
+}
+
+static int start_forge_thread(void)
+{
+    if (forge_thread_handle) return 0;
+    forge_stop_event = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (!forge_stop_event) return 1;
+    forge_thread_handle = CreateThread(NULL, 0, forge_thread_proc, NULL, 0, NULL);
+    if (!forge_thread_handle) {
+        CloseHandle(forge_stop_event);
+        forge_stop_event = NULL;
+        return 1;
+    }
+    return 0;
+}
+
+static void stop_forge_thread(void)
+{
+    if (!forge_thread_handle) return;
+    SetEvent(forge_stop_event);
+    WaitForSingleObject(forge_thread_handle, 5000);
+    CloseHandle(forge_thread_handle);
+    CloseHandle(forge_stop_event);
+    forge_thread_handle = NULL;
+    forge_stop_event = NULL;
 }

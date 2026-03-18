@@ -9,7 +9,9 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <ctype.h>
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <sys/types.h>
 #endif
@@ -17,8 +19,7 @@
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
 
-#include "cache_profiler.h"
-#include "cpu_profiler.h"
+/* cpu_profiler removed — Tracy replaces it */
 #include "state_migration.gen.h"
 #include "boot_profiler.h"
 
@@ -182,19 +183,14 @@ static const char *insp_comp_names[INSP_COMP_COUNT] = {
 
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 
-/* Wire CPU profiler function pointers from externals.dll (set by core.c at load time) */
+/* CPU profiler function wiring removed — Tracy replaces it */
 EXPORT void assign_cpu_prof_fns(
     void (*czb)(const char *), void (*cze)(void),
     int (*gce)(void),
     void *gfao, uint64_t (*gfiao)(uint16_t),
     int (*ghc)(void))
 {
-    cpu_zone_begin = czb;
-    cpu_zone_end = cze;
-    cpu_prof_get_capture_enabled = gce;
-    cpu_prof_get_frame_at_offset = (cpu_prof_frame *(*)(uint16_t))gfao;
-    cpu_prof_get_frame_id_at_offset = gfiao;
-    cpu_prof_get_history_count = ghc;
+    (void)czb; (void)cze; (void)gce; (void)gfao; (void)gfiao; (void)ghc;
 }
 
 /* Memory profiler colors (one per allocation slot) */
@@ -210,10 +206,6 @@ static const Clay_Color profiler_colors[] = {
 };
 static const int profiler_color_count = (int)(sizeof(profiler_colors) / sizeof(profiler_colors[0]));
 
-static int editor_cpu_prof_enabled(const editor_state *e) {
-    return e && cpu_prof_get_capture_enabled();
-}
-
 static int dock_is_panel_visible(dock_state *d, PanelId pid) {
     int win_idx;
     int node = dock_find_leaf_for_panel_global(d, pid, &win_idx);
@@ -221,12 +213,8 @@ static int dock_is_panel_visible(dock_state *d, PanelId pid) {
     return d->nodes[node].panels[d->nodes[node].active_tab] == pid;
 }
 
-#define EDITOR_CPU_ZONE_BEGIN(es, name) do { \
-    if (editor_cpu_prof_enabled((es))) cpu_zone_begin(name); \
-} while (0)
-#define EDITOR_CPU_ZONE_END(es) do { \
-    if (editor_cpu_prof_enabled((es))) cpu_zone_end(); \
-} while (0)
+#define EDITOR_CPU_ZONE_BEGIN(es, name) do { (void)(es); (void)(name); } while (0)
+#define EDITOR_CPU_ZONE_END(es) do { (void)(es); } while (0)
 #define EDITOR_CACHE_ZONE_BEGIN(name) do { (void)0; } while (0)
 #define EDITOR_CACHE_ZONE_END()       do { (void)0; } while (0)
 
@@ -254,13 +242,6 @@ static int cpu_zone_highlights_record_tag(const char *zone, const char *record_t
     if (strcmp(record_tag, "clay_editor_toolbar") == 0 &&
         (strcmp(zone, "layout_editor_toolbar") == 0 ||
          strcmp(zone, "ui_prepare_editor_toolbar") == 0)) return 1;
-    if (strcmp(record_tag, "clay_cache_prof") == 0 &&
-        (strcmp(zone, "layout_cache_profiler") == 0 ||
-         strcmp(zone, "ui_prepare_cache_profiler") == 0)) return 1;
-    if (strcmp(record_tag, "clay_cpu_prof") == 0 &&
-        (strcmp(zone, "layout_cpu_profiler") == 0 ||
-         strcmp(zone, "ui_prepare_cpu_profiler") == 0)) return 1;
-
     /* Rendering pipeline zones map to rendering-owned arena records. */
     if (strncmp(zone, "render_", 7) == 0 ||
         strncmp(zone, "ui_prepare_", 11) == 0 ||
@@ -307,6 +288,7 @@ static int cpu_zone_highlights_record_tag(const char *zone, const char *record_t
     return 0;
 }
 
+#if 0 /* memory profiler panel removed — Tracy replaces all profiling */
 /* Format bytes as human-readable string (rotating static buffers).
    Static buffers reset to zero on hot-reload — fine, overwritten before read. */
 static const char *format_bytes(uint32_t bytes) {
@@ -529,6 +511,7 @@ static void profiler_tree_arena(arena *a, int depth, int *row_id,
         }
     }
 }
+#endif /* memory profiler helpers */
 
 static int editor_utf8_decode_at(const char *text, int len, int index, int *out_cp, int *out_next) {
     unsigned char c0;
@@ -1019,12 +1002,9 @@ static void editor_ensure_required_panels(dock_state *d) {
     static const PanelId required_panels[] = {
         PANEL_GAME,
         PANEL_EDITOR,
-        PANEL_PROFILER,
         PANEL_SCENE_TREE,
         PANEL_INSPECTOR,
-        PANEL_ASSETS,
-        PANEL_CACHE_PROFILER,
-        PANEL_CPU_PROFILER
+        PANEL_ASSETS
     };
     int i;
 
@@ -2297,13 +2277,12 @@ static int editor_toolbar_button_hit(const editor_state *e, float lx, float ly) 
 }
 
 static void editor_begin_mouse_look(editor_state *e, uint8_t button) {
-    float flush_dx, flush_dy;
     if (!e || !e->window || e->cam_mouse_look) return;
     e->cam_mouse_look = 1;
     e->cam_mouse_button = button;
+    e->cam_accum_dx = 0;
+    e->cam_accum_dy = 0;
     SDL_SetWindowRelativeMouseMode((SDL_Window *)e->window, 1);
-    /* Clear any accumulated relative delta so drag starts from click point. */
-    SDL_GetRelativeMouseState(&flush_dx, &flush_dy);
 }
 
 static void editor_end_mouse_look(editor_state *e) {
@@ -3247,7 +3226,10 @@ static void update_camera(game_state *gs, editor_state *es) {
     if (keys[SDL_SCANCODE_Q]) e->cam_pos = vec3_sub(e->cam_pos, vec3_scale(up,    spd));
 
     if (e->cam_mouse_look) {
-        SDL_GetRelativeMouseState(&dx, &dy);
+        dx = e->cam_accum_dx;
+        dy = e->cam_accum_dy;
+        e->cam_accum_dx = 0;
+        e->cam_accum_dy = 0;
         if (e->cam_mouse_button == SDL_BUTTON_MIDDLE) {
             float pan_speed = e->cam_speed * 0.002f;
             Vec3 cam_right = vec3_normalize(vec3_cross(fwd, VEC3(0, 1, 0)));
@@ -3364,8 +3346,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             uint32_t old_size = e->mig_hdr->struct_size;
             uint32_t copy_size = old_size < sizeof(editor_state)
                                ? old_size : (uint32_t)sizeof(editor_state);
-            void *old_copy = arena_alloc(es->editor_arena, copy_size, 8,
-                                          "mig_editor_old");
+            void *old_copy = malloc(copy_size);
             if (old_copy) {
                 mig_header *old_hdr = e->mig_hdr;
                 struct arena *saved_root = e->root_arena;
@@ -3383,6 +3364,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
                 e->mig_hdr = NULL;  /* will be re-stored below */
                 fprintf(stderr, "Migrated editor_state (%u -> %u bytes)\n",
                         old_size, (uint32_t)sizeof(editor_state));
+                free(old_copy);
             }
         }
     }
@@ -3412,10 +3394,6 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
         }
         es->clay_editor = e->clay_ctx;
 
-        /* Re-init cache profiler statics (CACHE_PROF_IMPL is compiled into
-           editor.dll, so its file-scope data is also zeroed on reload) */
-        cache_prof_init();
-
         fprintf(stderr, "Editor hot-reload: re-wired Clay context\n");
         return;
     }
@@ -3432,6 +3410,8 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     if (e->cam_ortho_size == 0.0f) e->cam_ortho_size = 12.0f;
     e->cam_mouse_look = 0;
     e->cam_mouse_button = 0;
+    e->cam_accum_dx = 0;
+    e->cam_accum_dy = 0;
     if (e->open == 0) e->open = 1;
     e->gizmo_hovered = GIZMO_NONE;
     e->gizmo_active  = GIZMO_NONE;
@@ -3466,23 +3446,6 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->pb_selected_asset_path[0] = '\0';
     if (e->pb_selected_asset_type == 0) e->pb_selected_asset_type = -1;
     e->pb_thumbnail_count = 0;
-    if (e->cpu_prof_flame_zoom == 0.0f) e->cpu_prof_flame_zoom = 1.0f;
-    if (e->cpu_prof_flame_center == 0.0f) e->cpu_prof_flame_center = 0.5f;
-    e->cpu_prof_flame_zoom_wheel = 0.0f;
-    e->cpu_prof_flame_pan_wheel = 0.0f;
-    e->cpu_prof_flame_x = 0.0f;
-    e->cpu_prof_flame_y = 0.0f;
-    e->cpu_prof_flame_w = 0.0f;
-    e->cpu_prof_flame_h = 0.0f;
-    e->cpu_prof_minimap_dragging = 0;
-    if (e->cpu_prof_minimap_drag_offset == 0.0f) e->cpu_prof_minimap_drag_offset = 0.5f;
-    e->cpu_prof_text_arena = NULL;
-    memset(e->cpu_prof_tree_collapsed, 0, sizeof(e->cpu_prof_tree_collapsed));
-    e->cpu_prof_tree_frame_id = 0;
-    e->cpu_prof_hover_zone_name[0] = '\0';
-    e->cpu_prof_hover_zone_active = 0;
-    e->cpu_prof_selected_zone_name[0] = '\0';
-    e->cpu_prof_selected_zone_active = 0;
     e->insp_edit_field = INSP_FIELD_NONE;
     e->insp_edit_entity = -1;
     e->insp_edit_buf[0] = '\0';
@@ -3508,8 +3471,6 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
         }
     }
 
-    cache_prof_init();
-
     if (d) {
         if (editor_refresh_layout_path(gs, e) &&
             editor_load_dock_layout_from_toml(d, e->editor_layout_path)) {
@@ -3521,13 +3482,6 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     }
 
     /* Old per-panel Clay contexts removed — unified context below replaces them */
-
-    if (!e->cpu_prof_text_arena && es->editor_arena) {
-        e->cpu_prof_text_arena = arena_alloc_subarena(es->editor_arena, 16 * 1024, 16, "cpu_prof_text");
-    }
-    if (!e->prof_text_arena && es->editor_arena) {
-        e->prof_text_arena = arena_alloc_subarena(es->editor_arena, 16 * 1024, 16, "prof_text");
-    }
 
     /* Unified Clay context — single layout tree for all editor UI */
     if (!e->clay_ctx && es->editor_arena) {
@@ -3545,9 +3499,14 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     }
 }
 
-/* ── Profiler Clay layout (produces render commands for externals GPU upload) ── */
+/* profiler_layout removed — memory profiler panel deleted */
 
 static void profiler_layout(game_state *gs, editor_state *es) {
+    (void)gs; (void)es;
+}
+
+#if 0 /* original profiler_layout body removed */
+static void profiler_layout_OLD(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
     Clay_Context *pctx = (Clay_Context *)e->profiler_clay_ctx;
@@ -3657,12 +3616,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
     EDITOR_CPU_ZONE_END(e);
     cpu_focus_tag = NULL;
-    if (e->cpu_prof_hover_zone_active && e->cpu_prof_hover_zone_name[0]) {
-        cpu_focus_tag = e->cpu_prof_hover_zone_name;
-    } else if (e->cpu_prof_selected_zone_active && e->cpu_prof_selected_zone_name[0]) {
-        cpu_focus_tag = e->cpu_prof_selected_zone_name;
-    }
-    have_cpu_focus = (cpu_focus_tag && cpu_focus_tag[0]) ? 1 : 0;
+    have_cpu_focus = 0;
 
     /* Root container */
     EDITOR_CPU_ZONE_BEGIN(e, "prof_clay_tree_and_grid");
@@ -3954,6 +3908,7 @@ static void profiler_layout(game_state *gs, editor_state *es) {
     }
     EDITOR_CPU_ZONE_END(e); /* prof_grid_pixels */
 }
+#endif /* end of dead profiler_layout code */
 
 static const char *project_browser_path_basename(const char *path) {
     const char *slash;
@@ -5925,9 +5880,19 @@ static void editor_toolbar_layout(game_state *gs, editor_state *es) {
     e->editor_toolbar_cmd_array = commands.internalArray;
 }
 
-/* ── Cache Profiler Clay layout ── */
+/* cache_profiler_layout removed — cache profiler panel deleted */
 
 static void cache_profiler_layout(game_state *gs, editor_state *es) {
+    (void)gs; (void)es;
+}
+
+static void cache_profiler_layout_inner(game_state *gs, editor_state *es) {
+    (void)gs; (void)es;
+}
+
+/* original cache_profiler_layout body removed — start of dead code */
+#if 0
+static void cache_profiler_layout_DEAD(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
     Clay_Context *ctx = (Clay_Context *)e->cache_prof_clay_ctx;
@@ -6129,9 +6094,10 @@ static void cache_profiler_layout(game_state *gs, editor_state *es) {
     e->cache_prof_cmd_array = commands.internalArray;
     e->cache_prof_click = 0;
 }
+#endif /* end of dead cache_profiler_layout code */
 
-/* ── CPU Profiler Clay layout ── */
-
+/* ── CPU Profiler Clay layout (removed — Tracy replaces it) ── */
+#if 0
 static Clay_Color cpu_prof_flame_color(const char *name, uint16_t depth) {
     uint32_t h = 2166136261u;
     const unsigned char *p = (const unsigned char *)(name ? name : "");
@@ -7068,12 +7034,20 @@ static void cpu_profiler_layout(game_state *gs, editor_state *es) {
     e->cpu_prof_cmd_array = commands.internalArray;
     e->cpu_prof_click = 0;
 }
+#endif /* end dead cpu_profiler_layout code */
 
 /* ══════════════════════════════════════════════════════════════
  *  Unified Clay layout — single context for all editor UI
  * ══════════════════════════════════════════════════════════════ */
 
+/* profiler_layout_inner removed — memory profiler panel deleted */
+
 static void profiler_layout_inner(game_state *gs, editor_state *es) {
+    (void)gs; (void)es;
+}
+
+#if 0 /* original profiler_layout_inner body removed */
+static void profiler_layout_inner_OLD(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
     int prof_win_idx;
@@ -7164,12 +7138,7 @@ static void profiler_layout_inner(game_state *gs, editor_state *es) {
     flat_count = profiler_flatten_arena(a, 0, flat, 0, &flat_color);
     EDITOR_CPU_ZONE_END(e);
     cpu_focus_tag = NULL;
-    if (e->cpu_prof_hover_zone_active && e->cpu_prof_hover_zone_name[0]) {
-        cpu_focus_tag = e->cpu_prof_hover_zone_name;
-    } else if (e->cpu_prof_selected_zone_active && e->cpu_prof_selected_zone_name[0]) {
-        cpu_focus_tag = e->cpu_prof_selected_zone_name;
-    }
-    have_cpu_focus = (cpu_focus_tag && cpu_focus_tag[0]) ? 1 : 0;
+    have_cpu_focus = 0;
 
     /* Root container */
     EDITOR_CPU_ZONE_BEGIN(e, "prof_clay_tree_and_grid");
@@ -7453,6 +7422,8 @@ static void profiler_layout_inner(game_state *gs, editor_state *es) {
     }
     EDITOR_CPU_ZONE_END(e); /* prof_grid_pixels */
 }
+#endif /* end of dead profiler_layout_inner code */
+
 static void scene_tree_layout_inner(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
@@ -8677,6 +8648,7 @@ static void menu_bar_layout_inner(game_state *gs, editor_state *es) {
         }
     }
 
+    e->menu_click = 0;
 }
 static void editor_toolbar_layout_inner(game_state *gs, editor_state *es) {
     editor_state *e = es;
@@ -8809,7 +8781,8 @@ static void editor_toolbar_layout_inner(game_state *gs, editor_state *es) {
         }
     }
 }
-static void cache_profiler_layout_inner(game_state *gs, editor_state *es) {
+#if 0 /* cache_profiler_layout_inner removed */
+static void cache_profiler_layout_inner_DEAD(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
     int win_idx, node;
@@ -8987,7 +8960,9 @@ static void cache_profiler_layout_inner(game_state *gs, editor_state *es) {
 
     e->cache_prof_click = 0;
 }
-static void cpu_profiler_layout_inner(game_state *gs, editor_state *es) {
+#endif /* end dead cache_profiler_layout_inner */
+#if 0
+static void cpu_profiler_layout_inner_dead(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
     int win_idx, node;
@@ -9886,6 +9861,11 @@ static void cpu_profiler_layout_inner(game_state *gs, editor_state *es) {
     }
     e->cpu_prof_click = 0;
 }
+#endif /* end dead cpu_profiler_layout_inner code */
+
+static void cpu_profiler_layout_inner(game_state *gs, editor_state *es) {
+    (void)gs; (void)es;
+}
 
 static void dock_to_clay(dock_state *d, int node_idx, game_state *gs, editor_state *es) {
     DockNode *n;
@@ -9925,15 +9905,46 @@ static void dock_to_clay(dock_state *d, int node_idx, game_state *gs, editor_sta
                 .layoutDirection = CLAY_TOP_TO_BOTTOM
             }
         }) {
-            /* Header spacer — compositor draws tab headers in this region */
+            /* Tab header strip — slug text on top of compositor background quads */
             CLAY(CLAY_IDI("TabSpacer", node_idx), {
                 .layout = {
                     .sizing = {
                         .width = CLAY_SIZING_GROW({0}),
                         .height = CLAY_SIZING_FIXED(DOCK_HEADER_HEIGHT)
+                    },
+                    .layoutDirection = CLAY_LEFT_TO_RIGHT
+                }
+            }) {
+                int ti;
+                float tab_w = pw / (float)n->panel_count;
+                for (ti = 0; ti < n->panel_count; ti++) {
+                    PanelId tab_pid = n->panels[ti];
+                    int is_active = (ti == n->active_tab);
+                    Clay_Color tab_text_color = is_active
+                        ? ((Clay_Color){220, 220, 220, 255})
+                        : ((Clay_Color){120, 120, 130, 255});
+                    CLAY(CLAY_IDI("TabTitle", node_idx * 16 + ti), {
+                        .layout = {
+                            .sizing = {
+                                .width = CLAY_SIZING_FIXED(tab_w),
+                                .height = CLAY_SIZING_FIXED(DOCK_HEADER_HEIGHT)
+                            },
+                            .padding = { .left = 8, .right = 8 },
+                            .childAlignment = { CLAY_ALIGN_X_LEFT, CLAY_ALIGN_Y_CENTER }
+                        }
+                    }) {
+                        Clay_String tab_label = {
+                            true,
+                            (int32_t)strlen(panel_names[tab_pid]),
+                            panel_names[tab_pid]
+                        };
+                        CLAY_TEXT(tab_label, CLAY_TEXT_CONFIG({
+                            .textColor = tab_text_color,
+                            .fontSize = 14
+                        }));
                     }
                 }
-            }) {}
+            }
 
             /* Panel content area — clipping only, no scroll (inner functions manage scroll) */
             CLAY(CLAY_IDI("PanelContent", (int)pid), {
@@ -9946,12 +9957,9 @@ static void dock_to_clay(dock_state *d, int node_idx, game_state *gs, editor_sta
                 .clip = { .vertical = true }
             }) {
                 switch (pid) {
-                    case PANEL_PROFILER:        profiler_layout_inner(gs, es); break;
                     case PANEL_SCENE_TREE:      scene_tree_layout_inner(gs, es); break;
                     case PANEL_ASSETS:          project_browser_layout_inner(gs, es); break;
                     case PANEL_INSPECTOR:       inspector_layout_inner(gs, es); break;
-                    case PANEL_CACHE_PROFILER:  cache_profiler_layout_inner(gs, es); break;
-                    case PANEL_CPU_PROFILER:    cpu_profiler_layout_inner(gs, es); break;
                     case PANEL_EDITOR:
                         editor_toolbar_layout_inner(gs, es);
                         break;
@@ -10025,7 +10033,6 @@ EXPORT void update_editor(game_state *gs, editor_state *es) {
     if (e->collab.connected || e->collab.connecting)
         collab_update(&e->collab, gs);
 
-    cache_prof_frame_reset();
     EDITOR_CPU_ZONE_BEGIN(e, "editor_update_frame");
     EDITOR_CACHE_ZONE_BEGIN("editor_update_frame");
 
@@ -10479,8 +10486,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 if (hit >= 0) {
                     DockNode *sn = &d->nodes[hit];
                     SDL_SetCursor(sn->type == DOCK_SPLIT_H ? cur_sizewe : cur_sizens);
-                } else if (e->prof_split_cursor) {
-                    SDL_SetCursor(cur_sizewe);
                 } else {
                     SDL_SetCursor(cur_default);
                 }
@@ -10533,6 +10538,13 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 return 1;
             }
         }
+    }
+
+    /* Mouse-look: accumulate relative motion from events (thread-safe, no SDL polling) */
+    if (e->cam_mouse_look && ev->type == SDL_EVENT_MOUSE_MOTION) {
+        e->cam_accum_dx += ev->motion.xrel;
+        e->cam_accum_dy += ev->motion.yrel;
+        return 1;
     }
 
     /* Mouse-look: right-button drag, or left-button drag inside editor panel (away from gizmo). */
@@ -10717,10 +10729,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         evwin = SDL_GetWindowFromEvent(ev);
         {
             float lx, ly;
-            if (panel_event_hit(d, PANEL_PROFILER, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
-                e->prof_mouse_x = lx;
-                e->prof_mouse_y = ly;
-            }
             if (panel_event_hit(d, PANEL_SCENE_TREE, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
                 e->scene_tree_mouse_x = lx;
                 e->scene_tree_mouse_y = ly;
@@ -10734,14 +10742,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             } else {
                 e->project_browser_mouse_x = -10000.0f;
                 e->project_browser_mouse_y = -10000.0f;
-            }
-            if (panel_event_hit(d, PANEL_CACHE_PROFILER, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
-                e->cache_prof_mouse_x = lx;
-                e->cache_prof_mouse_y = ly;
-            }
-            if (panel_event_hit(d, PANEL_CPU_PROFILER, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
-                e->cpu_prof_mouse_x = lx;
-                e->cpu_prof_mouse_y = ly;
             }
             if (panel_event_hit(d, PANEL_INSPECTOR, evwin, ev->motion.x, ev->motion.y, &lx, &ly)) {
                 e->inspector_mouse_x = lx;
@@ -10783,10 +10783,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->inspector_scroll_y += ev->wheel.y * 3.0f;
                 consumed = 1;
             }
-            if (panel_event_hit(d, PANEL_PROFILER, evwin, mx, my, NULL, NULL)) {
-                e->prof_scroll_y += ev->wheel.y * 3.0f;
-                consumed = 1;
-            }
             if (panel_event_hit(d, PANEL_SCENE_TREE, evwin, mx, my, NULL, NULL)) {
                 e->scene_tree_scroll_y += ev->wheel.y * 3.0f;
                 consumed = 1;
@@ -10794,37 +10790,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             if (panel_event_hit(d, PANEL_ASSETS, evwin, mx, my, NULL, NULL)) {
                 e->project_browser_scroll_y += ev->wheel.y * 3.0f;
                 consumed = 1;
-            }
-            if (panel_event_hit(d, PANEL_CACHE_PROFILER, evwin, mx, my, NULL, NULL)) {
-                e->cache_prof_scroll_y += ev->wheel.y * 3.0f;
-                consumed = 1;
-            }
-            {
-                float lx = 0.0f, ly = 0.0f;
-                if (panel_event_hit(d, PANEL_CPU_PROFILER, evwin, mx, my, &lx, &ly)) {
-                    int in_flame = 0;
-                    float pan_input = 0.0f;
-                    int shift_down = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
-                    if (e->cpu_prof_flame_w > 1.0f && e->cpu_prof_flame_h > 1.0f) {
-                        if (lx >= e->cpu_prof_flame_x &&
-                            lx <= e->cpu_prof_flame_x + e->cpu_prof_flame_w &&
-                            ly >= e->cpu_prof_flame_y &&
-                            ly <= e->cpu_prof_flame_y + e->cpu_prof_flame_h) {
-                            in_flame = 1;
-                        }
-                    }
-                    if (in_flame) {
-                        pan_input = ev->wheel.x;
-                        if (shift_down && pan_input == 0.0f) pan_input = ev->wheel.y;
-                        if (pan_input != 0.0f) e->cpu_prof_flame_pan_wheel += pan_input;
-                        if (!shift_down || ev->wheel.x != 0.0f) {
-                            if (ev->wheel.y != 0.0f) e->cpu_prof_flame_zoom_wheel += ev->wheel.y;
-                        }
-                    } else {
-                        e->cpu_prof_scroll_y += ev->wheel.y * 3.0f;
-                    }
-                    consumed = 1;
-                }
             }
             /* Forward scroll to Clay debug view when active */
             if (!consumed && e->clay_debug_open &&
@@ -10840,14 +10805,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         evwin = SDL_GetWindowFromEvent(ev);
         {
             float lx, ly;
-            e->prof_mouse_down = panel_event_hit(d, PANEL_PROFILER, evwin,
-                ev->button.x, ev->button.y, &lx, &ly);
-            if (e->prof_mouse_down) {
-                e->prof_mouse_x = lx;
-                e->prof_mouse_y = ly;
-                e->prof_click = 1;
-            }
-
             e->scene_tree_mouse_down = panel_event_hit(d, PANEL_SCENE_TREE, evwin,
                 ev->button.x, ev->button.y, &lx, &ly);
             if (e->scene_tree_mouse_down) {
@@ -10865,22 +10822,6 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 e->project_browser_click = 1;
             }
 
-            e->cache_prof_mouse_down = panel_event_hit(d, PANEL_CACHE_PROFILER, evwin,
-                ev->button.x, ev->button.y, &lx, &ly);
-            if (e->cache_prof_mouse_down) {
-                e->cache_prof_mouse_x = lx;
-                e->cache_prof_mouse_y = ly;
-                e->cache_prof_click = 1;
-            }
-
-            e->cpu_prof_mouse_down = panel_event_hit(d, PANEL_CPU_PROFILER, evwin,
-                ev->button.x, ev->button.y, &lx, &ly);
-            if (e->cpu_prof_mouse_down) {
-                e->cpu_prof_mouse_x = lx;
-                e->cpu_prof_mouse_y = ly;
-                e->cpu_prof_click = 1;
-            }
-
             e->inspector_mouse_down = panel_event_hit(d, PANEL_INSPECTOR, evwin,
                 ev->button.x, ev->button.y, &lx, &ly);
             if (e->inspector_mouse_down) {
@@ -10891,14 +10832,9 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         }
     }
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_UP && ev->button.button == SDL_BUTTON_LEFT) {
-        e->prof_mouse_down = 0;
-        e->prof_split_dragging = 0;
         e->scene_tree_mouse_down = 0;
         e->scene_tree_click_shift = 0;
         e->project_browser_mouse_down = 0;
-        e->cache_prof_mouse_down = 0;
-        e->cpu_prof_mouse_down = 0;
-        e->cpu_prof_minimap_dragging = 0;
         e->inspector_mouse_down = 0;
     }
 

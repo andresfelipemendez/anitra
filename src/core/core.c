@@ -1,6 +1,6 @@
 #include "core.h"
 #include "externals.h"
-#include "cpu_profiler.h"
+/* cpu_profiler removed — Tracy replaces it */
 #include "loadlibrary.h"
 #include <stdio.h>
 
@@ -76,22 +76,105 @@ static dll_time_t last_core_time;
 /* --- profiler wiring --- */
 
 static void wire_editor_profiler(void) {
+    /* CPU profiler wiring removed — Tracy replaces it.
+       assign_cpu_prof_fns still exists as a no-op stub in editor.dll. */
     typedef void (*assign_cpu_prof_fns_t)(
         void(*)(const char*), void(*)(void), int(*)(void),
         void*, void*, int(*)(void));
     assign_cpu_prof_fns_t assign_cpu = (assign_cpu_prof_fns_t)getfunction(editor_lib, "assign_cpu_prof_fns");
-    if (assign_cpu) assign_cpu(
-        ext_cpu_zone_begin, ext_cpu_zone_end,
-        cpu_prof_get_capture_enabled,
-        (void*)cpu_prof_get_frame_at_offset,
-        (void*)cpu_prof_get_frame_id_at_offset,
-        cpu_prof_get_history_count);
+    if (assign_cpu) assign_cpu(NULL, NULL, NULL, NULL, NULL, NULL);
 }
 
 static void wire_engine_profiler(void) {
     typedef void (*assign_profiler_fns_t)(void(*)(const char*), void(*)(void), void(*)(const char*), void(*)(void));
     assign_profiler_fns_t assign_pfns = (assign_profiler_fns_t)getfunction(engine_lib, "assign_profiler_fns");
     if (assign_pfns) assign_pfns(ext_cache_zone_begin, ext_cache_zone_end, ext_cpu_zone_begin, ext_cpu_zone_end);
+}
+
+/* --- Engine DLL reload helper --- */
+
+static void reload_engine_dll(dll_time_t cur) {
+  if (engine_lib) {
+    destroy_engine();
+    unloadlibrary(engine_lib);
+    engine_lib = NULL;
+    assign_init(NULL);
+    assign_destroy(NULL);
+    assign_update(NULL);
+  }
+
+  printf("Reloading engine...\n");
+  copylibrary("engine", engine_copy_name);
+  engine_lib = loadlibrary(engine_copy_name);
+  if (!engine_lib) {
+    fprintf(stderr, "Failed to reload %s.dll — function pointers cleared\n", engine_copy_name);
+    return;
+  }
+
+  {
+    engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine");
+    engine_destroy_fn new_destroy = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
+    engine_update_fn new_update = (engine_update_fn)getfunction(engine_lib, "update_engine");
+
+    if (!new_init || !new_destroy || !new_update) {
+      fprintf(stderr, "Failed to get engine functions after reload\n");
+      unloadlibrary(engine_lib);
+      engine_lib = NULL;
+      return;
+    }
+
+    assign_init(new_init);
+    assign_destroy(new_destroy);
+    assign_update(new_update);
+    wire_engine_profiler();
+    reload_project();
+    init_engine();
+    last_engine_time = cur;
+  }
+}
+
+/* --- Editor DLL reload helper --- */
+
+static void reload_editor_dll(dll_time_t cur) {
+  if (editor_lib) {
+    destroy_editor();
+    unloadlibrary(editor_lib);
+    editor_lib = NULL;
+    assign_editor_init(NULL);
+    assign_editor_destroy(NULL);
+    assign_editor_update(NULL);
+    assign_editor_handle_event(NULL);
+  }
+
+  printf("Reloading editor...\n");
+  copylibrary("editor", editor_copy_name);
+  editor_lib = loadlibrary(editor_copy_name);
+  if (!editor_lib) {
+    fprintf(stderr, "Failed to reload %s.dll — editor function pointers cleared\n", editor_copy_name);
+    return;
+  }
+
+  {
+    editor_init_fn new_init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
+    editor_destroy_fn new_destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
+    editor_update_fn new_update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
+    editor_handle_event_fn new_handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
+
+    if (!new_init_ed || !new_destroy_ed || !new_update_ed) {
+      fprintf(stderr, "Failed to get editor functions after reload\n");
+      unloadlibrary(editor_lib);
+      editor_lib = NULL;
+      return;
+    }
+
+    assign_editor_init(new_init_ed);
+    assign_editor_destroy(new_destroy_ed);
+    assign_editor_update(new_update_ed);
+    assign_editor_handle_event(new_handle_ev);
+    wire_editor_profiler();
+    init_editor();
+    last_editor_time = cur;
+  }
 }
 
 EXPORT int init_core(const char *project_path) {
@@ -187,140 +270,18 @@ EXPORT int init_core(const char *project_path) {
 
 int begin_game_loop(void) {
   while (1) {
-    /* Check engine.dll timestamp */
-    {
-      dll_time_t cur = get_dll_mtime("engine");
-      if (dll_time_changed(cur, last_engine_time)) {
+    int need_engine_reload = 0;
+    int need_editor_reload = 0;
+    dll_time_t cur_engine, cur_editor;
 
-        if (!engine_lib) {
-          /* Engine was NULL from a previous failed reload — retry */
-          copylibrary("engine", engine_copy_name);
-          engine_lib = loadlibrary(engine_copy_name);
-          if (engine_lib) {
-            engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine");
-            engine_destroy_fn new_destroy = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
-            engine_update_fn new_update = (engine_update_fn)getfunction(engine_lib, "update_engine");
-            if (!new_init || !new_destroy || !new_update) {
-              fprintf(stderr, "Failed to get engine functions after reload\n");
-              unloadlibrary(engine_lib);
-              engine_lib = NULL;
-            } else {
-              assign_init(new_init);
-              assign_destroy(new_destroy);
-              assign_update(new_update);
-              wire_engine_profiler();
-              reload_project();
-              init_engine();
-              last_engine_time = cur;
-            }
-          } else {
-            fprintf(stderr, "Engine library reload failed - will retry on next change\n");
-          }
-        } else {
-          destroy_engine();
-          printf("Reloading engine...\n");
+    /* Check DLL timestamps */
+    cur_engine = get_dll_mtime("engine");
+    if (dll_time_changed(cur_engine, last_engine_time))
+      need_engine_reload = 1;
 
-          unloadlibrary(engine_lib);
-          engine_lib = NULL;
-          assign_init(NULL);
-          assign_destroy(NULL);
-          assign_update(NULL);
-
-          copylibrary("engine", engine_copy_name);
-          engine_lib = loadlibrary(engine_copy_name);
-          if (!engine_lib) {
-            fprintf(stderr, "Failed to reload %s.dll — function pointers cleared\n", engine_copy_name);
-          } else {
-            engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine");
-            engine_destroy_fn new_destroy = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
-            engine_update_fn new_update = (engine_update_fn)getfunction(engine_lib, "update_engine");
-
-            if (!new_init || !new_destroy || !new_update) {
-              fprintf(stderr, "Failed to get engine functions after reload\n");
-              unloadlibrary(engine_lib);
-              engine_lib = NULL;
-            } else {
-              assign_init(new_init);
-              assign_destroy(new_destroy);
-              assign_update(new_update);
-              wire_engine_profiler();
-              reload_project();
-              init_engine();
-              last_engine_time = cur;
-            }
-          }
-        }
-      }
-    }
-
-    /* Check editor.dll timestamp */
-    {
-      dll_time_t cur = get_dll_mtime("editor");
-      if (dll_time_changed(cur, last_editor_time)) {
-
-        if (!editor_lib) {
-          /* Editor was NULL from a previous failed reload — retry */
-          copylibrary("editor", editor_copy_name);
-          editor_lib = loadlibrary(editor_copy_name);
-          if (editor_lib) {
-            editor_init_fn new_init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
-            editor_destroy_fn new_destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
-            editor_update_fn new_update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
-            editor_handle_event_fn new_handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
-            if (!new_init_ed || !new_destroy_ed || !new_update_ed) {
-              fprintf(stderr, "Failed to get editor functions after reload\n");
-              unloadlibrary(editor_lib);
-              editor_lib = NULL;
-            } else {
-              assign_editor_init(new_init_ed);
-              assign_editor_destroy(new_destroy_ed);
-              assign_editor_update(new_update_ed);
-              assign_editor_handle_event(new_handle_ev);
-              wire_editor_profiler();
-              init_editor();
-              last_editor_time = cur;
-            }
-          } else {
-            fprintf(stderr, "Editor library reload failed - will retry on next change\n");
-          }
-        } else {
-          destroy_editor();
-          printf("Reloading editor...\n");
-
-          unloadlibrary(editor_lib);
-          editor_lib = NULL;
-          assign_editor_init(NULL);
-          assign_editor_destroy(NULL);
-          assign_editor_update(NULL);
-          assign_editor_handle_event(NULL);
-
-          copylibrary("editor", editor_copy_name);
-          editor_lib = loadlibrary(editor_copy_name);
-          if (!editor_lib) {
-            fprintf(stderr, "Failed to reload %s.dll — editor function pointers cleared\n", editor_copy_name);
-          } else {
-            editor_init_fn new_init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
-            editor_destroy_fn new_destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
-            editor_update_fn new_update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
-            editor_handle_event_fn new_handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
-
-            if (!new_init_ed || !new_destroy_ed || !new_update_ed) {
-              fprintf(stderr, "Failed to get editor functions after reload\n");
-              unloadlibrary(editor_lib);
-              editor_lib = NULL;
-            } else {
-              assign_editor_init(new_init_ed);
-              assign_editor_destroy(new_destroy_ed);
-              assign_editor_update(new_update_ed);
-              assign_editor_handle_event(new_handle_ev);
-              wire_editor_profiler();
-              init_editor();
-              last_editor_time = cur;
-            }
-          }
-        }
-      }
-    }
+    cur_editor = get_dll_mtime("editor");
+    if (dll_time_changed(cur_editor, last_editor_time))
+      need_editor_reload = 1;
 
     /* Check core.dll timestamp — signal main.exe to reload */
     {
@@ -330,6 +291,18 @@ int begin_game_loop(void) {
         return 1;
       }
     }
+
+    /* Sync editor thread before any DLL reload.
+       This ensures the editor thread is idle and not executing
+       code from a DLL we're about to unload. */
+    if (need_engine_reload || need_editor_reload)
+      sync_editor_thread();
+
+    if (need_engine_reload)
+      reload_engine_dll(cur_engine);
+
+    if (need_editor_reload)
+      reload_editor_dll(cur_editor);
 
     if (!update_externals()) break;
   }

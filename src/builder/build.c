@@ -2350,6 +2350,18 @@ __declspec(dllexport) int init_builder(void)
     if (find_tools() != 0) return 1;
     return build_all();
 }
+
+/* Start forge file-watcher thread (call after init_builder) */
+__declspec(dllexport) int start_forge(void)
+{
+    return start_forge_thread();
+}
+
+/* Stop forge file-watcher thread (call before unloading build.dll) */
+__declspec(dllexport) void stop_forge(void)
+{
+    stop_forge_thread();
+}
 #else
 /* EXE entry point — bootstrapped by build.bat */
 int main(int argc, char **argv)
