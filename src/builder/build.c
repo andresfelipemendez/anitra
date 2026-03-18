@@ -1650,8 +1650,6 @@ static const char *shader_sources[] = {
     "debug_lines_fs.glsl",
     "ui_rect_vs.glsl",
     "ui_rect_fs.glsl",
-    "font_vs.glsl",
-    "font_fs.glsl",
     "mesh_vs.glsl",
     "mesh_fs.glsl",
     "editor_line_vs.glsl",

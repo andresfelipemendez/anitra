@@ -18,8 +18,6 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
-#include "msdf_gen.h"
-
 #define SLUG_FONT_IMPL
 #include "slug_font.h"
 
@@ -59,9 +57,6 @@ static SDL_GPUGraphicsPipeline *line_pipeline = NULL;
 // UI rect pipeline (Clay rectangles)
 static SDL_GPUGraphicsPipeline *ui_rect_pipeline = NULL;
 
-// Font pipeline (vector text)
-static SDL_GPUGraphicsPipeline *font_pipeline = NULL;
-
 // Mesh (3D skinned) pipeline
 static SDL_GPUGraphicsPipeline *mesh_pipeline = NULL;
 static SDL_GPUSampler *mesh_sampler = NULL;
@@ -73,11 +68,6 @@ static SDL_GPUTexture *white_texture = NULL;
 #define MAX_BONES (ANIM_SM_MAX_ENTITIES * ANIM_SM_MAX_JOINTS)
 #define FLOOR_INSTANCE_MAX 64
 
-// Font MSDF atlas (legacy — kept during Slug transition)
-static SDL_GPUTexture *font_atlas_texture = NULL;
-static SDL_GPUSampler *font_atlas_sampler = NULL;
-static SDL_GPUTexture *icon_atlas_texture = NULL;
-static SDL_GPUSampler *icon_atlas_sampler = NULL;
 
 // Slug font rendering
 static SDL_GPUTexture *slug_curve_texture = NULL;
@@ -87,8 +77,12 @@ static SDL_GPUTexture *icon_slug_band_texture = NULL;
 static SDL_GPUSampler *slug_sampler = NULL;
 static SDL_GPUGraphicsPipeline *slug_pipeline = NULL;
 static slug_glyph slug_glyphs[128];
-static slug_glyph icon_slug_glyphs[128];
 static float slug_ascent, slug_descent, slug_line_gap;
+/* Icon slug glyphs — sparse codepoint lookup */
+#define ICON_SLUG_MAX 32
+static uint32_t icon_slug_cps[ICON_SLUG_MAX];
+static slug_glyph icon_slug_data[ICON_SLUG_MAX];
+static int icon_slug_count = 0;
 
 // HarfBuzz
 static hb_font_t *hb_editor_font = NULL;
@@ -165,12 +159,6 @@ typedef struct ui_rect_vertex {
     float x, y;
     float r, g, b, a;
 } ui_rect_vertex;
-
-typedef struct font_vertex {
-    float x, y;       // screen position
-    float u, v;        // UV into MSDF atlas
-    float r, g, b, a;  // text color
-} font_vertex;
 
 typedef struct slug_vertex {
     float pos[4];   /* xy=screen position, zw=outward normal */
@@ -431,7 +419,7 @@ static void draw_scene_meshes(SDL_GPURenderPass *render_pass,
 }
 
 // ---------------------------------------------------------------------------
-// Font data (MSDF atlas)
+// Font data
 // ---------------------------------------------------------------------------
 
 #define BOOTSTRAP_ICON_FONT_PATH "assets/fonts/bootstrap-icons.ttf"
@@ -443,25 +431,14 @@ static void draw_scene_meshes(SDL_GPURenderPass *render_pass,
 #define BI_ICON_ARROW_DOWN       0xF128u
 #define BI_ICON_ARROW_RIGHT      0xF138u
 #define BI_ICON_ARROW_UP         0xF148u
-#define ICON_GLYPH_MAX           16
-
-typedef struct icon_glyph_entry {
-    uint32_t cp;
-    msdf_glyph glyph;
-} icon_glyph_entry;
 
 static stbtt_fontinfo font_stb_info;
 static unsigned char *font_ttf_buffer = NULL;
 static size_t font_ttf_size = 0;
-static msdf_glyph font_glyphs[128];
-static float font_ascent, font_descent, font_line_gap;
 
 static stbtt_fontinfo icon_stb_info;
 static unsigned char *icon_ttf_buffer = NULL;
 static size_t icon_ttf_size = 0;
-static icon_glyph_entry icon_glyphs[ICON_GLYPH_MAX];
-static int icon_glyph_count = 0;
-static float icon_font_ascent, icon_font_descent, icon_font_line_gap;
 
 // ---------------------------------------------------------------------------
 // File pre-cache (background thread reads all boot files into memory)
@@ -809,126 +786,37 @@ SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
 }
 
 // ---------------------------------------------------------------------------
-// MSDF atlas disk cache
+// Font loading (Slug curve data)
 // ---------------------------------------------------------------------------
 
-#define MSDF_CACHE_MAGIC   0x4644534Du  /* 'MSDF' */
-#define MSDF_CACHE_VERSION 2u           /* bump when format or MSDF algorithm changes */
-
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint64_t font_fp;        /* FNV-1a fingerprint of TTF file */
-    uint32_t source_size;    /* MSDF_SOURCE_SIZE at generation time */
-    uint32_t atlas_w, atlas_h;
-    uint32_t glyph_count;
-    float    ascent, descent, line_gap;
-} msdf_cache_header;
-
-static uint64_t ttf_fingerprint(const unsigned char *data, size_t size) {
-    uint64_t hash = 14695981039346656037ULL;
-    size_t i, n;
-    for (i = 0; i < 8; i++) {
-        hash ^= (size >> (i * 8)) & 0xFF;
-        hash *= 1099511628211ULL;
+static const slug_glyph *icon_slug_lookup(uint32_t cp) {
+    int i;
+    for (i = 0; i < icon_slug_count; i++) {
+        if (icon_slug_cps[i] == cp) return &icon_slug_data[i];
     }
-    n = size < 4096 ? size : 4096;
-    for (i = 0; i < n; i++) {
-        hash ^= data[i];
-        hash *= 1099511628211ULL;
-    }
-    return hash;
+    return NULL;
 }
 
-/* Try loading cached atlas. Returns 1 on success, 0 on miss/invalid. */
-static int msdf_cache_load(const char *cache_path, uint64_t expected_fp,
-                           void *glyphs, size_t glyph_stride, int glyph_count,
-                           msdf_atlas *atlas,
-                           float *ascent, float *descent, float *line_gap)
-{
-    FILE *f = fopen(cache_path, "rb");
-    msdf_cache_header hdr;
-    uint32_t pixel_size;
-    if (!f) return 0;
-
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1) goto fail;
-    if (hdr.magic != MSDF_CACHE_MAGIC) goto fail;
-    if (hdr.version != MSDF_CACHE_VERSION) goto fail;
-    if (hdr.font_fp != expected_fp) goto fail;
-    if (hdr.source_size != MSDF_SOURCE_SIZE) goto fail;
-    if ((int)hdr.glyph_count != glyph_count) goto fail;
-
-    if (fread(glyphs, glyph_stride, (size_t)glyph_count, f) != (size_t)glyph_count) goto fail;
-
-    atlas->width = (int)hdr.atlas_w;
-    atlas->height = (int)hdr.atlas_h;
-    pixel_size = hdr.atlas_w * hdr.atlas_h * 4;
-    atlas->pixels = (unsigned char *)malloc(pixel_size);
-    cpu_prof_alloc(atlas->pixels, pixel_size);
-    if (!atlas->pixels) goto fail;
-    if (fread(atlas->pixels, 1, pixel_size, f) != pixel_size) {
-        cpu_prof_free(atlas->pixels);
-        free(atlas->pixels);
-        atlas->pixels = NULL;
-        goto fail;
+static uint64_t ttf_fingerprint(const unsigned char *data, size_t len) {
+    /* FNV-1a 64-bit hash */
+    uint64_t h = 14695981039346656037ULL;
+    size_t i;
+    for (i = 0; i < len; i++) {
+        h ^= data[i];
+        h *= 1099511628211ULL;
     }
-
-    *ascent = hdr.ascent;
-    *descent = hdr.descent;
-    *line_gap = hdr.line_gap;
-    fclose(f);
-    printf("[msdf_cache] HIT  %s\n", cache_path);
-    return 1;
-
-fail:
-    fclose(f);
-    return 0;
+    return h;
 }
 
-static void msdf_cache_save(const char *cache_path, uint64_t font_fp,
-                            const void *glyphs, size_t glyph_stride, int glyph_count,
-                            const msdf_atlas *atlas,
-                            float ascent, float descent, float line_gap)
-{
-    FILE *f = fopen(cache_path, "wb");
-    msdf_cache_header hdr;
-    uint32_t pixel_size;
-    if (!f) { fprintf(stderr, "[msdf_cache] failed to write %s\n", cache_path); return; }
-
-    hdr.magic = MSDF_CACHE_MAGIC;
-    hdr.version = MSDF_CACHE_VERSION;
-    hdr.font_fp = font_fp;
-    hdr.source_size = MSDF_SOURCE_SIZE;
-    hdr.atlas_w = (uint32_t)atlas->width;
-    hdr.atlas_h = (uint32_t)atlas->height;
-    hdr.glyph_count = (uint32_t)glyph_count;
-    hdr.ascent = ascent;
-    hdr.descent = descent;
-    hdr.line_gap = line_gap;
-
-    fwrite(&hdr, sizeof(hdr), 1, f);
-    fwrite(glyphs, glyph_stride, (size_t)glyph_count, f);
-    pixel_size = (uint32_t)(atlas->width * atlas->height * 4);
-    fwrite(atlas->pixels, 1, pixel_size, f);
-    fclose(f);
-    printf("[msdf_cache] MISS saved %s\n", cache_path);
-}
-
-// ---------------------------------------------------------------------------
-// Font loading (MSDF atlas)
-// ---------------------------------------------------------------------------
-
-static int font_load_msdf(const char *path) {
+static int font_load_slug(const char *path) {
     size_t size = 0;
     uint64_t fp;
-    msdf_atlas atlas;
 
     BOOT_PROF_BEGIN(TP_FONT_FILE_LOAD);
     {
         size_t cached_size = 0;
         void *cached = precache_get(path, &cached_size);
         if (cached) {
-            /* Use pre-cached data — make a copy because stbtt keeps the pointer */
             font_ttf_buffer = (unsigned char *)malloc(cached_size);
             cpu_prof_alloc(font_ttf_buffer, cached_size);
             memcpy(font_ttf_buffer, cached, cached_size);
@@ -948,103 +836,20 @@ static int font_load_msdf(const char *path) {
         return -1;
     }
 
+    /* Build Slug curve+band data */
     BOOT_PROF_BEGIN(TP_FONT_ATLAS_BUILD);
     fp = ttf_fingerprint(font_ttf_buffer, font_ttf_size);
-    if (!msdf_cache_load("build/Debug/font_atlas.cache", fp,
-                         font_glyphs, sizeof(msdf_glyph), 128,
-                         &atlas, &font_ascent, &font_descent, &font_line_gap)) {
-        if (msdf_build_atlas(&font_stb_info, font_glyphs, 32, 127, &atlas,
-                              &font_ascent, &font_descent, &font_line_gap) != 0) {
-            fprintf(stderr, "Failed to build MSDF atlas\n");
-            return -1;
-        }
-        msdf_cache_save("build/Debug/font_atlas.cache", fp,
-                        font_glyphs, sizeof(msdf_glyph), 128,
-                        &atlas, font_ascent, font_descent, font_line_gap);
-    }
-
-    /* Upload atlas to GPU texture */
-    BOOT_PROF_BEGIN(TP_FONT_GPU_UPLOAD);
-    {
-        SDL_GPUTextureCreateInfo tex_info = {0};
-        tex_info.type = SDL_GPU_TEXTURETYPE_2D;
-        tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        tex_info.width = (Uint32)atlas.width;
-        tex_info.height = (Uint32)atlas.height;
-        tex_info.layer_count_or_depth = 1;
-        tex_info.num_levels = 1;
-        tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        font_atlas_texture = SDL_CreateGPUTexture(gpu_device, &tex_info);
-        if (!font_atlas_texture) {
-            fprintf(stderr, "Failed to create font atlas texture: %s\n", SDL_GetError());
-            msdf_atlas_free(&atlas);
-            return -1;
-        }
-
-        Uint32 pixel_size = (Uint32)(atlas.width * atlas.height * 4);
-        SDL_GPUTransferBufferCreateInfo tbi = {0};
-        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tbi.size = pixel_size;
-        SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
-        void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-        memcpy(mapped, atlas.pixels, pixel_size);
-        SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
-
-        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
-        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
-
-        SDL_GPUTextureTransferInfo src = {0};
-        src.transfer_buffer = xfer;
-        src.pixels_per_row = (Uint32)atlas.width;
-        src.rows_per_layer = (Uint32)atlas.height;
-
-        SDL_GPUTextureRegion dst = {0};
-        dst.texture = font_atlas_texture;
-        dst.w = (Uint32)atlas.width;
-        dst.h = (Uint32)atlas.height;
-        dst.d = 1;
-
-        SDL_UploadToGPUTexture(copy, &src, &dst, false);
-        SDL_EndGPUCopyPass(copy);
-        SDL_SubmitGPUCommandBuffer(cmd);
-        SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
-    }
-
-    /* Create sampler for MSDF atlas (linear filtering is essential for SDF) */
-    BOOT_PROF_BEGIN(TP_FONT_SAMPLER);
-    {
-        SDL_GPUSamplerCreateInfo samp_info = {0};
-        samp_info.min_filter = SDL_GPU_FILTER_LINEAR;
-        samp_info.mag_filter = SDL_GPU_FILTER_LINEAR;
-        samp_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
-        samp_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        samp_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        samp_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        font_atlas_sampler = SDL_CreateGPUSampler(gpu_device, &samp_info);
-        if (!font_atlas_sampler) {
-            fprintf(stderr, "Failed to create font atlas sampler: %s\n", SDL_GetError());
-            msdf_atlas_free(&atlas);
-            return -1;
-        }
-    }
-
-    msdf_atlas_free(&atlas);
-
-    /* ── Slug font data: build curves+bands from same TTF, upload to GPU ── */
     {
         slug_font_data *sfd = NULL;
         uint32_t sfp = (uint32_t)(fp & 0xFFFFFFFFu);
 
-        /* Try cache first, then build from TTF */
         sfd = (slug_font_data *)calloc(1, sizeof(slug_font_data));
         if (sfd) {
             if (!slug_cache_load(sfd, "build/Debug/inter_slug.cache", sfp)) {
                 slug_font_data_free(sfd);
                 sfd = slug_build_font(font_ttf_buffer, (int)font_ttf_size,
                                        SLUG_DEFAULT_HBANDS, SLUG_DEFAULT_VBANDS);
-                if (sfd) {
-                    slug_cache_save(sfd, "build/Debug/inter_slug.cache", sfp);
-                }
+                if (sfd) slug_cache_save(sfd, "build/Debug/inter_slug.cache", sfp);
             }
         }
 
@@ -1065,7 +870,6 @@ static int font_load_msdf(const char *path) {
                 ti.num_levels = 1;
                 ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
                 slug_curve_texture = SDL_CreateGPUTexture(gpu_device, &ti);
-
                 if (slug_curve_texture) {
                     Uint32 sz = (Uint32)(SLUG_BAND_TEX_WIDTH * sfd->curve_tex_height * 16);
                     SDL_GPUTransferBufferCreateInfo tbi = {0};
@@ -1076,7 +880,6 @@ static int font_load_msdf(const char *path) {
                     memset(mapped, 0, sz);
                     memcpy(mapped, sfd->curve_texels, (size_t)sfd->curve_texel_count * 16);
                     SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
-
                     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
                     SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
                     SDL_GPUTextureTransferInfo src = {0};
@@ -1095,7 +898,7 @@ static int font_load_msdf(const char *path) {
                 }
             }
 
-            /* Create band texture (RGBA32F) — convert uint→float during upload to avoid denormals */
+            /* Create band texture (uint→float conversion) */
             if (sfd->band_texel_count > 0) {
                 SDL_GPUTextureCreateInfo ti = {0};
                 ti.type = SDL_GPU_TEXTURETYPE_2D;
@@ -1106,7 +909,6 @@ static int font_load_msdf(const char *path) {
                 ti.num_levels = 1;
                 ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
                 slug_band_texture = SDL_CreateGPUTexture(gpu_device, &ti);
-
                 if (slug_band_texture) {
                     Uint32 total_floats = (Uint32)(SLUG_BAND_TEX_WIDTH * sfd->band_tex_height * 4);
                     Uint32 sz = total_floats * sizeof(float);
@@ -1114,20 +916,14 @@ static int font_load_msdf(const char *path) {
                     tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
                     tbi.size = sz;
                     SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
-                    float *mapped = (float *)SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-                    /* Convert uint32 → float to avoid GPU denormal flushing */
+                    float *fmapped = (float *)SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
                     {
                         Uint32 fi;
                         Uint32 src_count = (Uint32)(sfd->band_texel_count * 4);
-                        for (fi = 0; fi < total_floats; fi++) {
-                            if (fi < src_count)
-                                mapped[fi] = (float)sfd->band_texels[fi];
-                            else
-                                mapped[fi] = 0.0f;
-                        }
+                        for (fi = 0; fi < total_floats; fi++)
+                            fmapped[fi] = (fi < src_count) ? (float)sfd->band_texels[fi] : 0.0f;
                     }
                     SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
-
                     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
                     SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
                     SDL_GPUTextureTransferInfo src = {0};
@@ -1146,7 +942,7 @@ static int font_load_msdf(const char *path) {
                 }
             }
 
-            /* Create nearest-neighbor sampler for Slug textures */
+            /* Create sampler */
             if (!slug_sampler) {
                 SDL_GPUSamplerCreateInfo si = {0};
                 si.min_filter = SDL_GPU_FILTER_NEAREST;
@@ -1161,258 +957,19 @@ static int font_load_msdf(const char *path) {
             fprintf(stderr, "[slug] loaded: curve_tex=%dx%d band_tex=%dx%d\n",
                     SLUG_BAND_TEX_WIDTH, sfd->curve_tex_height,
                     SLUG_BAND_TEX_WIDTH, sfd->band_tex_height);
-
             slug_font_data_free(sfd);
         }
     }
-
     return 0;
 }
 
-static const msdf_glyph *icon_glyph_lookup(uint32_t cp) {
-    int i;
-    for (i = 0; i < icon_glyph_count; i++) {
-        if (icon_glyphs[i].cp == cp) {
-            return &icon_glyphs[i].glyph;
-        }
-    }
-    return NULL;
-}
-
-static float msdf_tile_median_sample(const unsigned char *tile, int tw, int th, int x, int y);
-static int msdf_tile_looks_inverted(const unsigned char *tile, int tw, int th);
-static void msdf_tile_invert(unsigned char *tile, int tw, int th);
-
-static int msdf_build_atlas_for_list(stbtt_fontinfo *info,
-                                     const uint32_t *codepoints,
-                                     int codepoint_count,
-                                     icon_glyph_entry *out_glyphs,
-                                     int out_cap,
-                                     int *out_count,
-                                     msdf_atlas *atlas,
-                                     float *out_ascent,
-                                     float *out_descent,
-                                     float *out_line_gap) {
-    float scale;
-    float inv_source;
-    int i;
-
-    if (!info || !codepoints || codepoint_count <= 0 || !out_glyphs || out_cap <= 0 ||
-        !out_count || !atlas || !out_ascent || !out_descent || !out_line_gap) {
-        return -1;
-    }
-
-    scale = stbtt_ScaleForPixelHeight(info, (float)MSDF_SOURCE_SIZE);
-    inv_source = 1.0f / (float)MSDF_SOURCE_SIZE;
-
-    {
-        int asc, desc, lg;
-        float unit_scale;
-        stbtt_GetFontVMetrics(info, &asc, &desc, &lg);
-        unit_scale = stbtt_ScaleForPixelHeight(info, 1.0f);
-        *out_ascent = (float)asc * unit_scale;
-        *out_descent = (float)desc * unit_scale;
-        *out_line_gap = (float)lg * unit_scale;
-    }
-
-    memset(out_glyphs, 0, (size_t)out_cap * sizeof(*out_glyphs));
-    *out_count = 0;
-    msdf_atlas_init(atlas);
-
-    for (i = 0; i < codepoint_count; i++) {
-        uint32_t cp = codepoints[i];
-        int glyph_idx = stbtt_FindGlyphIndex(info, (int)cp);
-        msdf_glyph g;
-        int ix0, iy0, ix1, iy1;
-        int bw, bh;
-        int tw, th;
-        int ax, ay;
-
-        memset(&g, 0, sizeof(g));
-
-        {
-            int adv, lsb;
-            float unit_scale = stbtt_ScaleForPixelHeight(info, 1.0f);
-            stbtt_GetGlyphHMetrics(info, glyph_idx, &adv, &lsb);
-            g.advance = (float)adv * unit_scale;
-        }
-
-        stbtt_GetGlyphBitmapBox(info, glyph_idx, scale, scale, &ix0, &iy0, &ix1, &iy1);
-        bw = ix1 - ix0;
-        bh = iy1 - iy0;
-
-        if (bw <= 0 || bh <= 0) {
-            if (*out_count < out_cap) {
-                out_glyphs[*out_count].cp = cp;
-                out_glyphs[*out_count].glyph = g;
-                (*out_count)++;
-            }
-            continue;
-        }
-
-        tw = bw + 2 * MSDF_RECT_MARGIN;
-        th = bh + 2 * MSDF_RECT_MARGIN;
-        g.xoff = (float)(ix0 - MSDF_RECT_MARGIN) * inv_source;
-        g.yoff = (float)(iy0 - MSDF_RECT_MARGIN) * inv_source;
-        g.width = tw;
-        g.height = th;
-
-        {
-            msdf_shape shape;
-            unsigned char *tile;
-            int py, px;
-
-            msdf_extract_shape(&shape, info, glyph_idx, scale);
-            msdf_color_edges(&shape);
-
-            tile = (unsigned char *)calloc((size_t)(tw * th * 4), 1);
-            if (!tile) {
-                msdf_shape_free(&shape);
-                msdf_atlas_free(atlas);
-                return -1;
-            }
-
-            for (py = 0; py < th; py++) {
-                for (px = 0; px < tw; px++) {
-                    float outline_x = (float)(ix0 + px - MSDF_RECT_MARGIN);
-                    float outline_y = -(float)(iy0 + py - MSDF_RECT_MARGIN);
-                    msdf_signed_distance sd_r = {-DBL_MAX, 0};
-                    msdf_signed_distance sd_g = {-DBL_MAX, 0};
-                    msdf_signed_distance sd_b = {-DBL_MAX, 0};
-                    int cii, eii;
-                    unsigned char *px_out;
-                    float r;
-                    float gg;
-                    float b;
-                    float a;
-
-                    for (cii = 0; cii < shape.contour_count; cii++) {
-                        const msdf_contour *c = &shape.contours[cii];
-                        for (eii = 0; eii < c->edge_count; eii++) {
-                            const msdf_edge *e = &c->edges[eii];
-                            msdf_signed_distance sd = msdf_edge_sd(e, (double)outline_x, (double)outline_y);
-
-                            if ((e->color & MSDF_RED)   && msdf_sd_lt(sd, sd_r)) sd_r = sd;
-                            if ((e->color & MSDF_GREEN) && msdf_sd_lt(sd, sd_g)) sd_g = sd;
-                            if ((e->color & MSDF_BLUE)  && msdf_sd_lt(sd, sd_b)) sd_b = sd;
-                        }
-                    }
-
-                    r = 0.5f + (float)(sd_r.distance / MSDF_PIXEL_RANGE);
-                    gg = 0.5f + (float)(sd_g.distance / MSDF_PIXEL_RANGE);
-                    b = 0.5f + (float)(sd_b.distance / MSDF_PIXEL_RANGE);
-                    a = msdf_medianf(r, gg, b);
-
-                    px_out = tile + (py * tw + px) * 4;
-                    px_out[0] = (unsigned char)(msdf_clampf(r, 0, 1) * 255.0f + 0.5f);
-                    px_out[1] = (unsigned char)(msdf_clampf(gg, 0, 1) * 255.0f + 0.5f);
-                    px_out[2] = (unsigned char)(msdf_clampf(b, 0, 1) * 255.0f + 0.5f);
-                    px_out[3] = (unsigned char)(msdf_clampf(a, 0, 1) * 255.0f + 0.5f);
-                }
-            }
-
-            msdf_error_correct_tile(tile, tw, th, &shape, ix0, iy0);
-            if (msdf_tile_looks_inverted(tile, tw, th)) {
-                msdf_tile_invert(tile, tw, th);
-            }
-
-            if (msdf_atlas_pack(atlas, tile, tw, th, &ax, &ay) != 0) {
-                free(tile);
-                msdf_shape_free(&shape);
-                msdf_atlas_free(atlas);
-                return -1;
-            }
-
-            g.atlas_x = ax;
-            g.atlas_y = ay;
-            g.u0 = (float)ax / (float)atlas->width;
-            g.v0 = (float)ay / (float)atlas->height;
-            g.u1 = (float)(ax + tw) / (float)atlas->width;
-            g.v1 = (float)(ay + th) / (float)atlas->height;
-
-            free(tile);
-            msdf_shape_free(&shape);
-        }
-
-        if (*out_count < out_cap) {
-            out_glyphs[*out_count].cp = cp;
-            out_glyphs[*out_count].glyph = g;
-            (*out_count)++;
-        }
-    }
-
-    return 0;
-}
-
-static float msdf_tile_median_sample(const unsigned char *tile, int tw, int th, int x, int y) {
-    const unsigned char *p;
-    float r, g, b;
-    if (!tile || tw <= 0 || th <= 0) return 0.0f;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    if (x >= tw) x = tw - 1;
-    if (y >= th) y = th - 1;
-    p = tile + ((y * tw + x) * 4);
-    r = (float)p[0] / 255.0f;
-    g = (float)p[1] / 255.0f;
-    b = (float)p[2] / 255.0f;
-    return msdf_medianf(r, g, b);
-}
-
-static int msdf_tile_looks_inverted(const unsigned char *tile, int tw, int th) {
-    int x0 = 0;
-    int y0 = 0;
-    int x1 = tw - 1;
-    int y1 = th - 1;
-    int xm = tw / 2;
-    int ym = th / 2;
-    float avg;
-    if (!tile || tw < 2 || th < 2) return 0;
-
-    avg =
-        msdf_tile_median_sample(tile, tw, th, x0, y0) +
-        msdf_tile_median_sample(tile, tw, th, x1, y0) +
-        msdf_tile_median_sample(tile, tw, th, x0, y1) +
-        msdf_tile_median_sample(tile, tw, th, x1, y1) +
-        msdf_tile_median_sample(tile, tw, th, xm, y0) +
-        msdf_tile_median_sample(tile, tw, th, xm, y1) +
-        msdf_tile_median_sample(tile, tw, th, x0, ym) +
-        msdf_tile_median_sample(tile, tw, th, x1, ym);
-    avg /= 8.0f;
-
-    /* Glyph margins are outside the shape and should be < 0.5 for normal SDF.
-       If background samples trend above 0.5, inside/outside is inverted. */
-    return avg > 0.5f;
-}
-
-static void msdf_tile_invert(unsigned char *tile, int tw, int th) {
-    int i;
-    int total = tw * th;
-    if (!tile || total <= 0) return;
-    for (i = 0; i < total; i++) {
-        unsigned char *p = tile + i * 4;
-        p[0] = (unsigned char)(255 - p[0]);
-        p[1] = (unsigned char)(255 - p[1]);
-        p[2] = (unsigned char)(255 - p[2]);
-        p[3] = (unsigned char)(255 - p[3]);
-    }
-}
-
-static int icon_font_load_msdf(const char *path) {
+static int icon_font_load_slug(const char *path) {
     static const uint32_t icon_codepoints[] = {
-        BI_ICON_PLAY_FILL,
-        BI_ICON_STOP_FILL,
-        BI_ICON_CAMERA,
-        BI_ICON_BOUNDING_BOX,
-        BI_ICON_ARROW_LEFT,
-        BI_ICON_ARROW_DOWN,
-        BI_ICON_ARROW_RIGHT,
-        BI_ICON_ARROW_UP
+        BI_ICON_PLAY_FILL, BI_ICON_STOP_FILL, BI_ICON_CAMERA, BI_ICON_BOUNDING_BOX,
+        BI_ICON_ARROW_LEFT, BI_ICON_ARROW_DOWN, BI_ICON_ARROW_RIGHT, BI_ICON_ARROW_UP
     };
     int expected_icon_count = (int)(sizeof(icon_codepoints) / sizeof(icon_codepoints[0]));
     size_t size = 0;
-    uint64_t fp;
-    msdf_atlas atlas;
 
     BOOT_PROF_BEGIN(TP_ICON_FILE_LOAD);
     {
@@ -1438,107 +995,113 @@ static int icon_font_load_msdf(const char *path) {
         return -1;
     }
 
-    BOOT_PROF_BEGIN(TP_ICON_ATLAS_BUILD);
-    fp = ttf_fingerprint(icon_ttf_buffer, icon_ttf_size);
-    if (msdf_cache_load("build/Debug/icon_atlas.cache", fp,
-                        icon_glyphs, sizeof(icon_glyph_entry), expected_icon_count,
-                        &atlas, &icon_font_ascent, &icon_font_descent, &icon_font_line_gap)) {
-        icon_glyph_count = expected_icon_count;
-    } else {
-        if (msdf_build_atlas_for_list(&icon_stb_info,
-                                      icon_codepoints, expected_icon_count,
-                                      icon_glyphs, ICON_GLYPH_MAX, &icon_glyph_count,
-                                      &atlas,
-                                      &icon_font_ascent,
-                                      &icon_font_descent,
-                                      &icon_font_line_gap) != 0) {
-            fprintf(stderr, "Failed to build icon MSDF atlas\n");
-            return -1;
-        }
-        msdf_cache_save("build/Debug/icon_atlas.cache", fp,
-                        icon_glyphs, sizeof(icon_glyph_entry), icon_glyph_count,
-                        &atlas, icon_font_ascent, icon_font_descent, icon_font_line_gap);
-    }
-
-    BOOT_PROF_BEGIN(TP_ICON_GPU_UPLOAD);
+    /* Build Slug icon data */
     {
-        SDL_GPUTextureCreateInfo tex_info = {0};
-        Uint32 pixel_size;
-        SDL_GPUTransferBufferCreateInfo tbi;
-        SDL_GPUTransferBuffer *xfer;
-        void *mapped;
-        SDL_GPUCommandBuffer *cmd;
-        SDL_GPUCopyPass *copy;
-        SDL_GPUTextureTransferInfo src;
-        SDL_GPUTextureRegion dst;
-        SDL_GPUSamplerCreateInfo samp_info;
+        slug_font_data *sfd = slug_build_font_for_codepoints(
+            icon_ttf_buffer, (int)icon_ttf_size,
+            icon_codepoints, expected_icon_count,
+            SLUG_DEFAULT_HBANDS, SLUG_DEFAULT_VBANDS);
+        if (sfd && sfd->cp_glyph_count > 0) {
+            int si;
+            icon_slug_count = sfd->cp_glyph_count;
+            if (icon_slug_count > ICON_SLUG_MAX) icon_slug_count = ICON_SLUG_MAX;
+            for (si = 0; si < icon_slug_count; si++) {
+                icon_slug_cps[si] = sfd->codepoints[si];
+                icon_slug_data[si] = sfd->cp_glyphs[si];
+            }
 
-        tex_info.type = SDL_GPU_TEXTURETYPE_2D;
-        tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-        tex_info.width = (Uint32)atlas.width;
-        tex_info.height = (Uint32)atlas.height;
-        tex_info.layer_count_or_depth = 1;
-        tex_info.num_levels = 1;
-        tex_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        icon_atlas_texture = SDL_CreateGPUTexture(gpu_device, &tex_info);
-        if (!icon_atlas_texture) {
-            fprintf(stderr, "Failed to create icon atlas texture: %s\n", SDL_GetError());
-            msdf_atlas_free(&atlas);
-            return -1;
+            /* Create icon curve texture */
+            if (sfd->curve_texel_count > 0) {
+                SDL_GPUTextureCreateInfo ti = {0};
+                ti.type = SDL_GPU_TEXTURETYPE_2D;
+                ti.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+                ti.width = SLUG_BAND_TEX_WIDTH;
+                ti.height = (Uint32)sfd->curve_tex_height;
+                ti.layer_count_or_depth = 1;
+                ti.num_levels = 1;
+                ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                icon_slug_curve_texture = SDL_CreateGPUTexture(gpu_device, &ti);
+                if (icon_slug_curve_texture) {
+                    Uint32 sz = (Uint32)(SLUG_BAND_TEX_WIDTH * sfd->curve_tex_height * 16);
+                    SDL_GPUTransferBufferCreateInfo tbi = {0};
+                    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                    tbi.size = sz;
+                    SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
+                    void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
+                    memset(mapped, 0, sz);
+                    memcpy(mapped, sfd->curve_texels, (size_t)sfd->curve_texel_count * 16);
+                    SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
+                    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
+                    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+                    SDL_GPUTextureTransferInfo src = {0};
+                    src.transfer_buffer = xfer;
+                    src.pixels_per_row = SLUG_BAND_TEX_WIDTH;
+                    src.rows_per_layer = (Uint32)sfd->curve_tex_height;
+                    SDL_GPUTextureRegion dst = {0};
+                    dst.texture = icon_slug_curve_texture;
+                    dst.w = SLUG_BAND_TEX_WIDTH;
+                    dst.h = (Uint32)sfd->curve_tex_height;
+                    dst.d = 1;
+                    SDL_UploadToGPUTexture(copy, &src, &dst, false);
+                    SDL_EndGPUCopyPass(copy);
+                    SDL_SubmitGPUCommandBuffer(cmd);
+                    SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
+                }
+            }
+
+            /* Create icon band texture (uint→float conversion) */
+            if (sfd->band_texel_count > 0) {
+                SDL_GPUTextureCreateInfo ti = {0};
+                ti.type = SDL_GPU_TEXTURETYPE_2D;
+                ti.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+                ti.width = SLUG_BAND_TEX_WIDTH;
+                ti.height = (Uint32)sfd->band_tex_height;
+                ti.layer_count_or_depth = 1;
+                ti.num_levels = 1;
+                ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                icon_slug_band_texture = SDL_CreateGPUTexture(gpu_device, &ti);
+                if (icon_slug_band_texture) {
+                    Uint32 total_floats = (Uint32)(SLUG_BAND_TEX_WIDTH * sfd->band_tex_height * 4);
+                    Uint32 sz = total_floats * sizeof(float);
+                    SDL_GPUTransferBufferCreateInfo tbi = {0};
+                    tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                    tbi.size = sz;
+                    SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
+                    float *fmapped = (float *)SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
+                    {
+                        Uint32 fi;
+                        Uint32 src_count = (Uint32)(sfd->band_texel_count * 4);
+                        for (fi = 0; fi < total_floats; fi++)
+                            fmapped[fi] = (fi < src_count) ? (float)sfd->band_texels[fi] : 0.0f;
+                    }
+                    SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
+                    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
+                    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+                    SDL_GPUTextureTransferInfo src = {0};
+                    src.transfer_buffer = xfer;
+                    src.pixels_per_row = SLUG_BAND_TEX_WIDTH;
+                    src.rows_per_layer = (Uint32)sfd->band_tex_height;
+                    SDL_GPUTextureRegion dst = {0};
+                    dst.texture = icon_slug_band_texture;
+                    dst.w = SLUG_BAND_TEX_WIDTH;
+                    dst.h = (Uint32)sfd->band_tex_height;
+                    dst.d = 1;
+                    SDL_UploadToGPUTexture(copy, &src, &dst, false);
+                    SDL_EndGPUCopyPass(copy);
+                    SDL_SubmitGPUCommandBuffer(cmd);
+                    SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
+                }
+            }
+
+            fprintf(stderr, "[slug] icons: %d glyphs loaded\n", icon_slug_count);
+            slug_font_data_free(sfd);
         }
-
-        pixel_size = (Uint32)(atlas.width * atlas.height * 4);
-        memset(&tbi, 0, sizeof(tbi));
-        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        tbi.size = pixel_size;
-        xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
-        mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
-        memcpy(mapped, atlas.pixels, pixel_size);
-        SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
-
-        cmd = SDL_AcquireGPUCommandBuffer(gpu_device);
-        copy = SDL_BeginGPUCopyPass(cmd);
-
-        memset(&src, 0, sizeof(src));
-        src.transfer_buffer = xfer;
-        src.pixels_per_row = (Uint32)atlas.width;
-        src.rows_per_layer = (Uint32)atlas.height;
-
-        memset(&dst, 0, sizeof(dst));
-        dst.texture = icon_atlas_texture;
-        dst.w = (Uint32)atlas.width;
-        dst.h = (Uint32)atlas.height;
-        dst.d = 1;
-
-        SDL_UploadToGPUTexture(copy, &src, &dst, false);
-        SDL_EndGPUCopyPass(copy);
-        SDL_SubmitGPUCommandBuffer(cmd);
-        SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
-
-        memset(&samp_info, 0, sizeof(samp_info));
-        samp_info.min_filter = SDL_GPU_FILTER_LINEAR;
-        samp_info.mag_filter = SDL_GPU_FILTER_LINEAR;
-        samp_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
-        samp_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        samp_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        samp_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        icon_atlas_sampler = SDL_CreateGPUSampler(gpu_device, &samp_info);
-        if (!icon_atlas_sampler) {
-            fprintf(stderr, "Failed to create icon atlas sampler: %s\n", SDL_GetError());
-            msdf_atlas_free(&atlas);
-            return -1;
-        }
-    }
-
-    msdf_atlas_free(&atlas);
-    if (icon_glyph_count <= 0) {
-        fprintf(stderr, "Icon font loaded but no supported glyphs were generated.\n");
-        return -1;
     }
     return 0;
 }
 
 // ---------------------------------------------------------------------------
+
 // HarfBuzz init and text measurement
 // ---------------------------------------------------------------------------
 
@@ -1620,7 +1183,7 @@ static int text_contains_icon_cp(const char *text, uint32_t len) {
         uint32_t cp = 0;
         uint32_t next_idx = idx + 1;
         if (!utf8_decode_at(text, len, idx, &cp, &next_idx)) break;
-        if (icon_glyph_lookup(cp)) return 1;
+        if (icon_slug_lookup(cp)) return 1;
         if (next_idx <= idx) break;
         idx = next_idx;
     }
@@ -1764,7 +1327,7 @@ static Clay_Dimensions clay_measure_text(Clay_StringSlice text, Clay_TextElement
     (void)userData;
     float width = font_measure_width(text.chars, text.length, (float)config->fontSize);
     // Ceil to account for pixel snapping in the renderer (prevents glyph clipping)
-    float height = ceilf((float)config->fontSize * (font_ascent - font_descent + font_line_gap));
+    float height = ceilf((float)config->fontSize * (slug_ascent - slug_descent + slug_line_gap));
     return (Clay_Dimensions){ceilf(width + 1.0f), height};
 }
 
@@ -1773,40 +1336,26 @@ static Clay_Dimensions clay_measure_text(Clay_StringSlice text, Clay_TextElement
 // ---------------------------------------------------------------------------
 
 #define MAX_UI_RECT_VERTICES  (4096 * 6)
-#define MAX_FONT_VERTICES     (4096 * 6)
 #define MAX_SLUG_VERTICES     (2048 * 6)
 
 // Per-window UI render state
 typedef struct UIRenderState {
     ui_rect_vertex rect_verts[MAX_UI_RECT_VERTICES];
-    font_vertex    font_verts[MAX_FONT_VERTICES];
-    font_vertex    icon_font_verts[MAX_FONT_VERTICES];
     slug_vertex    slug_verts[MAX_SLUG_VERTICES];
     slug_vertex    icon_slug_verts[MAX_SLUG_VERTICES];
     int            rect_vert_count;
-    int            font_vert_count;
-    int            icon_font_vert_count;
     int            slug_vert_count;
     int            icon_slug_vert_count;
     SDL_GPUBuffer *rect_gpu_buf;
-    SDL_GPUBuffer *font_gpu_buf;
-    SDL_GPUBuffer *icon_font_gpu_buf;
     SDL_GPUBuffer *slug_gpu_buf;
     SDL_GPUBuffer *icon_slug_gpu_buf;
-    /* Persistent buffer capacities (bytes) — only reallocate when size grows */
     Uint32         rect_gpu_cap;
-    Uint32         font_gpu_cap;
-    Uint32         icon_font_gpu_cap;
     Uint32         slug_gpu_cap;
     Uint32         icon_slug_gpu_cap;
     SDL_GPUTransferBuffer *rect_xfer;
-    SDL_GPUTransferBuffer *font_xfer;
-    SDL_GPUTransferBuffer *icon_font_xfer;
     SDL_GPUTransferBuffer *slug_xfer;
     SDL_GPUTransferBuffer *icon_slug_xfer;
     Uint32         rect_xfer_cap;
-    Uint32         font_xfer_cap;
-    Uint32         icon_font_xfer_cap;
     Uint32         slug_xfer_cap;
     Uint32         icon_slug_xfer_cap;
 } UIRenderState;
@@ -1814,36 +1363,6 @@ typedef struct UIRenderState {
 static UIRenderState ui_game = {0};
 static UIRenderState ui_editor_clay = {0};  /* unified editor Clay UI */
 
-static void ui_push_font_quad(UIRenderState *ui, int use_icon_font,
-                              float gx, float gy, float glyph_w, float glyph_h,
-                              const msdf_glyph *mg,
-                              float r, float g, float b, float a) {
-    font_vertex *verts;
-    int *vert_count;
-
-    if (!ui || !mg) return;
-
-    if (use_icon_font) {
-        verts = ui->icon_font_verts;
-        vert_count = &ui->icon_font_vert_count;
-    } else {
-        verts = ui->font_verts;
-        vert_count = &ui->font_vert_count;
-    }
-
-    if (*vert_count + 6 > MAX_FONT_VERTICES) return;
-
-    {
-        font_vertex *v = &verts[*vert_count];
-        v[0] = (font_vertex){gx,            gy,            mg->u0, mg->v0, r, g, b, a};
-        v[1] = (font_vertex){gx + glyph_w,  gy,            mg->u1, mg->v0, r, g, b, a};
-        v[2] = (font_vertex){gx + glyph_w,  gy + glyph_h,  mg->u1, mg->v1, r, g, b, a};
-        v[3] = (font_vertex){gx,            gy,            mg->u0, mg->v0, r, g, b, a};
-        v[4] = (font_vertex){gx + glyph_w,  gy + glyph_h,  mg->u1, mg->v1, r, g, b, a};
-        v[5] = (font_vertex){gx,            gy + glyph_h,  mg->u0, mg->v1, r, g, b, a};
-        *vert_count += 6;
-    }
-}
 
 static void slug_push_glyph_quad(UIRenderState *ui, int use_icon_font,
                                   float gx, float gy, float glyph_w, float glyph_h,
@@ -1934,8 +1453,6 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
     int clipping = 0;
     float clip_x0 = 0, clip_y0 = 0, clip_x1 = 99999, clip_y1 = 99999;
     ui->rect_vert_count = 0;
-    ui->font_vert_count = 0;
-    ui->icon_font_vert_count = 0;
     ui->slug_vert_count = 0;
     ui->icon_slug_vert_count = 0;
 
@@ -2018,7 +1535,7 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
             float b = text->textColor.b / 255.0f;
             float a = text->textColor.a / 255.0f;
             float font_size = (float)text->fontSize;
-            int has_icon = (icon_atlas_texture && icon_atlas_sampler)
+            int has_icon = (icon_slug_count > 0)
                 ? text_contains_icon_cp(text->stringContents.chars, text->stringContents.length)
                 : 0;
 
@@ -2034,39 +1551,36 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                 /* For icon-containing labels (Bootstrap icons + text), run a simple
                    UTF-8 glyph pass and route quads to either the regular or icon atlas. */
                 float cursor_x = floorf(box.x);
-                float baseline_y = floorf(box.y + font_size * font_ascent);
+                float baseline_y = floorf(box.y + font_size * slug_ascent);
                 float text_line_center = box.y + box.height * 0.5f;
                 uint32_t idx = 0;
                 while (idx < text->stringContents.length) {
                     uint32_t cp = 0;
                     uint32_t next_idx = idx + 1;
-                    const msdf_glyph *mg = NULL;
+                    const slug_glyph *sg = NULL;
                     int use_icon_font = 0;
                     float glyph_size = font_size;
-                    float glyph_w;
-                    float glyph_h;
-                    float gx;
-                    float gy;
 
                     if (!utf8_decode_at(text->stringContents.chars, text->stringContents.length,
                                         idx, &cp, &next_idx)) {
                         break;
                     }
 
-                    mg = icon_glyph_lookup(cp);
-                    if (mg) {
+                    sg = icon_slug_lookup(cp);
+                    if (sg) {
                         use_icon_font = 1;
-                        /* Keep icons slightly smaller than text and center them per-line. */
                         glyph_size = font_size * 0.90f;
                     } else if (cp >= 32 && cp < 127) {
-                        mg = &font_glyphs[cp];
+                        sg = &slug_glyphs[cp];
                     }
 
-                    if (mg && mg->width > 0 && mg->height > 0) {
-                        glyph_w = (float)mg->width * (glyph_size / (float)MSDF_SOURCE_SIZE);
-                        glyph_h = (float)mg->height * (glyph_size / (float)MSDF_SOURCE_SIZE);
-                        gx = floorf(cursor_x + mg->xoff * glyph_size);
-                        gy = baseline_y + mg->yoff * glyph_size;
+                    if (sg && sg->valid && sg->curve_count > 0) {
+                        float em_w = sg->bbox_x1 - sg->bbox_x0;
+                        float em_h = sg->bbox_y1 - sg->bbox_y0;
+                        float glyph_w = em_w * glyph_size;
+                        float glyph_h = em_h * glyph_size;
+                        float gx = floorf(cursor_x + sg->bbox_x0 * glyph_size);
+                        float gy = baseline_y - sg->bbox_y1 * glyph_size;
 
                         if (use_icon_font) {
                             float icon_center = gy + glyph_h * 0.5f;
@@ -2076,11 +1590,12 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
 
                         if (!(clipping && (gx + glyph_w < clip_x0 || gx > clip_x1 ||
                                            gy + glyph_h < clip_y0 || gy > clip_y1))) {
-                            ui_push_font_quad(ui, use_icon_font, gx, gy, glyph_w, glyph_h, mg, r, g, b, a);
+                            slug_push_glyph_quad(ui, use_icon_font, gx, gy, glyph_w, glyph_h,
+                                                 sg, glyph_size, r, g, b, a);
                         }
                     }
 
-                    if (mg) cursor_x += mg->advance * glyph_size;
+                    if (sg) cursor_x += sg->advance * glyph_size;
                     else cursor_x += font_size * 0.5f;
 
                     if (next_idx <= idx) break;
@@ -2092,7 +1607,7 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                 hb_glyph_info_t *glyph_infos;
                 hb_glyph_position_t *glyph_positions;
                 float cursor_x = floorf(box.x);
-                float baseline_y = floorf(box.y + font_size * font_ascent);
+                float baseline_y = floorf(box.y + font_size * slug_ascent);
                 float hb_to_px = font_size / (float)hb_scale;
                 unsigned int gi;
 
@@ -2109,7 +1624,6 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                 for (gi = 0; gi < glyph_count; gi++) {
                     uint32_t cluster = glyph_infos[gi].cluster;
                     uint32_t cp = 0;
-                    const msdf_glyph *mg;
                     float glyph_w;
                     float glyph_h;
                     float gx;
@@ -2184,11 +1698,9 @@ static void ui_ensure_xfer_buf(SDL_GPUTransferBuffer **xfer, Uint32 *cap, Uint32
 
 static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
     int has_rects  = ui->rect_vert_count > 0;
-    int has_font   = ui->font_vert_count > 0;
-    int has_icons  = ui->icon_font_vert_count > 0;
     int has_slug   = ui->slug_vert_count > 0;
     int has_slug_icons = ui->icon_slug_vert_count > 0;
-    if (!has_rects && !has_font && !has_icons && !has_slug && !has_slug_icons) return;
+    if (!has_rects && !has_slug && !has_slug_icons) return;
 
     FRAME_CPU_ZONE_BEGIN("ui_upload_stage");
 
@@ -2200,22 +1712,6 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
         void *m = SDL_MapGPUTransferBuffer(gpu_device, ui->rect_xfer, true);
         memcpy(m, ui->rect_verts, sz);
         SDL_UnmapGPUTransferBuffer(gpu_device, ui->rect_xfer);
-    }
-    if (has_font) {
-        Uint32 sz = (Uint32)(ui->font_vert_count * sizeof(font_vertex));
-        ui_ensure_xfer_buf(&ui->font_xfer, &ui->font_xfer_cap, sz);
-        ui_ensure_gpu_buf(&ui->font_gpu_buf, &ui->font_gpu_cap, sz);
-        void *m = SDL_MapGPUTransferBuffer(gpu_device, ui->font_xfer, true);
-        memcpy(m, ui->font_verts, sz);
-        SDL_UnmapGPUTransferBuffer(gpu_device, ui->font_xfer);
-    }
-    if (has_icons) {
-        Uint32 sz = (Uint32)(ui->icon_font_vert_count * sizeof(font_vertex));
-        ui_ensure_xfer_buf(&ui->icon_font_xfer, &ui->icon_font_xfer_cap, sz);
-        ui_ensure_gpu_buf(&ui->icon_font_gpu_buf, &ui->icon_font_gpu_cap, sz);
-        void *m = SDL_MapGPUTransferBuffer(gpu_device, ui->icon_font_xfer, true);
-        memcpy(m, ui->icon_font_verts, sz);
-        SDL_UnmapGPUTransferBuffer(gpu_device, ui->icon_font_xfer);
     }
     if (has_slug) {
         Uint32 sz = (Uint32)(ui->slug_vert_count * sizeof(slug_vertex));
@@ -2244,18 +1740,6 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
             Uint32 sz = (Uint32)(ui->rect_vert_count * sizeof(ui_rect_vertex));
             SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = ui->rect_xfer;
             SDL_GPUBufferRegion dst = {0}; dst.buffer = ui->rect_gpu_buf; dst.size = sz;
-            SDL_UploadToGPUBuffer(copy, &src, &dst, false);
-        }
-        if (has_font) {
-            Uint32 sz = (Uint32)(ui->font_vert_count * sizeof(font_vertex));
-            SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = ui->font_xfer;
-            SDL_GPUBufferRegion dst = {0}; dst.buffer = ui->font_gpu_buf; dst.size = sz;
-            SDL_UploadToGPUBuffer(copy, &src, &dst, false);
-        }
-        if (has_icons) {
-            Uint32 sz = (Uint32)(ui->icon_font_vert_count * sizeof(font_vertex));
-            SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = ui->icon_font_xfer;
-            SDL_GPUBufferRegion dst = {0}; dst.buffer = ui->icon_font_gpu_buf; dst.size = sz;
             SDL_UploadToGPUBuffer(copy, &src, &dst, false);
         }
         if (has_slug) {
@@ -2529,38 +2013,6 @@ static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_bu
         SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->rect_vert_count, 1, 0, 0);
     }
 
-    if (ui->font_vert_count > 0 && ui->font_gpu_buf &&
-        font_atlas_texture && font_atlas_sampler) {
-        SDL_BindGPUGraphicsPipeline(render_pass, font_pipeline);
-        SDL_PushGPUVertexUniformData(cmd_buf, 0, uniforms, sizeof(*uniforms));
-
-        SDL_GPUTextureSamplerBinding sampler_binding = {0};
-        sampler_binding.texture = font_atlas_texture;
-        sampler_binding.sampler = font_atlas_sampler;
-        SDL_BindGPUFragmentSamplers(render_pass, 0, &sampler_binding, 1);
-
-        SDL_GPUBufferBinding vbuf_binding = {0};
-        vbuf_binding.buffer = ui->font_gpu_buf;
-        SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
-        SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->font_vert_count, 1, 0, 0);
-    }
-
-    if (ui->icon_font_vert_count > 0 && ui->icon_font_gpu_buf &&
-        icon_atlas_texture && icon_atlas_sampler) {
-        SDL_BindGPUGraphicsPipeline(render_pass, font_pipeline);
-        SDL_PushGPUVertexUniformData(cmd_buf, 0, uniforms, sizeof(*uniforms));
-
-        SDL_GPUTextureSamplerBinding sampler_binding = {0};
-        sampler_binding.texture = icon_atlas_texture;
-        sampler_binding.sampler = icon_atlas_sampler;
-        SDL_BindGPUFragmentSamplers(render_pass, 0, &sampler_binding, 1);
-
-        SDL_GPUBufferBinding vbuf_binding = {0};
-        vbuf_binding.buffer = ui->icon_font_gpu_buf;
-        SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
-        SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->icon_font_vert_count, 1, 0, 0);
-    }
-
     /* Slug text rendering */
     if (ui->slug_vert_count > 0 && ui->slug_gpu_buf &&
         slug_pipeline && slug_curve_texture && slug_band_texture && slug_sampler) {
@@ -2579,6 +2031,25 @@ static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_bu
         SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
         SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->slug_vert_count, 1, 0, 0);
     }
+
+    /* Slug icon rendering (same pipeline, different textures) */
+    if (ui->icon_slug_vert_count > 0 && ui->icon_slug_gpu_buf &&
+        slug_pipeline && icon_slug_curve_texture && icon_slug_band_texture && slug_sampler) {
+        SDL_BindGPUGraphicsPipeline(render_pass, slug_pipeline);
+        SDL_PushGPUVertexUniformData(cmd_buf, 0, uniforms, sizeof(*uniforms));
+
+        SDL_GPUTextureSamplerBinding bindings[2] = {0};
+        bindings[0].texture = icon_slug_curve_texture;
+        bindings[0].sampler = slug_sampler;
+        bindings[1].texture = icon_slug_band_texture;
+        bindings[1].sampler = slug_sampler;
+        SDL_BindGPUFragmentSamplers(render_pass, 0, bindings, 2);
+
+        SDL_GPUBufferBinding vbuf_binding = {0};
+        vbuf_binding.buffer = ui->icon_slug_gpu_buf;
+        SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+        SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->icon_slug_vert_count, 1, 0, 0);
+    }
 }
 
 // Cleanup per-frame UI GPU buffers for one window
@@ -2590,18 +2061,12 @@ static void ui_release_buffers(UIRenderState *ui) {
 /* Full cleanup on shutdown or hot-reload */
 static void ui_destroy_buffers(UIRenderState *ui) {
     if (ui->rect_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->rect_gpu_buf); ui->rect_gpu_buf = NULL; }
-    if (ui->font_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->font_gpu_buf); ui->font_gpu_buf = NULL; }
-    if (ui->icon_font_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->icon_font_gpu_buf); ui->icon_font_gpu_buf = NULL; }
     if (ui->rect_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->rect_xfer); ui->rect_xfer = NULL; }
-    if (ui->font_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->font_xfer); ui->font_xfer = NULL; }
-    if (ui->icon_font_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->icon_font_xfer); ui->icon_font_xfer = NULL; }
     if (ui->slug_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->slug_gpu_buf); ui->slug_gpu_buf = NULL; }
     if (ui->icon_slug_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->icon_slug_gpu_buf); ui->icon_slug_gpu_buf = NULL; }
     if (ui->slug_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->slug_xfer); ui->slug_xfer = NULL; }
     if (ui->icon_slug_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->icon_slug_xfer); ui->icon_slug_xfer = NULL; }
-    ui->rect_gpu_cap = ui->font_gpu_cap = ui->icon_font_gpu_cap = 0;
     ui->slug_gpu_cap = ui->icon_slug_gpu_cap = 0;
-    ui->rect_xfer_cap = ui->font_xfer_cap = ui->icon_font_xfer_cap = 0;
     ui->slug_xfer_cap = ui->icon_slug_xfer_cap = 0;
 }
 
@@ -2656,8 +2121,6 @@ EXPORT int init_externals(const char *project_path) {
     g_mem->game.shader_debug_lines_fs = "assets/shaders/compiled/debug_lines_fs.spv";
     g_mem->game.shader_ui_rect_vs = "assets/shaders/compiled/ui_rect_vs.spv";
     g_mem->game.shader_ui_rect_fs = "assets/shaders/compiled/ui_rect_fs.spv";
-    g_mem->game.shader_font_vs = "assets/shaders/compiled/font_vs.spv";
-    g_mem->game.shader_font_fs = "assets/shaders/compiled/font_fs.spv";
     g_mem->game.shader_mesh_vs = "assets/shaders/compiled/mesh_vs.spv";
     g_mem->game.shader_mesh_fs = "assets/shaders/compiled/mesh_fs.spv";
     g_mem->game.shader_composite_vs = "assets/shaders/compiled/composite_vs.spv";
@@ -2784,8 +2247,6 @@ EXPORT int init_externals(const char *project_path) {
         precache_register("assets/shaders/compiled/editor_line_vs.spv");
         precache_register(g_mem->game.shader_ui_rect_vs);
         precache_register(g_mem->game.shader_ui_rect_fs);
-        precache_register(g_mem->game.shader_font_vs);
-        precache_register(g_mem->game.shader_font_fs);
         precache_register(g_mem->game.shader_mesh_vs);
         precache_register(g_mem->game.shader_mesh_fs);
         precache_register(g_mem->game.shader_composite_vs);
@@ -2890,8 +2351,8 @@ EXPORT int init_externals(const char *project_path) {
     /* Compile all 7 shader pairs simultaneously.  Each task gets its
        own thread; the main thread waits for all to finish.           */
     /* Task indices: 0=sprite, 1=debug_lines, 2=editor_line,
-       3=ui_rect, 4=font, 5=mesh, 6=composite (reused for grid), 7=slug */
-    #define SHADER_TASK_COUNT 8
+       3=ui_rect, 4=mesh, 5=composite (reused for grid), 6=slug */
+    #define SHADER_TASK_COUNT 7
     SDL_GPUShader *all_vs[SHADER_TASK_COUNT];
     SDL_GPUShader *all_fs[SHADER_TASK_COUNT];
 
@@ -2909,14 +2370,12 @@ EXPORT int init_externals(const char *project_path) {
         stasks[2].fs_path = g_mem->game.shader_debug_lines_fs;
         stasks[3].vs_path = g_mem->game.shader_ui_rect_vs;
         stasks[3].fs_path = g_mem->game.shader_ui_rect_fs;
-        stasks[4].vs_path = g_mem->game.shader_font_vs;
-        stasks[4].fs_path = g_mem->game.shader_font_fs;
-        stasks[5].vs_path = g_mem->game.shader_mesh_vs;
-        stasks[5].fs_path = g_mem->game.shader_mesh_fs;
-        stasks[6].vs_path = g_mem->game.shader_composite_vs;
-        stasks[6].fs_path = g_mem->game.shader_composite_fs;
-        stasks[7].vs_path = "assets/shaders/compiled/slug_vs.spv";
-        stasks[7].fs_path = "assets/shaders/compiled/slug_fs.spv";
+        stasks[4].vs_path = g_mem->game.shader_mesh_vs;
+        stasks[4].fs_path = g_mem->game.shader_mesh_fs;
+        stasks[5].vs_path = g_mem->game.shader_composite_vs;
+        stasks[5].fs_path = g_mem->game.shader_composite_fs;
+        stasks[6].vs_path = "assets/shaders/compiled/slug_vs.spv";
+        stasks[6].fs_path = "assets/shaders/compiled/slug_fs.spv";
 
         for (si = 0; si < SHADER_TASK_COUNT; si++) {
             stasks[si].vs = NULL;
@@ -3186,72 +2645,7 @@ EXPORT int init_externals(const char *project_path) {
 
     }
 
-    // 11. Create font pipeline (shaders already compiled)
-    BOOT_PROF_BEGIN(TP_EXT_SHADER_FONT);
-    {
-        SDL_GPUVertexBufferDescription vbuf_desc = {0};
-        vbuf_desc.slot = 0;
-        vbuf_desc.pitch = sizeof(font_vertex);
-        vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-
-        SDL_GPUVertexAttribute attrs[3] = {0};
-        // position (float2)
-        attrs[0].location = 0;
-        attrs[0].buffer_slot = 0;
-        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-        attrs[0].offset = 0;
-        // uv (float2)
-        attrs[1].location = 1;
-        attrs[1].buffer_slot = 0;
-        attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-        attrs[1].offset = sizeof(float) * 2;
-        // color (float4)
-        attrs[2].location = 2;
-        attrs[2].buffer_slot = 0;
-        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-        attrs[2].offset = sizeof(float) * 4;
-
-        SDL_GPUColorTargetBlendState blend = {0};
-        blend.enable_blend = true;
-        blend.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-        blend.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        blend.color_blend_op = SDL_GPU_BLENDOP_ADD;
-        blend.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-        blend.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-        blend.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-
-        SDL_GPUTextureFormat swapchain_format =
-            SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
-
-        SDL_GPUColorTargetDescription color_target = {0};
-        color_target.format = swapchain_format;
-        color_target.blend_state = blend;
-
-        SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = all_vs[4];
-        pipe_info.fragment_shader = all_fs[4];
-        pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
-        pipe_info.vertex_input_state.num_vertex_buffers = 1;
-        pipe_info.vertex_input_state.vertex_attributes = attrs;
-        pipe_info.vertex_input_state.num_vertex_attributes = 3;
-        pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-        pipe_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-        pipe_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-        pipe_info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
-        pipe_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-        pipe_info.target_info.color_target_descriptions = &color_target;
-        pipe_info.target_info.num_color_targets = 1;
-        pipe_info.target_info.has_depth_stencil_target = false;
-
-        font_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
-        if (!font_pipeline) {
-            fprintf(stderr, "Failed to create font pipeline: %s\n", SDL_GetError());
-            return -1;
-        }
-
-    }
-
-    // 11b. Create Slug font pipeline
+    // 11. Create Slug font pipeline
     {
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
@@ -3297,8 +2691,8 @@ EXPORT int init_externals(const char *project_path) {
         color_target.blend_state = blend;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = all_vs[7];
-        pipe_info.fragment_shader = all_fs[7];
+        pipe_info.vertex_shader = all_vs[6];
+        pipe_info.fragment_shader = all_fs[6];
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
@@ -3364,8 +2758,8 @@ EXPORT int init_externals(const char *project_path) {
         color_target.blend_state = blend;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = all_vs[5];
-        pipe_info.fragment_shader = all_fs[5];
+        pipe_info.vertex_shader = all_vs[4];
+        pipe_info.fragment_shader = all_fs[4];
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
@@ -3541,9 +2935,9 @@ EXPORT int init_externals(const char *project_path) {
     BOOT_PROF_BEGIN(TP_EXT_LOAD_TEXTURE_HEALTH_FILL);
     gpu_textures[TEXTURE_HEALTH_FILL] = load_gpu_texture(g_mem->game.texture_health_fill);
 
-    // Load editor font (MSDF atlas) and upload to GPU
+    // Load editor font (Slug curves) and upload to GPU
     BOOT_PROF_BEGIN(TP_EXT_FONT_LOAD_MSDF);
-    if (font_load_msdf(g_mem->game.font_editor) != 0) {
+    if (font_load_slug(g_mem->game.font_editor) != 0) {
         fprintf(stderr, "Failed to load editor font from: %s\n", g_mem->game.font_editor);
         return -1;
     }
@@ -3554,11 +2948,11 @@ EXPORT int init_externals(const char *project_path) {
     }
 
     BOOT_PROF_BEGIN(TP_EXT_ICON_FONT_LOAD);
-    if (icon_font_load_msdf(BOOTSTRAP_ICON_FONT_PATH) != 0) {
+    if (icon_font_load_slug(BOOTSTRAP_ICON_FONT_PATH) != 0) {
         fprintf(stderr, "Warning: failed to load Bootstrap Icons font from: %s\n",
                 BOOTSTRAP_ICON_FONT_PATH);
     } else {
-        printf("Loaded Bootstrap Icons font (%d glyphs).\n", icon_glyph_count);
+        printf("Loaded Bootstrap Icons font (%d glyphs).\n", icon_slug_count);
     }
 
     // Pre-compute ASCII advance table for editor.dll's Clay text measurement
@@ -3571,7 +2965,7 @@ EXPORT int init_externals(const char *project_path) {
             stbtt_GetCodepointHMetrics(&font_stb_info, ch, &advance, &lsb);
             g_mem->editor.font_advances[ch] = (float)advance * scale1;
         }
-        g_mem->editor.font_line_height = font_ascent - font_descent + font_line_gap;
+        g_mem->editor.font_line_height = slug_ascent - slug_descent + slug_line_gap;
     }
 
     // Initialize arena (single allocation for all engine memory)
@@ -3655,8 +3049,8 @@ EXPORT int init_externals(const char *project_path) {
         ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = all_vs[6];
-        pipe_info.fragment_shader = all_fs[6];
+        pipe_info.vertex_shader = all_vs[5];
+        pipe_info.fragment_shader = all_fs[5];
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
@@ -3714,8 +3108,8 @@ EXPORT int init_externals(const char *project_path) {
         ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
 
         SDL_GPUGraphicsPipelineCreateInfo pi = {0};
-        pi.vertex_shader = all_vs[6];  /* reuse composite shaders */
-        pi.fragment_shader = all_fs[6];
+        pi.vertex_shader = all_vs[5];  /* reuse composite shaders */
+        pi.fragment_shader = all_fs[5];
         pi.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pi.vertex_input_state.num_vertex_buffers = 1;
         pi.vertex_input_state.vertex_attributes = attrs;
@@ -5094,8 +4488,8 @@ EXPORT int update_externals(void) {
 
             /* Draw unified editor Clay UI over the composited result (main window only) */
             if (cwi == 0 && (ui_editor_clay.rect_vert_count > 0 ||
-                             ui_editor_clay.font_vert_count > 0 ||
-                             ui_editor_clay.icon_font_vert_count > 0)) {
+                             ui_editor_clay.slug_vert_count > 0 ||
+                             ui_editor_clay.icon_slug_vert_count > 0)) {
                 uniform_data ui_uniforms;
                 float ui_lw = (float)sc_w / display_density;
                 float ui_lh = (float)sc_h / display_density;
@@ -5249,12 +4643,14 @@ EXPORT void end_externals(void) {
     if (hb_editor_face) { hb_face_destroy(hb_editor_face); hb_editor_face = NULL; }
     if (hb_editor_blob) { hb_blob_destroy(hb_editor_blob); hb_editor_blob = NULL; }
 
-    // Release font MSDF atlas
-    if (font_atlas_texture) { SDL_ReleaseGPUTexture(gpu_device, font_atlas_texture); font_atlas_texture = NULL; }
-    if (font_atlas_sampler) { SDL_ReleaseGPUSampler(gpu_device, font_atlas_sampler); font_atlas_sampler = NULL; }
-    if (icon_atlas_texture) { SDL_ReleaseGPUTexture(gpu_device, icon_atlas_texture); icon_atlas_texture = NULL; }
-    if (icon_atlas_sampler) { SDL_ReleaseGPUSampler(gpu_device, icon_atlas_sampler); icon_atlas_sampler = NULL; }
-    icon_glyph_count = 0;
+    // Release Slug font resources
+    if (slug_curve_texture) { SDL_ReleaseGPUTexture(gpu_device, slug_curve_texture); slug_curve_texture = NULL; }
+    if (slug_band_texture) { SDL_ReleaseGPUTexture(gpu_device, slug_band_texture); slug_band_texture = NULL; }
+    if (icon_slug_curve_texture) { SDL_ReleaseGPUTexture(gpu_device, icon_slug_curve_texture); icon_slug_curve_texture = NULL; }
+    if (icon_slug_band_texture) { SDL_ReleaseGPUTexture(gpu_device, icon_slug_band_texture); icon_slug_band_texture = NULL; }
+    if (slug_sampler) { SDL_ReleaseGPUSampler(gpu_device, slug_sampler); slug_sampler = NULL; }
+    if (slug_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, slug_pipeline); slug_pipeline = NULL; }
+    icon_slug_count = 0;
 
     if (font_ttf_buffer) { SDL_free(font_ttf_buffer); font_ttf_buffer = NULL; font_ttf_size = 0; }
     if (icon_ttf_buffer) { SDL_free(icon_ttf_buffer); icon_ttf_buffer = NULL; icon_ttf_size = 0; }
@@ -5271,10 +4667,6 @@ EXPORT void end_externals(void) {
     if (ui_rect_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(gpu_device, ui_rect_pipeline);
         ui_rect_pipeline = NULL;
-    }
-    if (font_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(gpu_device, font_pipeline);
-        font_pipeline = NULL;
     }
     if (mesh_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(gpu_device, mesh_pipeline);

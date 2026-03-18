@@ -67,7 +67,11 @@ typedef struct slug_font_data {
     int band_tex_height;       /* computed from data size */
 
     /* Per-glyph metadata */
-    slug_glyph glyphs[128];    /* ASCII range */
+    slug_glyph glyphs[128];    /* ASCII range (used by slug_build_font) */
+    /* Arbitrary codepoint glyphs (used by slug_build_font_for_codepoints) */
+    uint32_t *codepoints;      /* parallel to cp_glyphs */
+    slug_glyph *cp_glyphs;
+    int cp_glyph_count;
     int glyph_count;
 
     /* Font metrics (em-space, normalized to 1.0 em) */
@@ -92,6 +96,10 @@ static int slug_extract_glyph_curves(const stbtt_fontinfo *font, int glyph_index
  */
 static slug_font_data *slug_build_font(const unsigned char *ttf_data, int ttf_len,
                                         int num_hbands, int num_vbands);
+
+static slug_font_data *slug_build_font_for_codepoints(const unsigned char *ttf_data, int ttf_len,
+                                                       const uint32_t *codepoints, int cp_count,
+                                                       int num_hbands, int num_vbands);
 
 static void slug_font_data_free(slug_font_data *data);
 
@@ -508,10 +516,101 @@ static slug_font_data *slug_build_font(const unsigned char *ttf_data, int ttf_le
     return data;
 }
 
+static slug_font_data *slug_build_font_for_codepoints(const unsigned char *ttf_data, int ttf_len,
+                                                       const uint32_t *codepoints, int cp_count,
+                                                       int num_hbands, int num_vbands) {
+    stbtt_fontinfo font;
+    slug_font_data *data;
+    int ci2, ascent_i, descent_i, line_gap_i;
+    float em_scale;
+    slug_curve curves[SLUG_MAX_CURVES_PER_GLYPH];
+    int max_curve_texels = cp_count * SLUG_MAX_CURVES_PER_GLYPH * 2;
+    int max_band_texels = cp_count * (num_hbands + num_vbands + SLUG_MAX_CURVES_PER_GLYPH * 2);
+    int curve_texel_pos = 0, band_texel_pos = 0;
+
+    (void)ttf_len;
+
+    if (!stbtt_InitFont(&font, ttf_data, stbtt_GetFontOffsetForIndex(ttf_data, 0)))
+        return NULL;
+
+    data = (slug_font_data *)calloc(1, sizeof(slug_font_data));
+    if (!data) return NULL;
+
+    data->curve_texels = (float *)calloc((size_t)max_curve_texels * 4, sizeof(float));
+    data->band_texels = (uint32_t *)calloc((size_t)max_band_texels * 4, sizeof(uint32_t));
+    data->codepoints = (uint32_t *)calloc((size_t)cp_count, sizeof(uint32_t));
+    data->cp_glyphs = (slug_glyph *)calloc((size_t)cp_count, sizeof(slug_glyph));
+    if (!data->curve_texels || !data->band_texels || !data->codepoints || !data->cp_glyphs) {
+        slug_font_data_free(data);
+        return NULL;
+    }
+
+    stbtt_GetFontVMetrics(&font, &ascent_i, &descent_i, &line_gap_i);
+    if (ascent_i == 0) ascent_i = 1;
+    em_scale = 1.0f / (float)ascent_i;
+    data->ascent = 1.0f;
+    data->descent = (float)descent_i * em_scale;
+    data->line_gap = (float)line_gap_i * em_scale;
+    data->units_per_em = ascent_i;
+
+    data->cp_glyph_count = 0;
+    for (ci2 = 0; ci2 < cp_count; ci2++) {
+        uint32_t cp = codepoints[ci2];
+        int glyph_index = stbtt_FindGlyphIndex(&font, (int)cp);
+        int advance_i, lsb_i, curve_count;
+        slug_glyph *sg;
+
+        stbtt_GetGlyphHMetrics(&font, glyph_index, &advance_i, &lsb_i);
+        curve_count = slug_extract_glyph_curves(&font, glyph_index, em_scale, curves, SLUG_MAX_CURVES_PER_GLYPH);
+
+        data->codepoints[data->cp_glyph_count] = cp;
+        sg = &data->cp_glyphs[data->cp_glyph_count];
+        sg->advance = (float)advance_i * em_scale;
+        sg->lsb = (float)lsb_i * em_scale;
+
+        if (curve_count == 0) {
+            sg->valid = 1;
+            sg->curve_count = 0;
+            data->cp_glyph_count++;
+            continue;
+        }
+
+        {
+            float bx0 = 1e10f, by0 = 1e10f, bx1 = -1e10f, by1 = -1e10f;
+            int k;
+            for (k = 0; k < curve_count; k++) {
+                bx0 = slug_minf(bx0, slug_min3f(curves[k].p1x, curves[k].p2x, curves[k].p3x));
+                by0 = slug_minf(by0, slug_min3f(curves[k].p1y, curves[k].p2y, curves[k].p3y));
+                bx1 = slug_maxf(bx1, slug_max3f(curves[k].p1x, curves[k].p2x, curves[k].p3x));
+                by1 = slug_maxf(by1, slug_max3f(curves[k].p1y, curves[k].p2y, curves[k].p3y));
+            }
+            slug_pack_glyph(curves, curve_count, bx0, by0, bx1, by1,
+                           num_hbands, num_vbands,
+                           data->curve_texels, &curve_texel_pos,
+                           data->band_texels, &band_texel_pos, sg);
+        }
+        sg->valid = 1;
+        data->cp_glyph_count++;
+    }
+
+    data->curve_texel_count = curve_texel_pos;
+    data->curve_tex_height = (curve_texel_pos + SLUG_BAND_TEX_WIDTH - 1) / SLUG_BAND_TEX_WIDTH;
+    if (data->curve_tex_height < 1) data->curve_tex_height = 1;
+    data->band_texel_count = band_texel_pos;
+    data->band_tex_height = (band_texel_pos + SLUG_BAND_TEX_WIDTH - 1) / SLUG_BAND_TEX_WIDTH;
+    if (data->band_tex_height < 1) data->band_tex_height = 1;
+
+    fprintf(stderr, "[slug] built icon font: %d glyphs, %d curves\n",
+            data->cp_glyph_count, curve_texel_pos / 2);
+    return data;
+}
+
 static void slug_font_data_free(slug_font_data *data) {
     if (!data) return;
     free(data->curve_texels);
     free(data->band_texels);
+    free(data->codepoints);
+    free(data->cp_glyphs);
     free(data);
 }
 
