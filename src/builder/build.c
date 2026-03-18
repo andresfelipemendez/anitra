@@ -1657,6 +1657,8 @@ static const char *shader_sources[] = {
     "editor_line_vs.glsl",
     "composite_vs.glsl",
     "composite_fs.glsl",
+    "slug_vs.glsl",
+    "slug_fs.glsl",
     NULL
 };
 
