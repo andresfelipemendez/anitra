@@ -892,6 +892,7 @@ static void clear_scene_storage(game_state *gs) {
 static void push_transform_component(game_state *gs, int entity_index, Vec3 position) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->transform_component_count >= gs->transform_component_capacity) return;
     i = gs->transform_component_count++;
     gs->transform_components[i].entity_index = entity_index;
@@ -902,6 +903,7 @@ static void push_transform_component(game_state *gs, int entity_index, Vec3 posi
 static void push_rotation_component(game_state *gs, int entity_index, float rotation_y_deg) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->rotation_component_count >= gs->rotation_component_capacity) return;
     i = gs->rotation_component_count++;
     gs->rotation_components[i].entity_index = entity_index;
@@ -912,6 +914,7 @@ static void push_rotation_component(game_state *gs, int entity_index, float rota
 static void push_scale_component(game_state *gs, int entity_index, Vec3 scale) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->scale_component_count >= gs->scale_component_capacity) return;
     i = gs->scale_component_count++;
     gs->scale_components[i].entity_index = entity_index;
@@ -922,6 +925,7 @@ static void push_scale_component(game_state *gs, int entity_index, Vec3 scale) {
 static void push_parent_transform_component(game_state *gs, int entity_index, int parent_entity_index) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->parent_transform_component_count >= gs->parent_transform_component_capacity) return;
     i = gs->parent_transform_component_count++;
     gs->parent_transform_components[i].entity_index = entity_index;
@@ -932,6 +936,7 @@ static void push_parent_transform_component(game_state *gs, int entity_index, in
 static void push_parent_rotation_component(game_state *gs, int entity_index) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->parent_rotation_component_count >= gs->parent_rotation_component_capacity) return;
     i = gs->parent_rotation_component_count++;
     gs->parent_rotation_components[i].entity_index = entity_index;
@@ -941,6 +946,7 @@ static void push_parent_rotation_component(game_state *gs, int entity_index) {
 static void push_velocity_component(game_state *gs, int entity_index, Vec3 velocity) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->velocity_component_count >= gs->velocity_component_capacity) return;
     i = gs->velocity_component_count++;
     gs->velocity_components[i].entity_index = entity_index;
@@ -951,6 +957,7 @@ static void push_velocity_component(game_state *gs, int entity_index, Vec3 veloc
 static void push_rigid_body_component(game_state *gs, int entity_index, int use_gravity) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->rigid_body_component_count >= gs->rigid_body_component_capacity) return;
     i = gs->rigid_body_component_count++;
     gs->rigid_body_components[i].entity_index = entity_index;
@@ -970,6 +977,7 @@ static void push_character_controller_component(game_state *gs, int entity_index
         gs->character_controller_components[idx].jump_speed = jump_speed > 0.01f ? jump_speed : 8.5f;
         return;
     }
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->character_controller_component_count >= gs->character_controller_component_capacity) return;
     i = gs->character_controller_component_count++;
     gs->character_controller_components[i].entity_index = entity_index;
@@ -981,6 +989,7 @@ static void push_character_controller_component(game_state *gs, int entity_index
 static void push_health_component(game_state *gs, int entity_index, float health, float max_health) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->health_component_count >= gs->health_component_capacity) return;
     i = gs->health_component_count++;
     gs->health_components[i].entity_index = entity_index;
@@ -992,6 +1001,7 @@ static void push_health_component(game_state *gs, int entity_index, float health
 static void push_box_collider_component(game_state *gs, int entity_index, rect box, float half_height) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->box_collider_component_count >= gs->box_collider_component_capacity) return;
     i = gs->box_collider_component_count++;
     gs->box_collider_components[i].entity_index = entity_index;
@@ -1004,6 +1014,7 @@ static void push_capsule_collider_component(game_state *gs, int entity_index,
                                             float radius, float half_height) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->capsule_collider_component_count >= gs->capsule_collider_component_capacity) return;
     i = gs->capsule_collider_component_count++;
     gs->capsule_collider_components[i].entity_index = entity_index;
@@ -1015,6 +1026,7 @@ static void push_capsule_collider_component(game_state *gs, int entity_index,
 static void push_mesh_component(game_state *gs, int entity_index, int asset_index) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->mesh_component_count >= gs->mesh_component_capacity) return;
     i = gs->mesh_component_count++;
     gs->mesh_components[i].entity_index = entity_index;
@@ -1026,6 +1038,7 @@ static void push_mesh_component(game_state *gs, int entity_index, int asset_inde
 static void push_animation_component(game_state *gs, int entity_index, int active_clip) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->animation_component_count >= gs->animation_component_capacity) return;
     i = gs->animation_component_count++;
     gs->animation_components[i].entity_index = entity_index;
@@ -1040,6 +1053,7 @@ static void push_camera_component(game_state *gs, int entity_index, float fov, f
                                   Vec3 target, Vec3 up) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->camera_component_count >= gs->camera_component_capacity) return;
     i = gs->camera_component_count++;
     gs->camera_components[i].entity_index = entity_index;
@@ -1056,6 +1070,7 @@ static void push_trigger_component(game_state *gs, int entity_index,
                                    float radius, const char *joint_name) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     if (gs->trigger_component_count >= gs->trigger_component_capacity) return;
     i = gs->trigger_component_count++;
     gs->trigger_components[i].entity_index = entity_index;
@@ -1119,6 +1134,7 @@ static void push_bone_attach_component(game_state *gs, int entity_index,
                                         Vec3 offset_pos, Quat offset_rot) {
     int i;
     if (!gs) return;
+    if (entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return;
     i = gs->bone_attach_component_count;
     if (i >= gs->bone_attach_component_capacity) return;
     gs->bone_attach_components[i].entity_index = entity_index;
@@ -1793,6 +1809,7 @@ static void anim_sm_init_pool(anim_sm *sm, arena *a) {
     }
 
     sm->pool_initialized = 1;
+    memset(sm->entity_to_instance, 0xFF, sizeof(sm->entity_to_instance));
 }
 
 static error_value anim_sm_add_state(anim_sm *sm, const char *name, int clip_index,
@@ -1856,10 +1873,10 @@ static void anim_sm_remove_entity_from_state(anim_sm *sm, int state_index,
 }
 
 static anim_instance *anim_sm_find_instance(anim_sm *sm, int entity_index) {
-    int i;
-    for (i = 0; i < sm->instance_count; i++) {
-        if (sm->instances[i].entity_index == entity_index) return &sm->instances[i];
-    }
+    int idx;
+    if (entity_index < 0 || entity_index >= 512) return NULL;
+    idx = sm->entity_to_instance[entity_index];
+    if (idx >= 0 && idx < sm->instance_count) return &sm->instances[idx];
     return NULL;
 }
 
@@ -1873,12 +1890,23 @@ static int anim_sm_register_entity(anim_sm *sm, int entity_index,
     inst = &sm->instances[sm->instance_count++];
     inst->entity_index = entity_index;
     inst->model_asset_index = model_asset_index;
+    if (sm->next_skin_mats_offset + joint_count > ANIM_SM_MAX_ENTITIES * ANIM_SM_MAX_JOINTS) {
+        sm->instance_count--;
+        fprintf(stderr, "anim_sm: skin_mats pool exhausted (need %d, cap %d)\n",
+                sm->next_skin_mats_offset + joint_count, ANIM_SM_MAX_ENTITIES * ANIM_SM_MAX_JOINTS);
+        return -1;
+    }
+
     inst->skin_mats_offset = sm->next_skin_mats_offset;
     inst->speed = 1.0f;
     inst->playing = 1;
 
     sm->next_skin_mats_offset += joint_count;
     sm->pool.skin_mats_count = sm->next_skin_mats_offset;
+
+    /* Populate O(1) lookup */
+    if (entity_index >= 0 && entity_index < 512)
+        sm->entity_to_instance[entity_index] = sm->instance_count - 1;
 
     anim_sm_insert_entity_into_state(sm, initial_state, entity_index);
     return sm->instance_count - 1;

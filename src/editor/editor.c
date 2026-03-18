@@ -1945,7 +1945,8 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
                                        int shift_toggle,
                                        const int *parent_of, int entity_count) {
     static char row_bufs[SCENE_TREE_MAX_ENTITIES][64];
-    int bi = entity_index % SCENE_TREE_MAX_ENTITIES;
+    int bi = entity_index;
+    if (bi < 0 || bi >= SCENE_TREE_MAX_ENTITIES) return;
     int selected = editor_scene_entity_selected(e, entity_index);
     int dragging = e->scene_tree_drag_active && e->scene_tree_mouse_down;
     int sibling_parent = -1;
@@ -3435,14 +3436,17 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     if (e->open == 0) e->open = 1;
     e->gizmo_hovered = GIZMO_NONE;
     e->gizmo_active  = GIZMO_NONE;
-    if (e->gizmo_entity_index == 0) e->gizmo_entity_index = -1;
+    /* gizmo_entity_index: -1 means "none selected". Don't overwrite valid index 0.
+       Only reset if the field looks uninitialized (zero from memset during migration).
+       We rely on the fact that a newly memset'd state has selection_count == 0. */
+    if (e->scene_selection_count == 0) e->gizmo_entity_index = -1;
     e->gizmo_drag_mode = 0;
     e->gizmo_drag_start_capsule_radius = 0.0f;
     e->gizmo_drag_start_capsule_half_height = 0.0f;
     if (e->gizmo_drag_axis_local_scale == 0.0f) e->gizmo_drag_axis_local_scale = 1.0f;
     e->line_count = 0;
-    if (e->menu_open == 0) e->menu_open = -1;
-    if (e->menu_hover == 0) e->menu_hover = -1;
+    e->menu_open = -1;
+    e->menu_hover = -1;
     e->scene_selected_entity = 0;
     memset(e->scene_selection_mask, 0, sizeof(e->scene_selection_mask));
     e->scene_selection_count = 0;
@@ -4970,7 +4974,7 @@ static void inspector_layout(game_state *gs, editor_state *es) {
     int click;
     int clicked_any_field = 0;
     static char title_buf[96];
-    static char line_bufs[96][256];
+    static char line_bufs[256][256];
     int line_i = 0;
     Clay_RenderCommandArray commands;
 
@@ -7921,7 +7925,7 @@ static void inspector_layout_inner(game_state *gs, editor_state *es) {
     int click;
     int clicked_any_field = 0;
     static char title_buf[96];
-    static char line_bufs[96][256];
+    static char line_bufs[256][256];
     int line_i = 0;
 
     insp_node = dock_find_leaf_for_panel_global(d, PANEL_INSPECTOR, &insp_win_idx);

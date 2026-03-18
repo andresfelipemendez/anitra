@@ -191,19 +191,45 @@ int begin_game_loop(void) {
     {
       dll_time_t cur = get_dll_mtime("engine");
       if (dll_time_changed(cur, last_engine_time)) {
-        last_engine_time = cur;
 
         if (!engine_lib) {
-          fprintf(stderr, "Engine library is NULL - cannot reload\n");
+          /* Engine was NULL from a previous failed reload — retry */
+          copylibrary("engine", engine_copy_name);
+          engine_lib = loadlibrary(engine_copy_name);
+          if (engine_lib) {
+            engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine");
+            engine_destroy_fn new_destroy = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
+            engine_update_fn new_update = (engine_update_fn)getfunction(engine_lib, "update_engine");
+            if (!new_init || !new_destroy || !new_update) {
+              fprintf(stderr, "Failed to get engine functions after reload\n");
+              unloadlibrary(engine_lib);
+              engine_lib = NULL;
+            } else {
+              assign_init(new_init);
+              assign_destroy(new_destroy);
+              assign_update(new_update);
+              wire_engine_profiler();
+              reload_project();
+              init_engine();
+              last_engine_time = cur;
+            }
+          } else {
+            fprintf(stderr, "Engine library reload failed - will retry on next change\n");
+          }
         } else {
           destroy_engine();
           printf("Reloading engine...\n");
 
           unloadlibrary(engine_lib);
+          engine_lib = NULL;
+          assign_init(NULL);
+          assign_destroy(NULL);
+          assign_update(NULL);
+
           copylibrary("engine", engine_copy_name);
           engine_lib = loadlibrary(engine_copy_name);
           if (!engine_lib) {
-            fprintf(stderr, "Failed to reload %s.dll\n", engine_copy_name);
+            fprintf(stderr, "Failed to reload %s.dll — function pointers cleared\n", engine_copy_name);
           } else {
             engine_init_fn new_init = (engine_init_fn)getfunction(engine_lib, "init_engine");
             engine_destroy_fn new_destroy = (engine_destroy_fn)getfunction(engine_lib, "destroy_engine");
@@ -220,6 +246,7 @@ int begin_game_loop(void) {
               wire_engine_profiler();
               reload_project();
               init_engine();
+              last_engine_time = cur;
             }
           }
         }
@@ -230,19 +257,47 @@ int begin_game_loop(void) {
     {
       dll_time_t cur = get_dll_mtime("editor");
       if (dll_time_changed(cur, last_editor_time)) {
-        last_editor_time = cur;
 
         if (!editor_lib) {
-          fprintf(stderr, "Editor library is NULL - cannot reload\n");
+          /* Editor was NULL from a previous failed reload — retry */
+          copylibrary("editor", editor_copy_name);
+          editor_lib = loadlibrary(editor_copy_name);
+          if (editor_lib) {
+            editor_init_fn new_init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
+            editor_destroy_fn new_destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
+            editor_update_fn new_update_ed = (editor_update_fn)getfunction(editor_lib, "update_editor");
+            editor_handle_event_fn new_handle_ev = (editor_handle_event_fn)getfunction(editor_lib, "editor_handle_event");
+            if (!new_init_ed || !new_destroy_ed || !new_update_ed) {
+              fprintf(stderr, "Failed to get editor functions after reload\n");
+              unloadlibrary(editor_lib);
+              editor_lib = NULL;
+            } else {
+              assign_editor_init(new_init_ed);
+              assign_editor_destroy(new_destroy_ed);
+              assign_editor_update(new_update_ed);
+              assign_editor_handle_event(new_handle_ev);
+              wire_editor_profiler();
+              init_editor();
+              last_editor_time = cur;
+            }
+          } else {
+            fprintf(stderr, "Editor library reload failed - will retry on next change\n");
+          }
         } else {
           destroy_editor();
           printf("Reloading editor...\n");
 
           unloadlibrary(editor_lib);
+          editor_lib = NULL;
+          assign_editor_init(NULL);
+          assign_editor_destroy(NULL);
+          assign_editor_update(NULL);
+          assign_editor_handle_event(NULL);
+
           copylibrary("editor", editor_copy_name);
           editor_lib = loadlibrary(editor_copy_name);
           if (!editor_lib) {
-            fprintf(stderr, "Failed to reload %s.dll\n", editor_copy_name);
+            fprintf(stderr, "Failed to reload %s.dll — editor function pointers cleared\n", editor_copy_name);
           } else {
             editor_init_fn new_init_ed = (editor_init_fn)getfunction(editor_lib, "init_editor");
             editor_destroy_fn new_destroy_ed = (editor_destroy_fn)getfunction(editor_lib, "destroy_editor");
@@ -260,6 +315,7 @@ int begin_game_loop(void) {
               assign_editor_handle_event(new_handle_ev);
               wire_editor_profiler();
               init_editor();
+              last_editor_time = cur;
             }
           }
         }

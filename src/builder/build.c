@@ -466,6 +466,7 @@ static int generate_def_from_dll(const char *dll_path, const char *def_path,
     {
         int n = (coff.NumberOfSections > 96) ? 96 : coff.NumberOfSections;
         fread(sects, sizeof(IMAGE_SECTION_HEADER), n, dll_fp);
+        coff.NumberOfSections = (WORD)n; /* clamp to what we actually read */
     }
 
     /* Read export directory */

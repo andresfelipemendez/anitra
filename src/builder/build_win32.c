@@ -740,7 +740,15 @@ static int watch_and_rebuild(void)
     editor_ov.hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
     core_ov.hEvent   = CreateEventA(NULL, TRUE, FALSE, NULL);
 
-    if (ensure_dirs() != 0) return 1;
+    if (ensure_dirs() != 0) {
+        CloseHandle(engine_ov.hEvent);
+        CloseHandle(editor_ov.hEvent);
+        CloseHandle(core_ov.hEvent);
+        CloseHandle(hEngineDir);
+        CloseHandle(hEditorDir);
+        CloseHandle(hCoreDir);
+        return 1;
+    }
 
     /* Watch loop: wait on directory changes or target process exit */
     while (1) {

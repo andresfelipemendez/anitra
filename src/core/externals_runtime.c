@@ -736,6 +736,13 @@ static SDL_GPUTexture* load_gpu_texture(const char* filepath) {
 
     // Map, copy, unmap
     void* mapped = SDL_MapGPUTransferBuffer(gpu_device, transfer_buf, false);
+    if (!mapped) {
+        fprintf(stderr, "Failed to map transfer buffer for texture\n");
+        SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
+        SDL_ReleaseGPUTexture(gpu_device, texture);
+        stbi_image_free(data);
+        return NULL;
+    }
     memcpy(mapped, data, image_size);
     SDL_UnmapGPUTransferBuffer(gpu_device, transfer_buf);
     stbi_image_free(data);
@@ -747,7 +754,6 @@ static SDL_GPUTexture* load_gpu_texture(const char* filepath) {
       fprintf(stderr, "Failed to acquire GPU command buffer for texture upload\n");
       SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
       SDL_ReleaseGPUTexture(gpu_device, texture);
-      stbi_image_free(data);
       return NULL;
     }
     
@@ -771,10 +777,8 @@ static SDL_GPUTexture* load_gpu_texture(const char* filepath) {
 
 SDL_UploadToGPUTexture(copy_pass, &src, &dst, false);
     
-    // Always release transfer buffer even if command submission fails
-    SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
-    
     SDL_EndGPUCopyPass(copy_pass);
+    SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
     if (!SDL_SubmitGPUCommandBuffer(cmd)) {
         fprintf(stderr, "Failed to submit GPU command buffer for texture upload: %s\n", filepath);
         SDL_ReleaseGPUTexture(gpu_device, texture);
@@ -817,7 +821,7 @@ static int font_load_slug(const char *path) {
         size_t cached_size = 0;
         void *cached = precache_get(path, &cached_size);
         if (cached) {
-            font_ttf_buffer = (unsigned char *)malloc(cached_size);
+            font_ttf_buffer = (unsigned char *)SDL_malloc(cached_size);
             cpu_prof_alloc(font_ttf_buffer, cached_size);
             memcpy(font_ttf_buffer, cached, cached_size);
             size = cached_size;
@@ -976,7 +980,7 @@ static int icon_font_load_slug(const char *path) {
         size_t cached_size = 0;
         void *cached = precache_get(path, &cached_size);
         if (cached) {
-            icon_ttf_buffer = (unsigned char *)malloc(cached_size);
+            icon_ttf_buffer = (unsigned char *)SDL_malloc(cached_size);
             cpu_prof_alloc(icon_ttf_buffer, cached_size);
             memcpy(icon_ttf_buffer, cached, cached_size);
             size = cached_size;
@@ -1114,6 +1118,7 @@ static int harfbuzz_init(void) {
     hb_editor_font = hb_font_create(hb_editor_face);
     hb_ot_font_set_funcs(hb_editor_font);
     hb_scale = hb_face_get_upem(hb_editor_face);
+    if (hb_scale == 0) hb_scale = 1000; /* fallback for corrupt fonts */
     hb_font_set_scale(hb_editor_font, (int)hb_scale, (int)hb_scale);
     printf("HarfBuzz initialized (upem=%u)\n", hb_scale);
     return 0;
@@ -3275,28 +3280,50 @@ static void update_input(void) {
             g_mem->game.input.input_mask |= INPUT_Y;
     }
 
-    // Gamepad input
+    // Gamepad input (cached handle — re-open only when needed)
     float gp_horizontal = 0.0f;
     float gp_vertical = 0.0f;
 
-    int gamepad_count = 0;
-    SDL_JoystickID *gamepads = SDL_GetGamepads(&gamepad_count);
-    if (gamepads && gamepad_count > 0) {
-        SDL_Gamepad *pad = SDL_OpenGamepad(gamepads[0]);
+    {
+        static SDL_Gamepad *cached_pad = NULL;
+        static SDL_JoystickID cached_pad_id = 0;
+        SDL_Gamepad *pad = cached_pad;
+
+        /* Re-acquire gamepad if we don't have one */
+        if (!pad) {
+            int gamepad_count = 0;
+            SDL_JoystickID *gamepads = SDL_GetGamepads(&gamepad_count);
+            if (gamepads && gamepad_count > 0) {
+                pad = SDL_OpenGamepad(gamepads[0]);
+                cached_pad = pad;
+                cached_pad_id = gamepads[0];
+            }
+            SDL_free(gamepads);
+        }
+
+        /* Check if cached gamepad is still connected */
+        if (pad && !SDL_GamepadConnected(pad)) {
+            SDL_CloseGamepad(pad);
+            cached_pad = NULL;
+            pad = NULL;
+        }
+
         if (pad) {
             gp_horizontal = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / 32767.0f;
             gp_vertical = -SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / 32767.0f;
 
-            const float deadzone = 0.2f;
-            float magnitude = sqrtf(gp_horizontal * gp_horizontal + gp_vertical * gp_vertical);
-            if (magnitude < deadzone) {
-                gp_horizontal = 0.0f;
-                gp_vertical = 0.0f;
-            } else {
-                float normalized_magnitude = (magnitude - deadzone) / (1.0f - deadzone);
-                if (normalized_magnitude > 1.0f) normalized_magnitude = 1.0f;
-                gp_horizontal = (gp_horizontal / magnitude) * normalized_magnitude;
-                gp_vertical = (gp_vertical / magnitude) * normalized_magnitude;
+            {
+                const float deadzone = 0.2f;
+                float magnitude = sqrtf(gp_horizontal * gp_horizontal + gp_vertical * gp_vertical);
+                if (magnitude < deadzone) {
+                    gp_horizontal = 0.0f;
+                    gp_vertical = 0.0f;
+                } else {
+                    float normalized_magnitude = (magnitude - deadzone) / (1.0f - deadzone);
+                    if (normalized_magnitude > 1.0f) normalized_magnitude = 1.0f;
+                    gp_horizontal = (gp_horizontal / magnitude) * normalized_magnitude;
+                    gp_vertical = (gp_vertical / magnitude) * normalized_magnitude;
+                }
             }
 
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH))
@@ -3307,11 +3334,8 @@ static void update_input(void) {
                 g_mem->game.input.input_mask |= INPUT_X;
             if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH))
                 g_mem->game.input.input_mask |= INPUT_Y;
-
-            SDL_CloseGamepad(pad);
         }
     }
-    SDL_free(gamepads);
 
     // Combine keyboard and gamepad (take stronger input)
     g_mem->game.input.horizontal = (fabsf(kb_horizontal) > fabsf(gp_horizontal)) ? kb_horizontal : gp_horizontal;

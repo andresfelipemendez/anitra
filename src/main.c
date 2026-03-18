@@ -87,9 +87,9 @@ int main(int argc, char **argv) {
       return 1;
     }
     result = init(project_path);
+    unloadlibrary(lib);
     if (result == 0)
       return 0;
-    unloadlibrary(lib);
     printf("Core reload — restarting...\n");
   }
 }

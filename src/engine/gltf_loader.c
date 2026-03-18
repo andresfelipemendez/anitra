@@ -43,7 +43,7 @@ static TexCacheEntry *s_tex_cache = NULL;
 static int s_tex_cache_hits = 0;
 static SDL_Mutex *s_tex_cache_mtx = NULL;  /* protects s_tex_cache for parallel model loading */
 
-/* FNV-1a fingerprint: hash compressed image size + first 256 bytes */
+/* FNV-1a fingerprint: hash compressed image size + first/middle/last bytes */
 static uint64_t tex_fingerprint(cgltf_image *image) {
     uint64_t hash = 14695981039346656037ULL; /* FNV-1a offset basis */
     size_t i, n;
@@ -57,11 +57,19 @@ static uint64_t tex_fingerprint(cgltf_image *image) {
             hash ^= (size >> (i * 8)) & 0xFF;
             hash *= 1099511628211ULL;
         }
-        /* hash first 256 bytes of compressed image data */
-        n = size < 256 ? size : 256;
+        /* hash first 1024 bytes */
+        n = size < 1024 ? size : 1024;
         for (i = 0; i < n; i++) {
             hash ^= data[i];
             hash *= 1099511628211ULL;
+        }
+        /* also hash last 512 bytes to distinguish images with same headers */
+        if (size > 1024) {
+            size_t tail_start = size > 512 ? size - 512 : 0;
+            for (i = tail_start; i < size; i++) {
+                hash ^= data[i];
+                hash *= 1099511628211ULL;
+            }
         }
     } else if (image->uri) {
         const char *s = image->uri;
@@ -116,6 +124,11 @@ static SDL_GPUBuffer *upload_gpu_buffer(const void *data, uint32_t size,
     if (!transfer) { SDL_ReleaseGPUBuffer(s_gpu_device, buf); return NULL; }
 
     mapped = SDL_MapGPUTransferBuffer(s_gpu_device, transfer, 0);
+    if (!mapped) {
+        SDL_ReleaseGPUTransferBuffer(s_gpu_device, transfer);
+        SDL_ReleaseGPUBuffer(s_gpu_device, buf);
+        return NULL;
+    }
     memcpy(mapped, data, size);
     SDL_UnmapGPUTransferBuffer(s_gpu_device, transfer);
 
@@ -224,7 +237,7 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, const char *asset_dir
     }
 
     /* ── Upload to GPU (no lock — SDL3 GPU is internally mutex-protected) ── */
-    img_size = (uint32_t)(w * h * 4);
+    img_size = (uint32_t)((uint32_t)w * (uint32_t)h * 4);
 
     tex_info.type = SDL_GPU_TEXTURETYPE_2D;
     tex_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -244,6 +257,12 @@ static SDL_GPUTexture *extract_texture(cgltf_image *image, const char *asset_dir
     transfer = SDL_CreateGPUTransferBuffer(s_gpu_device, &tbuf_info);
 
     mapped = SDL_MapGPUTransferBuffer(s_gpu_device, transfer, 0);
+    if (!mapped) {
+        SDL_ReleaseGPUTransferBuffer(s_gpu_device, transfer);
+        SDL_ReleaseGPUTexture(s_gpu_device, texture);
+        stbi_image_free(pixels);
+        return NULL;
+    }
     memcpy(mapped, pixels, img_size);
     SDL_UnmapGPUTransferBuffer(s_gpu_device, transfer);
     stbi_image_free(pixels);
@@ -600,73 +619,78 @@ static AnimClip extract_anim_clip(cgltf_animation *anim, cgltf_skin *skin, arena
     clip.data = (ChannelData *)arena_alloc(ar,
         clip.channel_count * sizeof(ChannelData), 8, "anim_data");
 
-    for (c = 0; c < clip.channel_count; c++) {
-        cgltf_animation_channel *ch = &anim->channels[c];
-        cgltf_animation_sampler *sampler = ch->sampler;
-        uint16_t joint_index = 0;
-        cgltf_size j;
-        uint8_t prop = 0;
-        uint8_t interp = 1;
-        uint32_t kf_count;
-        uint32_t k;
-        float last;
+    {
+        uint32_t write_idx = 0;
+        for (c = 0; c < (uint32_t)anim->channels_count; c++) {
+            cgltf_animation_channel *ch = &anim->channels[c];
+            cgltf_animation_sampler *sampler = ch->sampler;
+            uint16_t joint_index = 0;
+            cgltf_size j;
+            uint8_t prop = 0;
+            uint8_t interp = 1;
+            uint32_t kf_count;
+            uint32_t k;
+            float last;
 
-        /* find joint index */
-        for (j = 0; j < skin->joints_count; j++) {
-            if (skin->joints[j] == ch->target_node) {
-                joint_index = (uint16_t)j;
+            /* find joint index */
+            for (j = 0; j < skin->joints_count; j++) {
+                if (skin->joints[j] == ch->target_node) {
+                    joint_index = (uint16_t)j;
+                    break;
+                }
+            }
+
+            /* property — skip unsupported channel types (e.g. morph weights) */
+            switch (ch->target_path) {
+            case cgltf_animation_path_type_translation: prop = 0; break;
+            case cgltf_animation_path_type_rotation:    prop = 1; break;
+            case cgltf_animation_path_type_scale:       prop = 2; break;
+            default: continue;
+            }
+
+            /* interpolation */
+            switch (sampler->interpolation) {
+            case cgltf_interpolation_type_step:         interp = 0; break;
+            case cgltf_interpolation_type_linear:       interp = 1; break;
+            case cgltf_interpolation_type_cubic_spline: interp = 2; break;
+            case cgltf_interpolation_type_max_enum:
+            default:
+                interp = 1;
                 break;
             }
-        }
 
-        /* property */
-        switch (ch->target_path) {
-        case cgltf_animation_path_type_translation: prop = 0; break;
-        case cgltf_animation_path_type_rotation:    prop = 1; break;
-        case cgltf_animation_path_type_scale:       prop = 2; break;
-        default: continue;
-        }
+            clip.headers[write_idx].joint_index = joint_index;
+            clip.headers[write_idx].property = prop;
+            clip.headers[write_idx].interpolation = interp;
 
-        /* interpolation */
-        switch (sampler->interpolation) {
-        case cgltf_interpolation_type_step:         interp = 0; break;
-        case cgltf_interpolation_type_linear:       interp = 1; break;
-        case cgltf_interpolation_type_cubic_spline: interp = 2; break;
-        case cgltf_interpolation_type_max_enum:
-        default:
-            interp = 1;
-            break;
-        }
-
-        clip.headers[c].joint_index = joint_index;
-        clip.headers[c].property = prop;
-        clip.headers[c].interpolation = interp;
-
-        /* timestamps */
-        kf_count = (uint32_t)sampler->input->count;
-        clip.times[c].keyframe_count = kf_count;
-        clip.times[c].timestamps = (float *)arena_alloc(ar,
-            kf_count * sizeof(float), 4, "anim_ts");
-        for (k = 0; k < kf_count; k++)
-            cgltf_accessor_read_float(sampler->input, k, &clip.times[c].timestamps[k], 1);
-
-        last = clip.times[c].timestamps[kf_count - 1];
-        if (last > clip.duration) clip.duration = last;
-
-        /* values */
-        if (prop == 1) { /* rotation -> Quat */
-            clip.data[c].quats = (Quat *)arena_alloc(ar,
-                kf_count * sizeof(Quat), 16, "anim_rot");
+            /* timestamps */
+            kf_count = (uint32_t)sampler->input->count;
+            clip.times[write_idx].keyframe_count = kf_count;
+            clip.times[write_idx].timestamps = (float *)arena_alloc(ar,
+                kf_count * sizeof(float), 4, "anim_ts");
             for (k = 0; k < kf_count; k++)
-                cgltf_accessor_read_float(sampler->output, k,
-                    &clip.data[c].quats[k].x, 4);
-        } else { /* translation or scale -> Vec3 */
-            clip.data[c].vec3s = (Vec3 *)arena_alloc(ar,
-                kf_count * sizeof(Vec3), 16, "anim_vec3");
-            for (k = 0; k < kf_count; k++)
-                cgltf_accessor_read_float(sampler->output, k,
-                    &clip.data[c].vec3s[k].x, 3);
+                cgltf_accessor_read_float(sampler->input, k, &clip.times[write_idx].timestamps[k], 1);
+
+            last = clip.times[write_idx].timestamps[kf_count - 1];
+            if (last > clip.duration) clip.duration = last;
+
+            /* values */
+            if (prop == 1) { /* rotation -> Quat */
+                clip.data[write_idx].quats = (Quat *)arena_alloc(ar,
+                    kf_count * sizeof(Quat), 16, "anim_rot");
+                for (k = 0; k < kf_count; k++)
+                    cgltf_accessor_read_float(sampler->output, k,
+                        &clip.data[write_idx].quats[k].x, 4);
+            } else { /* translation or scale -> Vec3 */
+                clip.data[write_idx].vec3s = (Vec3 *)arena_alloc(ar,
+                    kf_count * sizeof(Vec3), 16, "anim_vec3");
+                for (k = 0; k < kf_count; k++)
+                    cgltf_accessor_read_float(sampler->output, k,
+                        &clip.data[write_idx].vec3s[k].x, 3);
+            }
+            write_idx++;
         }
+        clip.channel_count = write_idx;
     }
 
     printf("  Animation '%s': %u channels, %.2fs\n",

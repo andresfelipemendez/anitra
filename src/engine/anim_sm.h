@@ -89,6 +89,7 @@ typedef struct {
     anim_pose_pool       pool;
     int                  pool_initialized;
     int                  next_skin_mats_offset; /* next free Mat4 offset in pool */
+    int                  entity_to_instance[512]; /* entity_index -> instance index, or -1 (sized to PROJECT_COMP_MAX) */
 } anim_sm;
 
 #endif /* ANIM_SM_H */

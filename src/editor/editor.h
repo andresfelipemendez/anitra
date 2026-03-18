@@ -253,6 +253,7 @@ static void dock_init(dock_state *d) {
     int root;
     memset(d, 0, sizeof(dock_state));
     root = dock_alloc_node(d);
+    if (root < 0) return;
     d->nodes[root].panels[0] = PANEL_GAME;
     d->nodes[root].panel_count = 1;
     d->windows[0].in_use = 1;
@@ -267,45 +268,52 @@ static void dock_init_default(dock_state *d) {
 
     /* Root: horizontal split (Scene Tree | rest) */
     root = dock_alloc_node(d);
+    left = dock_alloc_node(d);
+    center_right_split = dock_alloc_node(d);
+    center_vert_split = dock_alloc_node(d);
+    center_split = dock_alloc_node(d);
+    game_leaf = dock_alloc_node(d);
+    editor_leaf = dock_alloc_node(d);
+    assets_leaf = dock_alloc_node(d);
+    right = dock_alloc_node(d);
+
+    if (root < 0 || left < 0 || center_right_split < 0 || center_vert_split < 0 ||
+        center_split < 0 || game_leaf < 0 || editor_leaf < 0 || assets_leaf < 0 || right < 0) {
+        /* Not enough nodes — fall back to minimal init */
+        memset(d, 0, sizeof(dock_state));
+        dock_init(d);
+        return;
+    }
+
     d->nodes[root].type = DOCK_SPLIT_H;
     d->nodes[root].ratio = 0.19f;
 
     /* Left leaf: Scene Tree only */
-    left = dock_alloc_node(d);
     d->nodes[left].panels[0] = PANEL_SCENE_TREE;
     d->nodes[left].panel_count = 1;
     d->nodes[left].active_tab = 0;
 
     /* Right side: horizontal split (center area | Profiler/Inspector) */
-    center_right_split = dock_alloc_node(d);
     d->nodes[center_right_split].type = DOCK_SPLIT_H;
     d->nodes[center_right_split].ratio = 0.78f;
 
     /* Center area: vertical split (Game+Editor top | Assets bottom) */
-    center_vert_split = dock_alloc_node(d);
     d->nodes[center_vert_split].type = DOCK_SPLIT_V;
     d->nodes[center_vert_split].ratio = 0.68f;
 
     /* Top of center: horizontal split (Game | Editor) */
-    center_split = dock_alloc_node(d);
     d->nodes[center_split].type = DOCK_SPLIT_H;
     d->nodes[center_split].ratio = 0.5f;
 
-    game_leaf = dock_alloc_node(d);
     d->nodes[game_leaf].panels[0] = PANEL_GAME;
     d->nodes[game_leaf].panel_count = 1;
 
-    editor_leaf = dock_alloc_node(d);
     d->nodes[editor_leaf].panels[0] = PANEL_EDITOR;
     d->nodes[editor_leaf].panel_count = 1;
 
     /* Bottom of center: Assets panel */
-    assets_leaf = dock_alloc_node(d);
     d->nodes[assets_leaf].panels[0] = PANEL_ASSETS;
     d->nodes[assets_leaf].panel_count = 1;
-
-    /* Right leaf: Profiler + Inspector + Cache Profiler + CPU Profiler tabs */
-    right = dock_alloc_node(d);
     d->nodes[right].panels[0] = PANEL_PROFILER;
     d->nodes[right].panels[1] = PANEL_INSPECTOR;
     d->nodes[right].panels[2] = PANEL_CACHE_PROFILER;

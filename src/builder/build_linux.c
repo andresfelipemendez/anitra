@@ -509,11 +509,22 @@ static int watch_and_rebuild(void)
     pfd.events = POLLIN;
 
     while (1) {
-        int ret = poll(&pfd, 1, -1);
+        int ret;
+        /* Check if engine process exited */
+        if (g_engine_pid > 0) {
+            int wstatus;
+            pid_t wr = waitpid(g_engine_pid, &wstatus, WNOHANG);
+            if (wr > 0) {
+                printf("Engine process exited, stopping watcher.\n");
+                break;
+            }
+        }
+        ret = poll(&pfd, 1, 1000); /* 1s timeout to re-check process */
         if (ret < 0) {
             printf("!! poll failed\n");
             break;
         }
+        if (ret == 0) continue; /* timeout, re-check process */
 
         /* Drain inotify events — track which directories changed */
         int engine_changed = 0, editor_changed = 0, core_changed = 0;
@@ -554,7 +565,7 @@ static int watch_and_rebuild(void)
             printf(">> " TCC_COMPILE_CMD "\n");
             fflush(stdout);
             if (system(TCC_COMPILE_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
+                { FILE *_sig = fopen(DEBUG_DIR "/.reload-signal", "w"); if (_sig) fclose(_sig); }
                 printf("   Compile OK. Engine reload signal written.\n");
             } else {
                 printf("!! Engine compile failed.\n");
@@ -567,7 +578,7 @@ static int watch_and_rebuild(void)
             printf(">> " TCC_EDITOR_CMD "\n");
             fflush(stdout);
             if (system(TCC_EDITOR_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.editor-reload-signal", "w"));
+                { FILE *_sig = fopen(DEBUG_DIR "/.editor-reload-signal", "w"); if (_sig) fclose(_sig); }
                 printf("   Compile OK. Editor reload signal written.\n");
             } else {
                 printf("!! Editor compile failed.\n");
@@ -580,7 +591,7 @@ static int watch_and_rebuild(void)
             printf(">> " TCC_CORE_CMD "\n");
             fflush(stdout);
             if (system(TCC_CORE_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.core-reload-signal", "w"));
+                { FILE *_sig = fopen(DEBUG_DIR "/.core-reload-signal", "w"); if (_sig) fclose(_sig); }
                 printf("   Compile OK. Core reload signal written.\n");
             } else {
                 printf("!! Core compile failed.\n");

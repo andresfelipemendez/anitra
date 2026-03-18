@@ -645,7 +645,7 @@ static int watch_and_rebuild(void)
             printf(">> " TCC_COMPILE_CMD "\n");
             fflush(stdout);
             if (system(TCC_COMPILE_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
+                { FILE *_sig = fopen(DEBUG_DIR "/.reload-signal", "w"); if (_sig) fclose(_sig); }
                 printf("   Compile OK. Engine reload signal written.\n");
             } else {
                 printf("!! Engine compile failed.\n");
@@ -658,7 +658,7 @@ static int watch_and_rebuild(void)
             printf(">> " TCC_EDITOR_CMD "\n");
             fflush(stdout);
             if (system(TCC_EDITOR_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.editor-reload-signal", "w"));
+                { FILE *_sig = fopen(DEBUG_DIR "/.editor-reload-signal", "w"); if (_sig) fclose(_sig); }
                 printf("   Compile OK. Editor reload signal written.\n");
             } else {
                 printf("!! Editor compile failed.\n");
@@ -671,7 +671,7 @@ static int watch_and_rebuild(void)
             printf(">> " TCC_CORE_CMD "\n");
             fflush(stdout);
             if (system(TCC_CORE_CMD) == 0) {
-                fclose(fopen(DEBUG_DIR "/.core-reload-signal", "w"));
+                { FILE *_sig = fopen(DEBUG_DIR "/.core-reload-signal", "w"); if (_sig) fclose(_sig); }
                 printf("   Compile OK. Core reload signal written.\n");
             } else {
                 printf("!! Core compile failed.\n");
@@ -680,7 +680,7 @@ static int watch_and_rebuild(void)
 
         if (project_changed && !engine_changed) {
             printf("\n--- Project change detected, triggering scene reload... ---\n");
-            fclose(fopen(DEBUG_DIR "/.reload-signal", "w"));
+            { FILE *_sig = fopen(DEBUG_DIR "/.reload-signal", "w"); if (_sig) fclose(_sig); }
             printf("   Engine reload signal written.\n");
         }
         fflush(stdout);

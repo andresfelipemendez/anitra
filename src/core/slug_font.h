@@ -266,7 +266,8 @@ static int slug_pack_glyph(const slug_curve *curves, int curve_count,
     glyph->curve_count = curve_count;
 
     /* Record per-curve texel positions (needed for band lists to reference them) */
-    int *curve_positions = (int *)calloc((size_t)curve_count, sizeof(int));
+    int *curve_positions = (int *)calloc((size_t)(curve_count > 0 ? curve_count : 1), sizeof(int));
+    if (!curve_positions) return 0;
 
     /* Write curve control points to curve texture.
        Each curve needs 2 adjacent texels on the same row (shader does curveLoc.x + 1). */
@@ -366,10 +367,10 @@ static int slug_pack_glyph(const slug_curve *curves, int curve_count,
             /* Vertical band headers */
             for (bi = 0; bi < num_vbands; bi++) {
                 int pos = *band_texel_pos;
-                band_out[pos * 4 + 0] = (float)v_counts[bi];
-                band_out[pos * 4 + 1] = (float)list_offset;
-                band_out[pos * 4 + 2] = 0.0f;
-                band_out[pos * 4 + 3] = 0.0f;
+                band_out[pos * 4 + 0] = (uint32_t)v_counts[bi];
+                band_out[pos * 4 + 1] = (uint32_t)list_offset;
+                band_out[pos * 4 + 2] = 0;
+                band_out[pos * 4 + 3] = 0;
                 (*band_texel_pos)++;
                 list_offset += v_counts[bi];
             }
@@ -665,15 +666,31 @@ static int slug_cache_load(slug_font_data *data, const char *path, uint32_t ttf_
     fread(&data->units_per_em, 4, 1, f);
     fread(data->glyphs, sizeof(slug_glyph), 128, f);
 
+    if (data->curve_texel_count <= 0 || data->band_texel_count <= 0 ||
+        data->curve_texel_count > 16 * 1024 * 1024 || data->band_texel_count > 16 * 1024 * 1024) {
+        fclose(f);
+        return 0;
+    }
     data->curve_texels = (float *)calloc((size_t)data->curve_texel_count * 4, sizeof(float));
     data->band_texels = (uint32_t *)calloc((size_t)data->band_texel_count * 4, sizeof(uint32_t));
     if (!data->curve_texels || !data->band_texels) {
+        free(data->curve_texels);
+        free(data->band_texels);
+        data->curve_texels = NULL;
+        data->band_texels = NULL;
         fclose(f);
         return 0;
     }
 
-    fread(data->curve_texels, sizeof(float) * 4, (size_t)data->curve_texel_count, f);
-    fread(data->band_texels, sizeof(uint32_t) * 4, (size_t)data->band_texel_count, f);
+    if (fread(data->curve_texels, sizeof(float) * 4, (size_t)data->curve_texel_count, f) != (size_t)data->curve_texel_count ||
+        fread(data->band_texels, sizeof(uint32_t) * 4, (size_t)data->band_texel_count, f) != (size_t)data->band_texel_count) {
+        free(data->curve_texels);
+        free(data->band_texels);
+        data->curve_texels = NULL;
+        data->band_texels = NULL;
+        fclose(f);
+        return 0;
+    }
 
     fclose(f);
     return 1;
