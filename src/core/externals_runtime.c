@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stddef.h>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
@@ -51,7 +52,7 @@ static SDL_GPUDevice *gpu_device = NULL;
 static SDL_GPUGraphicsPipeline *sprite_pipeline = NULL;
 static SDL_GPUSampler *sprite_sampler = NULL;
 
-// Debug line pipeline
+// AA line pipeline (shared by game debug lines and editor 3D lines)
 static SDL_GPUGraphicsPipeline *line_pipeline = NULL;
 
 // UI rect pipeline (Clay rectangles)
@@ -2369,7 +2370,7 @@ EXPORT int init_externals(const char *project_path) {
 
         stasks[0].vs_path = g_mem->game.shader_sprite_vs;
         stasks[0].fs_path = g_mem->game.shader_sprite_fs;
-        stasks[1].vs_path = g_mem->game.shader_debug_lines_vs;
+        stasks[1].vs_path = "assets/shaders/compiled/editor_line_vs.spv";
         stasks[1].fs_path = g_mem->game.shader_debug_lines_fs;
         stasks[2].vs_path = "assets/shaders/compiled/editor_line_vs.spv";
         stasks[2].fs_path = g_mem->game.shader_debug_lines_fs;
@@ -2484,38 +2485,52 @@ EXPORT int init_externals(const char *project_path) {
     {
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
-        vbuf_desc.pitch = sizeof(line_vertex);
+        vbuf_desc.pitch = sizeof(line_vert);
         vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
         vbuf_desc.instance_step_rate = 0;
 
-        SDL_GPUVertexAttribute attrs[2] = {0};
-        // location 0: position (float2)
+        SDL_GPUVertexAttribute attrs[4] = {0};
         attrs[0].location = 0;
         attrs[0].buffer_slot = 0;
-        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
-        attrs[0].offset = 0;
-        // location 1: color (float3)
+        attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+        attrs[0].offset = offsetof(line_vert, x);
         attrs[1].location = 1;
         attrs[1].buffer_slot = 0;
         attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-        attrs[1].offset = sizeof(float) * 2;
+        attrs[1].offset = offsetof(line_vert, r);
+        attrs[2].location = 2;
+        attrs[2].buffer_slot = 0;
+        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+        attrs[2].offset = offsetof(line_vert, ox);
+        attrs[3].location = 3;
+        attrs[3].buffer_slot = 0;
+        attrs[3].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
+        attrs[3].offset = offsetof(line_vert, side);
 
         SDL_GPUTextureFormat swapchain_format =
             SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
 
         SDL_GPUColorTargetDescription color_target = {0};
         color_target.format = swapchain_format;
+        color_target.blend_state.enable_blend = true;
+        color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        color_target.blend_state.color_write_mask = 0xF;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
-        pipe_info.vertex_shader = all_vs[1];
-        pipe_info.fragment_shader = all_fs[1];
+        pipe_info.vertex_shader = all_vs[2];   /* shared editor_line_vs (3D) */
+        pipe_info.fragment_shader = all_fs[2];  /* shared debug_lines_fs */
 
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
-        pipe_info.vertex_input_state.num_vertex_attributes = 2;
+        pipe_info.vertex_input_state.num_vertex_attributes = 4;
 
-        pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_LINELIST;
+        pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 
         pipe_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
         pipe_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -2544,24 +2559,40 @@ EXPORT int init_externals(const char *project_path) {
     {
         SDL_GPUVertexBufferDescription vbuf_desc = {0};
         vbuf_desc.slot = 0;
-        vbuf_desc.pitch = sizeof(editor_line_vert); /* float3 pos + float3 color = 24 bytes */
+        vbuf_desc.pitch = sizeof(line_vert);
         vbuf_desc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
-        SDL_GPUVertexAttribute attrs[2] = {0};
+        SDL_GPUVertexAttribute attrs[4] = {0};
         attrs[0].location = 0;
         attrs[0].buffer_slot = 0;
         attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-        attrs[0].offset = 0;
+        attrs[0].offset = offsetof(line_vert, x);
         attrs[1].location = 1;
         attrs[1].buffer_slot = 0;
         attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-        attrs[1].offset = sizeof(float) * 3;
+        attrs[1].offset = offsetof(line_vert, r);
+        attrs[2].location = 2;
+        attrs[2].buffer_slot = 0;
+        attrs[2].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+        attrs[2].offset = offsetof(line_vert, ox);
+        attrs[3].location = 3;
+        attrs[3].buffer_slot = 0;
+        attrs[3].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
+        attrs[3].offset = offsetof(line_vert, side);
 
         SDL_GPUTextureFormat swapchain_format =
             SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
 
         SDL_GPUColorTargetDescription color_target = {0};
         color_target.format = swapchain_format;
+        color_target.blend_state.enable_blend = true;
+        color_target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        color_target.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        color_target.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        color_target.blend_state.color_write_mask = 0xF;
 
         SDL_GPUGraphicsPipelineCreateInfo pipe_info = {0};
         pipe_info.vertex_shader = all_vs[2];
@@ -2569,8 +2600,8 @@ EXPORT int init_externals(const char *project_path) {
         pipe_info.vertex_input_state.vertex_buffer_descriptions = &vbuf_desc;
         pipe_info.vertex_input_state.num_vertex_buffers = 1;
         pipe_info.vertex_input_state.vertex_attributes = attrs;
-        pipe_info.vertex_input_state.num_vertex_attributes = 2;
-        pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_LINELIST;
+        pipe_info.vertex_input_state.num_vertex_attributes = 4;
+        pipe_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         pipe_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
         pipe_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         pipe_info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
@@ -2581,7 +2612,7 @@ EXPORT int init_externals(const char *project_path) {
         pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
 
         pipe_info.depth_stencil_state.enable_depth_test = true;
-        pipe_info.depth_stencil_state.enable_depth_write = true;
+        pipe_info.depth_stencil_state.enable_depth_write = false; /* AA lines use alpha — don't write depth */
         pipe_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
 
         editor_line_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
@@ -3175,13 +3206,14 @@ EXPORT int init_externals(const char *project_path) {
         g_mem->game.dl.meshes = (mesh_draw_command*)arena_alloc(rendering,
             (uint32_t)(DRAW_LIST_MAX_MESH_COMMANDS * sizeof(mesh_draw_command)), 16, "mesh_commands");
         g_mem->game.dl.line_capacity = DRAW_LIST_MAX_DEBUG_LINES;
-        g_mem->game.dl.lines = (debug_line_command*)arena_alloc(rendering,
-            (uint32_t)(DRAW_LIST_MAX_DEBUG_LINES * sizeof(debug_line_command)), 16, "debug_lines");
+        g_mem->game.dl.line_width = 1.0f;
+        g_mem->game.dl.line_verts = (line_vert*)arena_alloc(rendering,
+            (uint32_t)(DRAW_LIST_MAX_DEBUG_LINES * LINE_VERTS_PER_LINE * sizeof(line_vert)), 16, "debug_lines");
 
         g_mem->game.dbg.max_lines = 1000;
         g_mem->game.dbg.current_line_count = 0;
-        g_mem->game.dbg.vertex_buffer = (float*)arena_alloc(rendering,
-            (uint32_t)(1000 * 10 * sizeof(float)), 16, "debug_vertices");
+        g_mem->game.dbg.vertex_buffer = (line_vert*)arena_alloc(rendering,
+            (uint32_t)(1000 * LINE_VERTS_PER_LINE * sizeof(line_vert)), 16, "debug_vertices");
     }
 
     // Allocate gameplay sub-arena (entities, etc.)
@@ -3927,11 +3959,22 @@ EXPORT int update_externals(void) {
     FRAME_CPU_ZONE_END(); /* ui_prepare_all */
 
     // --- Upload editor 3D lines (populated by editor.dll) ---
-    SDL_GPUBuffer *editor_line_gpu_buf = NULL;
-    int editor_vert_count = g_mem->editor.line_count * 2;
+    static SDL_GPUBuffer *editor_line_gpu_buf = NULL;
+    static Uint32 editor_line_gpu_buf_size = 0;
+    int editor_vert_count = g_mem->editor.line_count * LINE_VERTS_PER_LINE;
     if (g_mem->editor.open && editor_vert_count > 0) {
         FRAME_CPU_ZONE_BEGIN("upload_editor_lines");
-        Uint32 ed_buf_size = (Uint32)(editor_vert_count * sizeof(editor_line_vert));
+        Uint32 ed_buf_size = (Uint32)(editor_vert_count * sizeof(line_vert));
+
+        /* Grow persistent GPU buffer if needed */
+        if (ed_buf_size > editor_line_gpu_buf_size) {
+            if (editor_line_gpu_buf) SDL_ReleaseGPUBuffer(gpu_device, editor_line_gpu_buf);
+            SDL_GPUBufferCreateInfo ed_gpu_info = {0};
+            ed_gpu_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+            ed_gpu_info.size = ed_buf_size;
+            editor_line_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &ed_gpu_info);
+            editor_line_gpu_buf_size = ed_buf_size;
+        }
 
         SDL_GPUTransferBufferCreateInfo ed_tbuf_info = {0};
         ed_tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
@@ -3941,11 +3984,6 @@ EXPORT int update_externals(void) {
         void *ed_mapped = SDL_MapGPUTransferBuffer(gpu_device, ed_transfer, false);
         memcpy(ed_mapped, g_mem->editor.lines, ed_buf_size);
         SDL_UnmapGPUTransferBuffer(gpu_device, ed_transfer);
-
-        SDL_GPUBufferCreateInfo ed_gpu_info = {0};
-        ed_gpu_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-        ed_gpu_info.size = ed_buf_size;
-        editor_line_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &ed_gpu_info);
 
         SDL_GPUCopyPass *ed_copy = SDL_BeginGPUCopyPass(cmd_buf);
         SDL_GPUTransferBufferLocation ed_src = {0};
@@ -4128,8 +4166,10 @@ EXPORT int update_externals(void) {
             }
 
             if (line_count > 0 && line_gpu_buf) {
+                float line_params[4] = {(float)gw, (float)gh, g_mem->game.dl.line_width, 0.0f};
                 SDL_BindGPUGraphicsPipeline(render_pass, line_pipeline);
                 SDL_PushGPUVertexUniformData(cmd_buf, 0, &uniforms, sizeof(uniforms));
+                SDL_PushGPUVertexUniformData(cmd_buf, 1, line_params, sizeof(line_params));
 
                 SDL_GPUBufferBinding vbuf_binding = {0};
                 vbuf_binding.buffer = line_gpu_buf;
@@ -4419,14 +4459,16 @@ EXPORT int update_externals(void) {
         /* 1. 3D meshes (editor camera) */
         draw_scene_meshes(ed_pass, cmd_buf, ed_proj, ed_view);
 
-        /* 2. Editor 3D lines (grid + gizmo) */
+        /* 2. Editor 3D lines (grid + gizmo) — AA quad-expanded */
         if (editor_vert_count > 0 && editor_line_gpu_buf) {
+            float ed_line_params[4] = {(float)ew, (float)eh, g_mem->editor.line_width, 0.0f};
             SDL_BindGPUGraphicsPipeline(ed_pass, editor_line_pipeline);
 
             uniform_data ed_line_u;
             memcpy(ed_line_u.projection, ed_proj.m, sizeof(float) * 16);
             memcpy(ed_line_u.view, ed_view.m, sizeof(float) * 16);
             SDL_PushGPUVertexUniformData(cmd_buf, 0, &ed_line_u, sizeof(ed_line_u));
+            SDL_PushGPUVertexUniformData(cmd_buf, 1, ed_line_params, sizeof(ed_line_params));
 
             SDL_GPUBufferBinding ed_lb = {0};
             ed_lb.buffer = editor_line_gpu_buf;
@@ -4560,7 +4602,7 @@ EXPORT int update_externals(void) {
     // Release per-frame GPU buffers
     FRAME_CPU_ZONE_BEGIN("release_frame_resources");
     draw_upload_release(gpu_device, &draw_upload);
-    if (editor_line_gpu_buf) SDL_ReleaseGPUBuffer(gpu_device, editor_line_gpu_buf);
+    /* editor_line_gpu_buf is now persistent — released in end_externals */
     {
         int cwi;
         for (cwi = 0; cwi < MAX_DOCK_WINDOWS; cwi++) {

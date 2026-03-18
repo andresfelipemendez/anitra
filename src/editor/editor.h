@@ -8,9 +8,8 @@
 #include <stdint.h>
 #include <string.h>
 
-/* ── Editor line vertex (matches externals pipeline: float3 pos + float3 color) ── */
-
-typedef struct { float x, y, z, r, g, b; } editor_line_vert;
+/* ── Shared AA line vertex ── */
+#include "line_util.h"
 
 /* ── Editor persistent state (lives in memory struct, survives hot-reload) ── */
 
@@ -895,8 +894,9 @@ typedef struct editor_state {
     float gizmo_world_per_pixel;
 
     /* Line output — written by editor each frame, read by externals for GPU upload */
-    editor_line_vert lines[EDITOR_MAX_LINES * 2];
-    int line_count;      /* number of line segments (each = 2 vertices) */
+    line_vert lines[EDITOR_MAX_LINES * LINE_VERTS_PER_LINE];
+    int line_count;      /* number of line segments (each = 6 vertices quad-expanded) */
+    float line_width;    /* line width in pixels (set by editor, read by externals) */
 
     /* Font metrics — pre-computed by externals at init, used by editor for Clay text measurement.
        Advances are in design units scaled to 1px font height; multiply by fontSize for pixel width. */

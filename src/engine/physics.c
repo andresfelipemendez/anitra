@@ -94,24 +94,54 @@ static mesh_component *find_mesh_component(game_state *gs, int entity_index) {
     return idx >= 0 ? &gs->mesh_components[idx] : NULL;
 }
 
+static rotation_component *find_rotation_component(game_state *gs, int entity_index) {
+    int idx;
+    if (!gs || entity_index < 0 || entity_index >= PROJECT_COMP_MAX) return NULL;
+    idx = gs->rotation_index[entity_index];
+    return idx >= 0 ? &gs->rotation_components[idx] : NULL;
+}
+
+/* Rotate a point around Y axis by degrees (for parent-relative positioning) */
+static Vec3 rotate_y(Vec3 p, float degrees) {
+    float rad = degrees * 3.14159265f / 180.0f;
+    float c = cosf(rad), s = sinf(rad);
+    return VEC3(p.x * c + p.z * s, p.y, -p.x * s + p.z * c);
+}
+
 static Vec3 resolve_world_position(game_state *gs, int entity_index) {
-    Vec3 world = VEC3(0.0f, 0.0f, 0.0f);
+    /* Walk the parent chain collecting (position, rotation_y) pairs,
+       then compose root-to-leaf so child positions are rotated by parent rotation. */
+    int chain[64];
+    int chain_count = 0;
     int current = entity_index;
     int guard = 0;
+    Vec3 world = VEC3(0.0f, 0.0f, 0.0f);
+    float accumulated_rot_y = 0.0f;
+    int i;
     if (!gs) return world;
 
-    while (guard <= gs->scene_entity_count && current >= 0 && current < gs->scene_entity_count) {
-        transform_component *tc = find_transform_component(gs, current);
+    /* Collect chain from entity up to root */
+    while (guard < 64 && current >= 0 && current < gs->scene_entity_count) {
         parent_transform_component *pt;
-        if (tc) {
-            world = vec3_add(world, tc->position);
-        }
-
+        chain[chain_count++] = current;
         pt = find_parent_transform_component(gs, current);
         if (!pt) break;
         if (pt->parent_entity_index == current) break;
         current = pt->parent_entity_index;
         guard++;
+    }
+
+    /* Compose root-to-leaf: each child position is rotated by accumulated parent rotation */
+    for (i = chain_count - 1; i >= 0; i--) {
+        transform_component *tc = find_transform_component(gs, chain[i]);
+        rotation_component *rc = find_rotation_component(gs, chain[i]);
+        if (tc) {
+            Vec3 rotated = rotate_y(tc->position, accumulated_rot_y);
+            world = vec3_add(world, rotated);
+        }
+        if (rc) {
+            accumulated_rot_y += rc->rotation_y_deg;
+        }
     }
     return world;
 }
@@ -418,17 +448,26 @@ void collision(game_state* gs) {
         if (player_hitbox_active && bbox_collide(&player_hit_box,
             collider_rect_ptr(target->box_collider, target->capsule_collider))) {
             color = DEBUG_RED;
-            target->health->health -= 5 * gs->dt;
-            if (target->health->health < 0.0f) target->health->health = 0.0f;
+            /* Apply damage once per hitbox activation (not per-frame) */
+            if (!target->health->hit_this_activation) {
+                target->health->health -= 5.0f;
+                if (target->health->health < 0.0f) target->health->health = 0.0f;
+                target->health->hit_this_activation = 1;
+            }
+        } else {
+            if (target->health) target->health->hit_this_activation = 0;
         }
 
         if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
                          collider_rect_ptr(target->box_collider, target->capsule_collider))) {
             color = DEBUG_RED;
-            actor.health->health -= 5.0f * gs->dt;
-            if (actor.health->health < 0.0f) {
-                actor.health->health = 0.0f;
+            if (!actor.health->hit_this_activation) {
+                actor.health->health -= 5.0f;
+                if (actor.health->health < 0.0f) actor.health->health = 0.0f;
+                actor.health->hit_this_activation = 1;
             }
+        } else {
+            actor.health->hit_this_activation = 0;
         }
 
         if (animator_hitbox_active(a)) {

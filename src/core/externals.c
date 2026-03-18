@@ -97,32 +97,25 @@ void draw_upload_build(SDL_GPUDevice *gpu_device,
     }
 
     line_count = dl->line_count;
-    line_vertex_count = line_count * 2;
-    line_buf_size = (Uint32)(line_vertex_count * (int)sizeof(line_vertex));
+    line_vertex_count = line_count * LINE_VERTS_PER_LINE;
+    line_buf_size = (Uint32)(line_vertex_count * (int)sizeof(line_vert));
 
-    if (line_count > 0 && dl->lines && line_buf_size > 0) {
+    if (line_count > 0 && dl->line_verts && line_buf_size > 0) {
         SDL_GPUTransferBufferCreateInfo tbuf_info = {0};
         SDL_GPUTransferBuffer *line_transfer;
-        line_vertex *verts;
+        void *mapped;
         SDL_GPUBufferCreateInfo buf_info;
         SDL_GPUCopyPass *copy_pass;
         SDL_GPUTransferBufferLocation src_loc;
         SDL_GPUBufferRegion dst_region;
-        int i;
 
         tbuf_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         tbuf_info.size = line_buf_size;
         tbuf_info.props = 0;
 
         line_transfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbuf_info);
-        verts = (line_vertex *)SDL_MapGPUTransferBuffer(gpu_device, line_transfer, false);
-
-        for (i = 0; i < line_count; i++) {
-            const debug_line_command *ln = &dl->lines[i];
-            verts[i * 2 + 0] = (line_vertex){ln->x1, ln->y1, ln->r, ln->g, ln->b};
-            verts[i * 2 + 1] = (line_vertex){ln->x2, ln->y2, ln->r, ln->g, ln->b};
-        }
-
+        mapped = SDL_MapGPUTransferBuffer(gpu_device, line_transfer, false);
+        memcpy(mapped, dl->line_verts, line_buf_size);
         SDL_UnmapGPUTransferBuffer(gpu_device, line_transfer);
 
         memset(&buf_info, 0, sizeof(buf_info));

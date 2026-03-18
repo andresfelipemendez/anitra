@@ -292,13 +292,20 @@ static int slug_pack_glyph(const slug_curve *curves, int curve_count,
         *curve_texel_pos += 2;
     }
 
-    /* Build per-band curve lists */
+    /* Build per-band curve lists (use static scratch to avoid per-glyph alloc) */
     {
-        /* Temporary storage for band assignments */
-        slug_sort_entry *h_entries = (slug_sort_entry *)calloc((size_t)(num_hbands * curve_count), sizeof(slug_sort_entry));
-        int *h_counts = (int *)calloc((size_t)num_hbands, sizeof(int));
-        slug_sort_entry *v_entries = (slug_sort_entry *)calloc((size_t)(num_vbands * curve_count), sizeof(slug_sort_entry));
-        int *v_counts = (int *)calloc((size_t)num_vbands, sizeof(int));
+        static slug_sort_entry s_h_entries[SLUG_DEFAULT_HBANDS * SLUG_MAX_CURVES_PER_GLYPH];
+        static int s_h_counts[SLUG_DEFAULT_HBANDS];
+        static slug_sort_entry s_v_entries[SLUG_DEFAULT_VBANDS * SLUG_MAX_CURVES_PER_GLYPH];
+        static int s_v_counts[SLUG_DEFAULT_VBANDS];
+
+        slug_sort_entry *h_entries = s_h_entries;
+        int *h_counts = s_h_counts;
+        slug_sort_entry *v_entries = s_v_entries;
+        int *v_counts = s_v_counts;
+
+        memset(h_counts, 0, (size_t)num_hbands * sizeof(int));
+        memset(v_counts, 0, (size_t)num_vbands * sizeof(int));
 
         /* Assign curves to bands */
         for (ci = 0; ci < curve_count; ci++) {
@@ -406,8 +413,7 @@ static int slug_pack_glyph(const slug_curve *curves, int curve_count,
             }
         }
 
-        free(h_entries); free(h_counts);
-        free(v_entries); free(v_counts);
+        /* Static scratch — no free needed */
     }
 
     free(curve_positions);

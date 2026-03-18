@@ -1,6 +1,8 @@
 #ifndef DRAW_LIST_H
 #define DRAW_LIST_H
 
+#include "line_util.h"
+
 #define MAX_DRAW_COMMANDS 256
 #define DRAW_LIST_MAX_DEBUG_LINES 128
 #define DRAW_LIST_MAX_MESH_COMMANDS 256
@@ -14,11 +16,6 @@ typedef struct draw_command {
     float tint_r, tint_g, tint_b, tint_a;
 } draw_command;
 
-typedef struct debug_line_command {
-    float x1, y1, x2, y2;
-    float r, g, b;
-} debug_line_command;
-
 typedef struct mesh_draw_command {
     int model_asset_index;
     int use_skinned_bones;
@@ -30,9 +27,10 @@ typedef struct draw_list {
     draw_command *sprites;
     int sprite_count;
     int sprite_capacity;
-    debug_line_command *lines;
-    int line_count;
+    line_vert *line_verts;     /* pre-expanded AA line quads (6 verts per line) */
+    int line_count;            /* number of line segments */
     int line_capacity;
+    float line_width;          /* line width in pixels */
     mesh_draw_command *meshes;
     int mesh_count;
     int mesh_capacity;

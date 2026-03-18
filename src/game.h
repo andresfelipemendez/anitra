@@ -150,6 +150,7 @@ typedef struct health_component {
     int entity_index;
     float health;
     float max_health;
+    int hit_this_activation; /* prevent framerate-dependent damage: 1 = already hit this hitbox cycle */
 } health_component;
 
 typedef struct collider_component {

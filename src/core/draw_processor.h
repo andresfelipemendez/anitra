@@ -13,11 +13,6 @@ typedef struct sprite_vertex {
     float r, g, b, a;
 } sprite_vertex;
 
-typedef struct line_vertex {
-    float x, y;
-    float r, g, b;
-} line_vertex;
-
 typedef struct draw_upload_buffers {
     SDL_GPUBuffer *sprite_gpu_buf;
     SDL_GPUBuffer *line_gpu_buf;

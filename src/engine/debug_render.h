@@ -2,6 +2,7 @@
 #define DEBUG_RENDER_H
 
 #include "math3d.h"
+#include "line_util.h"
 
 /* Debug color (RGB float) */
 typedef struct {
@@ -12,7 +13,7 @@ typedef struct {
 #define DEBUG_RENDER_MAX_LINES 256
 
 typedef struct debug_renderer {
-    float* vertex_buffer;  /* x,y,r,g,b for each line endpoint — arena-allocated */
+    line_vert *vertex_buffer;  /* pre-expanded AA line quads — arena-allocated */
     int max_lines;
     int current_line_count;
 } debug_renderer;

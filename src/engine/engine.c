@@ -2714,21 +2714,14 @@ static void system_animation_legacy(game_state *gs) {
 }
 
 static void system_flush_debug_lines(game_state *gs) {
-    int i;
-    for (i = 0; i < gs->dbg.current_line_count; i++) {
-        int idx;
-        debug_line_command* line;
-        if (gs->dl.line_count >= gs->dl.line_capacity) break;
-        idx = i * 10;
-        line = &gs->dl.lines[gs->dl.line_count++];
-        line->x1 = gs->dbg.vertex_buffer[idx];
-        line->y1 = gs->dbg.vertex_buffer[idx+1];
-        line->r = gs->dbg.vertex_buffer[idx+2];
-        line->g = gs->dbg.vertex_buffer[idx+3];
-        line->b = gs->dbg.vertex_buffer[idx+4];
-        line->x2 = gs->dbg.vertex_buffer[idx+5];
-        line->y2 = gs->dbg.vertex_buffer[idx+6];
-    }
+    int count = gs->dbg.current_line_count;
+    int avail = gs->dl.line_capacity - gs->dl.line_count;
+    if (count > avail) count = avail;
+    if (count <= 0) return;
+    memcpy(&gs->dl.line_verts[gs->dl.line_count * LINE_VERTS_PER_LINE],
+           gs->dbg.vertex_buffer,
+           (size_t)(count * LINE_VERTS_PER_LINE) * sizeof(line_vert));
+    gs->dl.line_count += count;
 }
 
 static void register_system(game_state *gs, const char *name,

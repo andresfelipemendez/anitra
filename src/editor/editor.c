@@ -1727,9 +1727,10 @@ static int editor_save_scene_to_toml(game_state *gs, const char *path) {
     return 1;
 }
 
-static void build_scene_parent_lookup(const game_state *gs, int entity_count, int *parent_of) {
+static void build_scene_parent_lookup(const game_state *gs, int entity_count,
+                                      int *parent_of, int *has_children) {
     int i;
-    for (i = 0; i < entity_count; i++) parent_of[i] = -1;
+    for (i = 0; i < entity_count; i++) { parent_of[i] = -1; has_children[i] = 0; }
     if (gs->parent_components) {
         for (i = 0; i < gs->parent_component_count; i++) {
             parent_component *pc = &gs->parent_components[i];
@@ -1737,14 +1738,19 @@ static void build_scene_parent_lookup(const game_state *gs, int entity_count, in
             parent_of[pc->entity_index] = pc->parent_entity_index;
         }
     }
-    if (!gs->parent_transform_components) return;
-
-    for (i = 0; i < gs->parent_transform_component_count; i++) {
-        parent_transform_component *pt = &gs->parent_transform_components[i];
-        if (pt->entity_index < 0 || pt->entity_index >= entity_count) continue;
-        if (pt->parent_entity_index < 0 || pt->parent_entity_index >= entity_count) continue;
-        if (parent_of[pt->entity_index] >= 0) continue;
-        parent_of[pt->entity_index] = pt->parent_entity_index;
+    if (gs->parent_transform_components) {
+        for (i = 0; i < gs->parent_transform_component_count; i++) {
+            parent_transform_component *pt = &gs->parent_transform_components[i];
+            if (pt->entity_index < 0 || pt->entity_index >= entity_count) continue;
+            if (pt->parent_entity_index < 0 || pt->parent_entity_index >= entity_count) continue;
+            if (parent_of[pt->entity_index] >= 0) continue;
+            parent_of[pt->entity_index] = pt->parent_entity_index;
+        }
+    }
+    /* Pre-compute has_children in O(n) */
+    for (i = 0; i < entity_count; i++) {
+        int p = parent_of[i];
+        if (p >= 0 && p < entity_count && p != i) has_children[p] = 1;
     }
 }
 
@@ -1807,13 +1813,8 @@ static int scene_tree_parent_assignment_is_valid(int child_entity, int parent_en
 
 static int scene_tree_entity_has_children(int entity_index,
                                           const int *parent_of, int entity_count) {
-    int child;
-    if (!parent_of) return 0;
-    if (entity_index < 0 || entity_index >= entity_count) return 0;
-    for (child = 0; child < entity_count; child++) {
-        if (child == entity_index) continue;
-        if (parent_of[child] == entity_index) return 1;
-    }
+    (void)parent_of; (void)entity_count;
+    /* Legacy path — callers should use precomputed has_children[] instead */
     return 0;
 }
 
@@ -1943,7 +1944,8 @@ static void scene_tree_begin_drag(editor_state *e, int entity_index) {
 static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
                                        int entity_index, int depth, int click,
                                        int shift_toggle,
-                                       const int *parent_of, int entity_count) {
+                                       const int *parent_of, int entity_count,
+                                       const int *has_children_arr) {
     static char row_bufs[SCENE_TREE_MAX_ENTITIES][64];
     int bi = entity_index;
     if (bi < 0 || bi >= SCENE_TREE_MAX_ENTITIES) return;
@@ -1954,7 +1956,7 @@ static void scene_tree_emit_entity_row(const game_state *gs, editor_state *e,
                                                               parent_of, entity_count);
     int sibling_valid;
     const char *name = NULL;
-    int has_children = scene_tree_entity_has_children(entity_index, parent_of, entity_count);
+    int has_children = (has_children_arr && entity_index >= 0 && entity_index < entity_count) ? has_children_arr[entity_index] : 0;
     int collapsed = 0;
     const char *disclosure_label = " ";
 
@@ -2103,7 +2105,7 @@ static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state 
                                              int entity_index, int depth, int click,
                                              int shift_toggle,
                                              const int *parent_of, int entity_count,
-                                             int *visited) {
+                                             int *visited, const int *has_children_arr) {
     int child;
     int collapsed = 0;
     if (entity_index < 0 || entity_index >= entity_count) return;
@@ -2111,7 +2113,7 @@ static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state 
 
     visited[entity_index] = 1;
     scene_tree_emit_entity_row(gs, e, entity_index, depth, click, shift_toggle,
-                               parent_of, entity_count);
+                               parent_of, entity_count, has_children_arr);
 
     if (entity_index >= 0 && entity_index < SCENE_TREE_MAX_ENTITIES) {
         collapsed = e->scene_tree_collapsed[entity_index] ? 1 : 0;
@@ -2125,7 +2127,8 @@ static void scene_tree_emit_entity_recursive(const game_state *gs, editor_state 
         if (parent_of[child] == entity_index && child != entity_index) {
             scene_tree_emit_entity_recursive(gs, e, child, depth + 1, click,
                                              shift_toggle,
-                                             parent_of, entity_count, visited);
+                                             parent_of, entity_count, visited,
+                                             has_children_arr);
         }
     }
 }
@@ -2540,13 +2543,9 @@ static int editor_pick_scene_entity(const game_state *gs, const editor_state *e,
 }
 
 static void add_line(editor_state *e, Vec3 a, Vec3 b, float r, float g, float bl) {
-    int i;
     if (e->line_count >= EDITOR_MAX_LINES) return;
-    i = e->line_count * 2;
-    e->lines[i + 0].x = a.x; e->lines[i + 0].y = a.y; e->lines[i + 0].z = a.z;
-    e->lines[i + 0].r = r;   e->lines[i + 0].g = g;   e->lines[i + 0].b = bl;
-    e->lines[i + 1].x = b.x; e->lines[i + 1].y = b.y; e->lines[i + 1].z = b.z;
-    e->lines[i + 1].r = r;   e->lines[i + 1].g = g;   e->lines[i + 1].b = bl;
+    line_expand(&e->lines[e->line_count * LINE_VERTS_PER_LINE],
+                a.x, a.y, a.z, b.x, b.y, b.z, r, g, bl);
     e->line_count++;
 }
 
@@ -3445,6 +3444,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
     e->gizmo_drag_start_capsule_half_height = 0.0f;
     if (e->gizmo_drag_axis_local_scale == 0.0f) e->gizmo_drag_axis_local_scale = 1.0f;
     e->line_count = 0;
+    if (e->line_width == 0.0f) e->line_width = 1.0f;
     e->menu_open = -1;
     e->menu_hover = -1;
     e->scene_selected_entity = 0;
@@ -4162,6 +4162,7 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     int shift_toggle;
     int entity_count;
     int parent_of[SCENE_TREE_MAX_ENTITIES];
+    int has_children_lookup[SCENE_TREE_MAX_ENTITIES];
     int visited[SCENE_TREE_MAX_ENTITIES];
     static char title_buf[128];
     Clay_RenderCommandArray commands;
@@ -4206,7 +4207,7 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
     entity_count = gs->scene_entities ? gs->scene_entity_count : 0;
     snprintf(title_buf, sizeof(title_buf), "Scene Tree  (%d entities)", entity_count);
     if (entity_count > SCENE_TREE_MAX_ENTITIES) entity_count = SCENE_TREE_MAX_ENTITIES;
-    build_scene_parent_lookup(gs, entity_count, parent_of);
+    build_scene_parent_lookup(gs, entity_count, parent_of, has_children_lookup);
     memset(visited, 0, (size_t)entity_count * sizeof(int));
 
     CLAY(CLAY_ID("STRoot"), {
@@ -4247,14 +4248,14 @@ static void scene_tree_layout(game_state *gs, editor_state *es) {
                         if (is_root) {
                             scene_tree_emit_entity_recursive(gs, e, i, 0, click,
                                                              shift_toggle,
-                                                             parent_of, entity_count, visited);
+                                                             parent_of, entity_count, visited, has_children_lookup);
                         }
                     }
                     for (i = 0; i < entity_count; i++) {
                         if (!visited[i]) {
                             scene_tree_emit_entity_recursive(gs, e, i, 0, click,
                                                              shift_toggle,
-                                                             parent_of, entity_count, visited);
+                                                             parent_of, entity_count, visited, has_children_lookup);
                         }
                     }
                 }
@@ -7462,6 +7463,7 @@ static void scene_tree_layout_inner(game_state *gs, editor_state *es) {
     int shift_toggle;
     int entity_count;
     int parent_of[SCENE_TREE_MAX_ENTITIES];
+    int has_children_lookup[SCENE_TREE_MAX_ENTITIES];
     int visited[SCENE_TREE_MAX_ENTITIES];
     static char title_buf[128];
 
@@ -7486,7 +7488,7 @@ static void scene_tree_layout_inner(game_state *gs, editor_state *es) {
     entity_count = gs->scene_entities ? gs->scene_entity_count : 0;
     snprintf(title_buf, sizeof(title_buf), "Scene Tree  (%d entities)", entity_count);
     if (entity_count > SCENE_TREE_MAX_ENTITIES) entity_count = SCENE_TREE_MAX_ENTITIES;
-    build_scene_parent_lookup(gs, entity_count, parent_of);
+    build_scene_parent_lookup(gs, entity_count, parent_of, has_children_lookup);
     memset(visited, 0, (size_t)entity_count * sizeof(int));
 
     CLAY(CLAY_ID("STRoot"), {
@@ -7527,14 +7529,14 @@ static void scene_tree_layout_inner(game_state *gs, editor_state *es) {
                         if (is_root) {
                             scene_tree_emit_entity_recursive(gs, e, i, 0, click,
                                                              shift_toggle,
-                                                             parent_of, entity_count, visited);
+                                                             parent_of, entity_count, visited, has_children_lookup);
                         }
                     }
                     for (i = 0; i < entity_count; i++) {
                         if (!visited[i]) {
                             scene_tree_emit_entity_recursive(gs, e, i, 0, click,
                                                              shift_toggle,
-                                                             parent_of, entity_count, visited);
+                                                             parent_of, entity_count, visited, has_children_lookup);
                         }
                     }
                 }
