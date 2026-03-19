@@ -129,6 +129,17 @@ static void reload_engine_dll(dll_time_t cur) {
     wire_engine_profiler();
     reload_project();
     init_engine();
+
+    /* Run tests if the engine exports them */
+    {
+      typedef int (*run_tests_fn)(void);
+      run_tests_fn run_tests = (run_tests_fn)getfunction(engine_lib, "run_tests");
+      if (run_tests) {
+        if (run_tests() != 0)
+          fprintf(stderr, "!! Some tests FAILED after engine reload\n");
+      }
+    }
+
     last_engine_time = cur;
   }
 }

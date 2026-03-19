@@ -21,6 +21,7 @@ static int watch_and_rebuild(void);
     " src/engine/debug_render.c" \
     " src/engine/anim.c" \
     " src/engine/gltf_loader.c" \
+    " src/engine/tests.c" \
     " src/project.c" \
     " build/Debug/SDL3.def"
 #define TCC_EDITOR_CMD \

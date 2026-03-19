@@ -866,9 +866,9 @@ static int mig_generate(const char *output_path) {
         return 0;
     }
 
-    /* Write to a temp file first, then compare with existing to avoid
-       triggering the file watcher when content hasn't changed. */
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", output_path);
+    /* Write to a temp file in build/ to avoid triggering the src/ file watcher.
+       Compare with existing output to skip writes when content hasn't changed. */
+    snprintf(tmp_path, sizeof(tmp_path), OBJ_DIR "/state_migration.gen.h.tmp");
 
     f = fopen(tmp_path, "w");
     if (!f) {
