@@ -9914,7 +9914,6 @@ static void dock_to_clay(dock_state *d, int node_idx, game_state *gs, editor_sta
                         .height = CLAY_SIZING_FIXED(ph)
                     }
                 },
-                .clip = { .vertical = true }
             }) {
                 switch (pid) {
                     case PANEL_SCENE_TREE:      scene_tree_layout_inner(gs, es); break;
@@ -10141,7 +10140,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
         e->window_mouse_down = 0;
     }
     if (ev->type == SDL_EVENT_MOUSE_WHEEL) {
-        e->window_scroll_y += ev->wheel.y;
+        e->window_scroll_y += ev->wheel.y * 3.0f;
     }
 
     /* ── Menu bar input (main window top strip) ── */
