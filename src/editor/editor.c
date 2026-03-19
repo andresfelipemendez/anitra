@@ -4715,6 +4715,7 @@ static void insp_begin_edit(editor_state *e, int field_id, int entity, float val
     e->insp_edit_entity = entity;
     snprintf(e->insp_edit_buf, sizeof(e->insp_edit_buf), "%.2f", value);
     e->insp_edit_cursor = (int)strlen(e->insp_edit_buf);
+    e->insp_cursor_blink = 0;
     if (d && d->windows[0].in_use && d->windows[0].sdl_window)
         SDL_StartTextInput((SDL_Window *)d->windows[0].sdl_window);
 }
@@ -5000,7 +5001,12 @@ static void inspector_layout(game_state *gs, editor_state *es) {
             .backgroundColor = _active ? INSP_FIELD_BG_ACTIVE \
                               : Clay_Hovered() ? INSP_FIELD_BG_HOVER \
                               : INSP_FIELD_BG_IDLE, \
-            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM) \
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM), \
+            .border = _active \
+                ? ((Clay_BorderElementConfig){ \
+                    .color = {100, 140, 220, 255}, \
+                    .width = {1, 1, 1, 1, 0}}) \
+                : ((Clay_BorderElementConfig){0}) \
         }) { \
             Clay_String _cs = {false, (int32_t)strlen(_disp), (char*)_disp}; \
             CLAY_TEXT(_cs, CLAY_TEXT_CONFIG({ \
@@ -7903,6 +7909,10 @@ static void inspector_layout_inner(game_state *gs, editor_state *es) {
 
     snprintf(title_buf, sizeof(title_buf), "Inspector");
 
+    /* Advance blink timer */
+    if (e->insp_edit_field >= 0)
+        e->insp_cursor_blink += gs->dt;
+
 /* -- Macros for editable field rendering -- */
 #define INSP_FIELD_BG_IDLE    ((Clay_Color){42, 50, 66, 255})
 #define INSP_FIELD_BG_HOVER   ((Clay_Color){52, 62, 82, 255})
@@ -7935,7 +7945,16 @@ static void inspector_layout_inner(game_state *gs, editor_state *es) {
                 .textColor = INSP_LABEL_COLOR, .fontSize = UI_FONT_SECONDARY})); \
         } \
         if (_active) { \
-            _disp = e->insp_edit_buf; \
+            int _cpos = e->insp_edit_cursor; \
+            int _slen = (int)strlen(e->insp_edit_buf); \
+            char *_buf = line_bufs[line_i]; \
+            if (_cpos > _slen) _cpos = _slen; \
+            memcpy(_buf, e->insp_edit_buf, (size_t)_cpos); \
+            _buf[_cpos] = '|'; \
+            memcpy(_buf + _cpos + 1, e->insp_edit_buf + _cpos, (size_t)(_slen - _cpos)); \
+            _buf[_slen + 1] = '\0'; \
+            _disp = _buf; \
+            line_i++; \
         } else { \
             snprintf(line_bufs[line_i], sizeof(line_bufs[line_i]), "%.2f", _val); \
             _disp = line_bufs[line_i]; \
@@ -7949,7 +7968,12 @@ static void inspector_layout_inner(game_state *gs, editor_state *es) {
             .backgroundColor = _active ? INSP_FIELD_BG_ACTIVE \
                               : Clay_Hovered() ? INSP_FIELD_BG_HOVER \
                               : INSP_FIELD_BG_IDLE, \
-            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM) \
+            .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM), \
+            .border = _active \
+                ? ((Clay_BorderElementConfig){ \
+                    .color = {100, 140, 220, 255}, \
+                    .width = {1, 1, 1, 1, 0}}) \
+                : ((Clay_BorderElementConfig){0}) \
         }) { \
             Clay_String _cs = {false, (int32_t)strlen(_disp), (char*)_disp}; \
             CLAY_TEXT(_cs, CLAY_TEXT_CONFIG({ \
@@ -10810,6 +10834,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
             }
             e->insp_edit_buf[len] = '\0';
             e->insp_edit_cursor = len;
+            e->insp_cursor_blink = 0;
             return 1;
         }
         if (ev->type == SDL_EVENT_KEY_DOWN) {
@@ -10827,6 +10852,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                     e->insp_edit_buf[len - 1] = '\0';
                     e->insp_edit_cursor = len - 1;
                 }
+                e->insp_cursor_blink = 0;
                 return 1;
             }
             if (ev->key.key == SDLK_TAB) {
@@ -10837,4 +10863,11 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     }
 
     return 0;
+}
+
+/* Editor tests — included after all static functions are defined */
+#include "editor_tests.h"
+
+EXPORT int run_editor_tests(void) {
+    return run_editor_tests_impl();
 }

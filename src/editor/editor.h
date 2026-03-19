@@ -981,6 +981,7 @@ typedef struct editor_state {
     int   insp_edit_entity;         /* entity being edited */
     char  insp_edit_buf[64];        /* text input buffer */
     int   insp_edit_cursor;         /* cursor position in buffer */
+    float insp_cursor_blink;        /* blink timer (seconds), cursor visible when fmod < 0.5 */
 
     /* Inspector per-frame key events (consumed by inspector_layout) */
     int   insp_key_enter;

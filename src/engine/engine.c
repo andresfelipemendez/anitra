@@ -2744,22 +2744,12 @@ EXPORT void update_engine(game_state *gs) {
     int i;
     if (!gs) return;
 
-    if (update_count < 3) {
-        fprintf(stderr, "[update_engine] frame %d, %d systems, play_mode=%d\n",
-                update_count, gs->system_count, gs->editor_play_mode);
-        fflush(stderr);
-    }
-
     ENGINE_CPU_ZONE_BEGIN("update_engine");
     ENGINE_CACHE_ZONE_BEGIN("update_engine");
 
     for (i = 0; i < gs->system_count; i++) {
         engine_system *sys = &gs->systems[i];
         if (sys->play_mode_only && !gs->editor_play_mode) continue;
-        if (update_count < 3 || (sys->play_mode_only && gs->editor_play_mode)) {
-            fprintf(stderr, "[update_engine]   running system '%s'\n", sys->name);
-            fflush(stderr);
-        }
         ENGINE_CPU_ZONE_BEGIN(sys->name);
         sys->fn(gs);
         ENGINE_CPU_ZONE_END();

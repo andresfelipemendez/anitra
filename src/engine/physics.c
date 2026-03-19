@@ -247,10 +247,6 @@ static int query_combat_targets(game_state *gs, int exclude_entity_index,
     int count = 0;
     if (!gs || !out_targets || max_targets <= 0) return 0;
 
-    fprintf(stderr, "[query_targets] health_count=%d, health_ptr=%p, max=%d\n",
-            gs->health_component_count, (void*)gs->health_components, max_targets);
-    fflush(stderr);
-
     /* Iterate health_components — combat targets must have health */
     for (i = 0; i < gs->health_component_count && count < max_targets; i++) {
         health_component *hc = &gs->health_components[i];
@@ -258,9 +254,6 @@ static int query_combat_targets(game_state *gs, int exclude_entity_index,
         transform_component *tc;
         box_collider_component *bc;
         capsule_collider_component *cc;
-
-        fprintf(stderr, "[query_targets]   i=%d entity=%d\n", i, entity_index);
-        fflush(stderr);
 
         if (entity_index == exclude_entity_index) continue;
         if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
@@ -281,8 +274,6 @@ static int query_combat_targets(game_state *gs, int exclude_entity_index,
         count++;
     }
 
-    fprintf(stderr, "[query_targets] done, count=%d\n", count);
-    fflush(stderr);
     return count;
 }
 
