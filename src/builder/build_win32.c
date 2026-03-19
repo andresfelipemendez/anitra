@@ -71,6 +71,20 @@ static int watch_and_rebuild(void);
     " -o build/Debug/build.dll" \
     " src/builder/build.c"
 
+/* MSVC cl commands — produce PDBs for raddbg debugging */
+#define CL_EXE_CMD \
+    "cl /nologo /Zi /Fe:build/Debug/AnitraEngine.exe /Fd:build/Debug/AnitraEngine.pdb" \
+    " /Isrc /Isrc/core" \
+    " src/main.c src/core/loadlibrary_windows.c" \
+    " /link /DEBUG"
+
+#define CL_ENGINE_CMD \
+    "cl /nologo /Zi /LD /Fe:build/Debug/engine.dll /Fd:build/Debug/engine.pdb" \
+    " /Isrc /Isrc/engine /Isrc/editor /Ilib/SDL3/include /Ilib/cgltf /Ilib/toml-c" \
+    " src/engine/engine.c src/engine/physics.c src/engine/debug_render.c" \
+    " src/engine/anim.c src/engine/gltf_loader.c src/project.c" \
+    " /link /DEBUG build/Debug/SDL3.lib"
+
 #define TCC_TEST_CMD \
     "tcc\\tcc.exe -Blib/tcc-windows -g" \
     " -o build/Debug/test_dock.exe" \

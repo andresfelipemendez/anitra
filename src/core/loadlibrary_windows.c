@@ -57,6 +57,14 @@ int copylibrary_with_error(const char *srcname, const char *dstname, error_value
     ERRV_RETURN_CODE_ERR(-1, out_error, 3, "copylibrary: failed to copy source to destination");
   }
 
+  /* Also copy PDB if it exists (for debugger support) */
+  {
+    char srcpdb[512], dstpdb[512];
+    snprintf(srcpdb, sizeof(srcpdb), "%s%s.pdb", exedir, srcname);
+    snprintf(dstpdb, sizeof(dstpdb), "%s%s.pdb", exedir, dstname);
+    CopyFileA(srcpdb, dstpdb, FALSE); /* best-effort, ignore failure */
+  }
+
   ERRV_RETURN_CODE_OK(0, out_error);
 }
 

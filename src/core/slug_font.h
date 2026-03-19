@@ -110,6 +110,20 @@ static void slug_font_data_free(slug_font_data *data);
 static int slug_cache_save(const slug_font_data *data, const char *path, uint32_t ttf_fingerprint);
 static int slug_cache_load(slug_font_data *data, const char *path, uint32_t ttf_fingerprint);
 
+/*
+ * Expand a path of quadratic Bezier curves into a stroked outline.
+ * Takes an open path (array of slug_curve) and a half-width, produces
+ * a closed contour of curves suitable for winding-number fill rendering.
+ *
+ * The output is: outer contour (forward, CCW) + inner contour (reversed, CW),
+ * with round end caps (semicircular arcs at each path endpoint).
+ *
+ * Returns number of curves written to out_curves.
+ */
+static int slug_stroke_expand(const slug_curve *path, int path_count,
+                               float half_width,
+                               slug_curve *out_curves, int max_out);
+
 /* ── Implementation ─────────────────────────────────────────────────────── */
 
 #ifdef SLUG_FONT_IMPL
@@ -619,6 +633,121 @@ static void slug_font_data_free(slug_font_data *data) {
     free(data->codepoints);
     free(data->cp_glyphs);
     free(data);
+}
+
+/* ── Stroke expansion ───────────────────────────────────────────────────── */
+
+/* Quadratic Bezier point at parameter t */
+static void slug_bezier_pt(const slug_curve *c, float t, float *ox, float *oy) {
+    float u = 1.0f - t;
+    *ox = u*u*c->p1x + 2.0f*u*t*c->p2x + t*t*c->p3x;
+    *oy = u*u*c->p1y + 2.0f*u*t*c->p2y + t*t*c->p3y;
+}
+
+/* Quadratic Bezier tangent at parameter t (unnormalized) */
+static void slug_bezier_tan(const slug_curve *c, float t, float *tx, float *ty) {
+    float u = 1.0f - t;
+    *tx = 2.0f*u*(c->p2x - c->p1x) + 2.0f*t*(c->p3x - c->p2x);
+    *ty = 2.0f*u*(c->p2y - c->p1y) + 2.0f*t*(c->p3y - c->p2y);
+}
+
+/* Offset a quadratic Bezier by distance d along its normal.
+   Positive d = left of travel, negative = right.
+   Samples at t=0, 0.5, 1 and fits a new quadratic through the offset points. */
+static void slug_offset_curve(const slug_curve *in, float d, slug_curve *out) {
+    int i;
+    float pts[3][2];
+    float t_vals[3] = {0.0f, 0.5f, 1.0f};
+
+    for (i = 0; i < 3; i++) {
+        float px, py, tx, ty, nx, ny, len;
+        slug_bezier_pt(in, t_vals[i], &px, &py);
+        slug_bezier_tan(in, t_vals[i], &tx, &ty);
+        len = sqrtf(tx*tx + ty*ty);
+        if (len < 1e-10f) len = 1e-10f;
+        nx = -ty / len;
+        ny =  tx / len;
+        pts[i][0] = px + nx * d;
+        pts[i][1] = py + ny * d;
+    }
+
+    /* Fit quadratic through 3 points at t=0, 0.5, 1:
+       B(0.5) = 0.25*p1 + 0.5*p2 + 0.25*p3, so
+       p2 = 2*mid - 0.5*p1 - 0.5*p3 */
+    out->p1x = pts[0][0];  out->p1y = pts[0][1];
+    out->p3x = pts[2][0];  out->p3y = pts[2][1];
+    out->p2x = 2.0f*pts[1][0] - 0.5f*pts[0][0] - 0.5f*pts[2][0];
+    out->p2y = 2.0f*pts[1][1] - 0.5f*pts[0][1] - 0.5f*pts[2][1];
+}
+
+static int slug_stroke_expand(const slug_curve *path, int path_count,
+                               float half_width,
+                               slug_curve *out_curves, int max_out) {
+    int i, count = 0;
+    float ix, iy, ox, oy, cx, cy, dx, dy, px, py, plen;
+    float tx, ty, dot;
+
+    if (path_count <= 0 || !path || !out_curves) return 0;
+
+    /* Outer contour: offset left by +half_width */
+    for (i = 0; i < path_count && count < max_out; i++)
+        slug_offset_curve(&path[i], half_width, &out_curves[count++]);
+
+    /* Inner contour: offset right by -half_width, reversed */
+    for (i = path_count - 1; i >= 0 && count < max_out; i--) {
+        slug_curve tmp;
+        slug_offset_curve(&path[i], -half_width, &tmp);
+        out_curves[count].p1x = tmp.p3x; out_curves[count].p1y = tmp.p3y;
+        out_curves[count].p2x = tmp.p2x; out_curves[count].p2y = tmp.p2y;
+        out_curves[count].p3x = tmp.p1x; out_curves[count].p3y = tmp.p1y;
+        count++;
+    }
+
+    /* Start cap: semicircle from inner-end to outer-start */
+    if (count + 1 <= max_out) {
+        ix = out_curves[2 * path_count - 1].p3x;
+        iy = out_curves[2 * path_count - 1].p3y;
+        ox = out_curves[0].p1x;
+        oy = out_curves[0].p1y;
+        cx = (ix + ox) * 0.5f;
+        cy = (iy + oy) * 0.5f;
+        dx = ox - ix; dy = oy - iy;
+        px = -dy; py = dx;
+        plen = sqrtf(px*px + py*py);
+        if (plen > 1e-10f) { px /= plen; py /= plen; }
+        slug_bezier_tan(&path[0], 0.0f, &tx, &ty);
+        dot = px * (-tx) + py * (-ty);
+        if (dot < 0) { px = -px; py = -py; }
+        out_curves[count].p1x = ix; out_curves[count].p1y = iy;
+        out_curves[count].p2x = cx + px * half_width * 1.333f;
+        out_curves[count].p2y = cy + py * half_width * 1.333f;
+        out_curves[count].p3x = ox; out_curves[count].p3y = oy;
+        count++;
+    }
+
+    /* End cap: semicircle from outer-end to inner-start */
+    if (count + 1 <= max_out) {
+        ox = out_curves[path_count - 1].p3x;
+        oy = out_curves[path_count - 1].p3y;
+        ix = out_curves[path_count].p1x;
+        iy = out_curves[path_count].p1y;
+        cx = (ox + ix) * 0.5f;
+        cy = (oy + iy) * 0.5f;
+        dx = ix - ox; dy = iy - oy;
+        px = -dy; py = dx;
+        plen = sqrtf(px*px + py*py);
+        if (plen > 1e-10f) { px /= plen; py /= plen; }
+        slug_bezier_tan(&path[path_count - 1], 1.0f, &tx, &ty);
+        dot = px * tx + py * ty;
+        if (dot < 0) { px = -px; py = -py; }
+        out_curves[count].p1x = ox; out_curves[count].p1y = oy;
+        out_curves[count].p2x = cx + px * half_width * 1.333f;
+        out_curves[count].p2y = cy + py * half_width * 1.333f;
+        out_curves[count].p3x = ix; out_curves[count].p3y = iy;
+        count++;
+    }
+
+    return count;
 }
 
 /* ── Cache save/load ────────────────────────────────────────────────────── */

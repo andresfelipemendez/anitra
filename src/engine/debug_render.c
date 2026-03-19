@@ -1,7 +1,7 @@
 #include "debug_render.h"
 
 void debug_draw_line(debug_renderer* dr, vec2 start, vec2 end, debug_color color) {
-    if (!dr || dr->current_line_count >= dr->max_lines) return;
+    if (!dr || !dr->vertex_buffer || dr->current_line_count >= dr->max_lines) return;
     line_expand(&dr->vertex_buffer[dr->current_line_count * LINE_VERTS_PER_LINE],
                 start.x, start.y, 0.0f,
                 end.x, end.y, 0.0f,

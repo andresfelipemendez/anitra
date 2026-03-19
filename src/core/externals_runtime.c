@@ -75,8 +75,15 @@ static SDL_GPUTexture *icon_slug_curve_texture = NULL;
 static SDL_GPUTexture *icon_slug_band_texture = NULL;
 static SDL_GPUSampler *slug_sampler = NULL;
 static SDL_GPUGraphicsPipeline *slug_pipeline = NULL;
+static SDL_GPUGraphicsPipeline *slug_3d_pipeline = NULL; /* same shaders, with depth test for editor pass */
 static slug_glyph slug_glyphs[128];
 static float slug_ascent, slug_descent, slug_line_gap;
+// Slug shapes — separate parallel system for procedural vector shapes
+static SDL_GPUTexture *shape_curve_texture = NULL;
+static SDL_GPUTexture *shape_band_texture = NULL;
+static slug_glyph shape_circle = {0};
+static slug_glyph shape_arch = {0}; /* Bezier arch stroke for 3D capsule caps */
+static slug_glyph shape_line = {0}; /* Vertical line for capsule body */
 /* Icon slug glyphs — sparse codepoint lookup */
 #define ICON_SLUG_MAX 32
 static uint32_t icon_slug_cps[ICON_SLUG_MAX];
@@ -1376,27 +1383,34 @@ static Clay_Dimensions clay_measure_text(Clay_StringSlice text, Clay_TextElement
 
 #define MAX_UI_RECT_VERTICES  (4096 * 6)
 #define MAX_SLUG_VERTICES     (2048 * 6)
+#define MAX_SHAPE_VERTICES    4096
 
 // Per-window UI render state
 typedef struct UIRenderState {
     ui_rect_vertex rect_verts[MAX_UI_RECT_VERTICES];
     slug_vertex    slug_verts[MAX_SLUG_VERTICES];
     slug_vertex    icon_slug_verts[MAX_SLUG_VERTICES];
+    slug_vertex    shape_verts[MAX_SHAPE_VERTICES];
     int            rect_vert_count;
     int            slug_vert_count;
     int            icon_slug_vert_count;
+    int            shape_vert_count;
     SDL_GPUBuffer *rect_gpu_buf;
     SDL_GPUBuffer *slug_gpu_buf;
     SDL_GPUBuffer *icon_slug_gpu_buf;
+    SDL_GPUBuffer *shape_gpu_buf;
     Uint32         rect_gpu_cap;
     Uint32         slug_gpu_cap;
     Uint32         icon_slug_gpu_cap;
+    Uint32         shape_gpu_cap;
     SDL_GPUTransferBuffer *rect_xfer;
     SDL_GPUTransferBuffer *slug_xfer;
     SDL_GPUTransferBuffer *icon_slug_xfer;
+    SDL_GPUTransferBuffer *shape_xfer;
     Uint32         rect_xfer_cap;
     Uint32         slug_xfer_cap;
     Uint32         icon_slug_xfer_cap;
+    Uint32         shape_xfer_cap;
 } UIRenderState;
 
 static UIRenderState ui_game = {0};
@@ -1405,6 +1419,300 @@ static UIRenderState ui_editor_bufs[2] = {0};
 static int ui_editor_back = 0;  /* index editor thread writes to */
 #define ui_editor_clay ui_editor_bufs[1 - ui_editor_back] /* front: main thread reads */
 
+
+/* ── Slug shapes: separate parallel system for procedural vector shapes ── */
+
+/* Build shape textures and upload to GPU. Called once at init.
+   Packs two shapes into the same textures:
+   1. Circle ring (annulus) for 2D UI capsule buttons
+   2. Bezier arch stroke for 3D capsule caps */
+static void shape_init(SDL_GPUDevice *dev) {
+    slug_glyph glyph = {0};
+    float curve_texels[1024 * 4];
+    uint32_t band_texels[4096 * 4];
+    int curve_pos = 0, band_pos = 0;
+    int i;
+
+    memset(curve_texels, 0, sizeof(curve_texels));
+    memset(band_texels, 0, sizeof(band_texels));
+
+    /* Shape 1: Circle ring (annulus) for 2D UI */
+    {
+        slug_curve curves[16];
+        float cx = 0.5f, cy = 0.5f;
+        float r_outer = 0.5f, r_inner = 0.47f;
+
+        for (i = 0; i < 8; i++) {
+            float a0 = (float)i * (3.14159265f / 4.0f);
+            float a1 = (float)(i + 1) * (3.14159265f / 4.0f);
+            float amid = (a0 + a1) * 0.5f;
+            float cos_half = cosf((a1 - a0) * 0.5f);
+            float ctrl_r = r_outer / cos_half;
+            curves[i].p1x = cx + cosf(a0) * r_outer;
+            curves[i].p1y = cy + sinf(a0) * r_outer;
+            curves[i].p2x = cx + cosf(amid) * ctrl_r;
+            curves[i].p2y = cy + sinf(amid) * ctrl_r;
+            curves[i].p3x = cx + cosf(a1) * r_outer;
+            curves[i].p3y = cy + sinf(a1) * r_outer;
+        }
+        for (i = 0; i < 8; i++) {
+            float a0 = (float)(8 - i) * (3.14159265f / 4.0f);
+            float a1 = (float)(7 - i) * (3.14159265f / 4.0f);
+            float amid = (a0 + a1) * 0.5f;
+            float cos_half = cosf(fabsf(a1 - a0) * 0.5f);
+            float ctrl_r = r_inner / cos_half;
+            curves[8 + i].p1x = cx + cosf(a0) * r_inner;
+            curves[8 + i].p1y = cy + sinf(a0) * r_inner;
+            curves[8 + i].p2x = cx + cosf(amid) * ctrl_r;
+            curves[8 + i].p2y = cy + sinf(amid) * ctrl_r;
+            curves[8 + i].p3x = cx + cosf(a1) * r_inner;
+            curves[8 + i].p3y = cy + sinf(a1) * r_inner;
+        }
+
+        slug_pack_glyph(curves, 16, 0.0f, 0.0f, 1.0f, 1.0f,
+                        SLUG_DEFAULT_HBANDS, SLUG_DEFAULT_VBANDS,
+                        curve_texels, &curve_pos,
+                        band_texels, &band_pos, &glyph);
+        glyph.valid = 1;
+        shape_circle = glyph;
+    }
+
+    /* Shape 2: Semicircle path for 3D capsule caps (GPU stroke rendering).
+       4 quadratic arcs trace a semicircle. No CPU-side stroke expansion —
+       the fragment shader computes distance-to-curve and applies a fixed pixel-width stroke. */
+    {
+        slug_curve path[4];
+        float r = 0.5f, cx = 0.5f, cy = 0.0f;
+
+        for (i = 0; i < 4; i++) {
+            float a0 = (float)i * (3.14159265f / 4.0f);
+            float a1 = (float)(i + 1) * (3.14159265f / 4.0f);
+            float amid = (a0 + a1) * 0.5f;
+            float cos_half = cosf((a1 - a0) * 0.5f);
+            float ctrl_r = r / cos_half;
+            path[i].p1x = cx + cosf(a0) * r;
+            path[i].p1y = cy + sinf(a0) * r;
+            path[i].p2x = cx + cosf(amid) * ctrl_r;
+            path[i].p2y = cy + sinf(amid) * ctrl_r;
+            path[i].p3x = cx + cosf(a1) * r;
+            path[i].p3y = cy + sinf(a1) * r;
+        }
+
+        {
+            float bx0 = 1e10f, by0 = 1e10f, bx1 = -1e10f, by1 = -1e10f;
+            int k;
+            for (k = 0; k < 4; k++) {
+                bx0 = slug_minf(bx0, slug_min3f(path[k].p1x, path[k].p2x, path[k].p3x));
+                by0 = slug_minf(by0, slug_min3f(path[k].p1y, path[k].p2y, path[k].p3y));
+                bx1 = slug_maxf(bx1, slug_max3f(path[k].p1x, path[k].p2x, path[k].p3x));
+                by1 = slug_maxf(by1, slug_max3f(path[k].p1y, path[k].p2y, path[k].p3y));
+            }
+            memset(&glyph, 0, sizeof(glyph));
+            slug_pack_glyph(path, 4, bx0, by0, bx1, by1,
+                            SLUG_DEFAULT_HBANDS, SLUG_DEFAULT_VBANDS,
+                            curve_texels, &curve_pos,
+                            band_texels, &band_pos, &glyph);
+            glyph.valid = 1;
+            shape_arch = glyph;
+        }
+    }
+
+    /* Shape 3: Vertical line for capsule body sides (GPU stroke rendering). */
+    {
+        slug_curve line;
+        /* Straight line from bottom to top: degenerate quadratic with midpoint control */
+        line.p1x = 0.5f; line.p1y = 0.0f;
+        line.p2x = 0.5f; line.p2y = 0.5f;
+        line.p3x = 0.5f; line.p3y = 1.0f;
+
+        memset(&glyph, 0, sizeof(glyph));
+        slug_pack_glyph(&line, 1, 0.0f, 0.0f, 1.0f, 1.0f,
+                        SLUG_DEFAULT_HBANDS, SLUG_DEFAULT_VBANDS,
+                        curve_texels, &curve_pos,
+                        band_texels, &band_pos, &glyph);
+        glyph.valid = 1;
+        shape_line = glyph;
+    }
+
+    {
+        int curve_h = (curve_pos + SLUG_BAND_TEX_WIDTH - 1) / SLUG_BAND_TEX_WIDTH;
+        int band_h = (band_pos + SLUG_BAND_TEX_WIDTH - 1) / SLUG_BAND_TEX_WIDTH;
+        if (curve_h < 1) curve_h = 1;
+        if (band_h < 1) band_h = 1;
+
+        /* Curve texture */
+        {
+            SDL_GPUTextureCreateInfo ti = {0};
+            ti.type = SDL_GPU_TEXTURETYPE_2D;
+            ti.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+            ti.width = SLUG_BAND_TEX_WIDTH;
+            ti.height = (Uint32)curve_h;
+            ti.layer_count_or_depth = 1;
+            ti.num_levels = 1;
+            ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            shape_curve_texture = SDL_CreateGPUTexture(dev, &ti);
+            if (shape_curve_texture) {
+                Uint32 sz = (Uint32)(SLUG_BAND_TEX_WIDTH * curve_h * 16);
+                SDL_GPUTransferBufferCreateInfo tbi = {0};
+                tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                tbi.size = sz;
+                SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(dev, &tbi);
+                void *mapped = SDL_MapGPUTransferBuffer(dev, xfer, false);
+                memset(mapped, 0, sz);
+                memcpy(mapped, curve_texels, (size_t)curve_pos * 16);
+                SDL_UnmapGPUTransferBuffer(dev, xfer);
+                SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
+                SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+                SDL_GPUTextureTransferInfo src = {0};
+                src.transfer_buffer = xfer;
+                src.pixels_per_row = SLUG_BAND_TEX_WIDTH;
+                src.rows_per_layer = (Uint32)curve_h;
+                SDL_GPUTextureRegion dst = {0};
+                dst.texture = shape_curve_texture;
+                dst.w = SLUG_BAND_TEX_WIDTH;
+                dst.h = (Uint32)curve_h;
+                dst.d = 1;
+                SDL_UploadToGPUTexture(copy, &src, &dst, false);
+                SDL_EndGPUCopyPass(copy);
+                SDL_SubmitGPUCommandBuffer(cmd);
+                SDL_ReleaseGPUTransferBuffer(dev, xfer);
+            }
+        }
+
+        /* Band texture (uint→float) */
+        {
+            SDL_GPUTextureCreateInfo ti = {0};
+            ti.type = SDL_GPU_TEXTURETYPE_2D;
+            ti.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+            ti.width = SLUG_BAND_TEX_WIDTH;
+            ti.height = (Uint32)band_h;
+            ti.layer_count_or_depth = 1;
+            ti.num_levels = 1;
+            ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            shape_band_texture = SDL_CreateGPUTexture(dev, &ti);
+            if (shape_band_texture) {
+                Uint32 total_floats = (Uint32)(SLUG_BAND_TEX_WIDTH * band_h * 4);
+                Uint32 sz = total_floats * sizeof(float);
+                SDL_GPUTransferBufferCreateInfo tbi = {0};
+                tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                tbi.size = sz;
+                SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(dev, &tbi);
+                float *fmapped = (float *)SDL_MapGPUTransferBuffer(dev, xfer, false);
+                Uint32 fi, src_count = (Uint32)(band_pos * 4);
+                for (fi = 0; fi < total_floats; fi++)
+                    fmapped[fi] = (fi < src_count) ? (float)band_texels[fi] : 0.0f;
+                SDL_UnmapGPUTransferBuffer(dev, xfer);
+                SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(dev);
+                SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+                SDL_GPUTextureTransferInfo src = {0};
+                src.transfer_buffer = xfer;
+                src.pixels_per_row = SLUG_BAND_TEX_WIDTH;
+                src.rows_per_layer = (Uint32)band_h;
+                SDL_GPUTextureRegion dst = {0};
+                dst.texture = shape_band_texture;
+                dst.w = SLUG_BAND_TEX_WIDTH;
+                dst.h = (Uint32)band_h;
+                dst.d = 1;
+                SDL_UploadToGPUTexture(copy, &src, &dst, false);
+                SDL_EndGPUCopyPass(copy);
+                SDL_SubmitGPUCommandBuffer(cmd);
+                SDL_ReleaseGPUTransferBuffer(dev, xfer);
+            }
+        }
+
+        fprintf(stderr, "[shapes] circle: %d curves, curve_tex=%dx%d band_tex=%dx%d\n",
+                8, SLUG_BAND_TEX_WIDTH, curve_h, SLUG_BAND_TEX_WIDTH, band_h);
+    }
+}
+
+/* Push a shape quad with explicit em-space sub-region. Goes into shape_verts. */
+static void shape_push_quad(UIRenderState *ui,
+                             float sx0, float sy0, float sx1, float sy1,
+                             float ex0, float ey0, float ex1, float ey1,
+                             const slug_glyph *sg,
+                             float r, float g, float b, float a) {
+    slug_vertex *v;
+    float pad, sw, sh, em_w, em_h, em_pad_x, em_pad_y, ey0f, ey1f;
+    uint32_t loc_packed, max_packed;
+    float tex_z, tex_w;
+
+    if (!ui || !sg || !sg->valid) return;
+    if (ui->shape_vert_count + 6 > MAX_SHAPE_VERTICES) return;
+
+    pad = 0.5f;
+    sw = sx1 - sx0; sh = sy1 - sy0;
+    em_w = ex1 - ex0; em_h = ey1 - ey0;
+    em_pad_x = (em_w > 0 && sw > 0) ? pad * em_w / sw : 0;
+    em_pad_y = (em_h > 0 && sh > 0) ? pad * em_h / sh : 0;
+
+    sx0 -= pad; sy0 -= pad; sx1 += pad; sy1 += pad;
+    ex0 -= em_pad_x; ey0 -= em_pad_y; ex1 += em_pad_x; ey1 += em_pad_y;
+
+    ey0f = ey1; ey1f = ey0; /* Y flip: em Y-up → screen Y-down */
+
+    loc_packed = (uint32_t)sg->band_loc_x | ((uint32_t)sg->band_loc_y << 16u);
+    max_packed = (uint32_t)sg->band_max_x | ((uint32_t)sg->band_max_y << 16u);
+    memcpy(&tex_z, &loc_packed, 4);
+    memcpy(&tex_w, &max_packed, 4);
+
+    v = &ui->shape_verts[ui->shape_vert_count];
+    v[0] = (slug_vertex){
+        {sx0, sy0, 0, 0}, {ex0, ey0f, tex_z, tex_w}, {0,0,0,0},
+        {sg->band_scale_x, sg->band_scale_y, sg->band_offset_x, sg->band_offset_y},
+        {r, g, b, a}
+    };
+    v[1] = (slug_vertex){
+        {sx1, sy0, 0, 0}, {ex1, ey0f, tex_z, tex_w}, {0,0,0,0},
+        {sg->band_scale_x, sg->band_scale_y, sg->band_offset_x, sg->band_offset_y},
+        {r, g, b, a}
+    };
+    v[2] = (slug_vertex){
+        {sx1, sy1, 0, 0}, {ex1, ey1f, tex_z, tex_w}, {0,0,0,0},
+        {sg->band_scale_x, sg->band_scale_y, sg->band_offset_x, sg->band_offset_y},
+        {r, g, b, a}
+    };
+    v[3] = v[0];
+    v[4] = v[2];
+    v[5] = (slug_vertex){
+        {sx0, sy1, 0, 0}, {ex0, ey1f, tex_z, tex_w}, {0,0,0,0},
+        {sg->band_scale_x, sg->band_scale_y, sg->band_offset_x, sg->band_offset_y},
+        {r, g, b, a}
+    };
+    ui->shape_vert_count += 6;
+}
+
+/* Push a capsule: left semicircle + center rect + right semicircle */
+static void shape_push_capsule(UIRenderState *ui,
+                                float x, float y, float w, float h,
+                                float r, float g, float b, float a) {
+    float cap_r = h * 0.5f;
+    float center_w = w - h;
+    if (center_w < 0) { cap_r = w * 0.5f; center_w = 0; }
+
+    /* Left cap: left half of circle [0,0]→[0.5,1] */
+    shape_push_quad(ui, x, y, x + cap_r, y + h,
+                    0.0f, 0.0f, 0.5f, 1.0f,
+                    &shape_circle, r, g, b, a);
+
+    /* Center rect */
+    if (center_w > 0 && ui->rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
+        float rx0 = x + cap_r, ry0 = y;
+        float rx1 = x + cap_r + center_w, ry1 = y + h;
+        ui_rect_vertex *v = &ui->rect_verts[ui->rect_vert_count];
+        v[0] = (ui_rect_vertex){rx0, ry0, r, g, b, a};
+        v[1] = (ui_rect_vertex){rx1, ry0, r, g, b, a};
+        v[2] = (ui_rect_vertex){rx1, ry1, r, g, b, a};
+        v[3] = (ui_rect_vertex){rx0, ry0, r, g, b, a};
+        v[4] = (ui_rect_vertex){rx1, ry1, r, g, b, a};
+        v[5] = (ui_rect_vertex){rx0, ry1, r, g, b, a};
+        ui->rect_vert_count += 6;
+    }
+
+    /* Right cap: right half of circle [0.5,0]→[1,1] */
+    shape_push_quad(ui, x + cap_r + center_w, y, x + w, y + h,
+                    0.5f, 0.0f, 1.0f, 1.0f,
+                    &shape_circle, r, g, b, a);
+}
 
 static void slug_push_glyph_quad(UIRenderState *ui, int use_icon_font,
                                   float gx, float gy, float glyph_w, float glyph_h,
@@ -1497,6 +1805,7 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
     ui->rect_vert_count = 0;
     ui->slug_vert_count = 0;
     ui->icon_slug_vert_count = 0;
+    ui->shape_vert_count = 0;
 
     for (int32_t i = 0; i < commands.length; i++) {
         Clay_RenderCommand *cmd = Clay_RenderCommandArray_Get(&commands, i);
@@ -1556,6 +1865,17 @@ static void ui_build_vertices(UIRenderState *ui, Clay_RenderCommandArray command
                 if (x1 > clip_x1) x1 = clip_x1;
                 if (y1 > clip_y1) y1 = clip_y1;
                 if (x0 >= x1 || y0 >= y1) break; /* fully clipped */
+            }
+
+            /* Capsule: corner radius >= half the smaller dimension */
+            {
+                float cr = rect->cornerRadius.topLeft;
+                float rw = x1 - x0, rh = y1 - y0;
+                float min_dim = rw < rh ? rw : rh;
+                if (cr > 0 && cr >= min_dim * 0.5f - 1.0f && shape_circle.valid) {
+                    shape_push_capsule(ui, x0, y0, rw, rh, r, g, b, a);
+                    break;
+                }
             }
 
             if (ui->rect_vert_count + 6 <= MAX_UI_RECT_VERTICES) {
@@ -1742,7 +2062,8 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
     int has_rects  = ui->rect_vert_count > 0;
     int has_slug   = ui->slug_vert_count > 0;
     int has_slug_icons = ui->icon_slug_vert_count > 0;
-    if (!has_rects && !has_slug && !has_slug_icons) return;
+    int has_shapes = ui->shape_vert_count > 0;
+    if (!has_rects && !has_slug && !has_slug_icons && !has_shapes) return;
 
     FRAME_CPU_ZONE_BEGIN("ui_upload_stage");
 
@@ -1771,6 +2092,14 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
         memcpy(m, ui->icon_slug_verts, sz);
         SDL_UnmapGPUTransferBuffer(gpu_device, ui->icon_slug_xfer);
     }
+    if (has_shapes) {
+        Uint32 sz = (Uint32)(ui->shape_vert_count * sizeof(slug_vertex));
+        ui_ensure_xfer_buf(&ui->shape_xfer, &ui->shape_xfer_cap, sz);
+        ui_ensure_gpu_buf(&ui->shape_gpu_buf, &ui->shape_gpu_cap, sz);
+        void *m = SDL_MapGPUTransferBuffer(gpu_device, ui->shape_xfer, true);
+        memcpy(m, ui->shape_verts, sz);
+        SDL_UnmapGPUTransferBuffer(gpu_device, ui->shape_xfer);
+    }
 
     FRAME_CPU_ZONE_END();
 
@@ -1794,6 +2123,12 @@ static void ui_upload(SDL_GPUCommandBuffer *cmd_buf, UIRenderState *ui) {
             Uint32 sz = (Uint32)(ui->icon_slug_vert_count * sizeof(slug_vertex));
             SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = ui->icon_slug_xfer;
             SDL_GPUBufferRegion dst = {0}; dst.buffer = ui->icon_slug_gpu_buf; dst.size = sz;
+            SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+        }
+        if (has_shapes) {
+            Uint32 sz = (Uint32)(ui->shape_vert_count * sizeof(slug_vertex));
+            SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = ui->shape_xfer;
+            SDL_GPUBufferRegion dst = {0}; dst.buffer = ui->shape_gpu_buf; dst.size = sz;
             SDL_UploadToGPUBuffer(copy, &src, &dst, false);
         }
         SDL_EndGPUCopyPass(copy);
@@ -2081,6 +2416,25 @@ static void ui_draw(SDL_GPURenderPass *render_pass, SDL_GPUCommandBuffer *cmd_bu
         SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
         SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->icon_slug_vert_count, 1, 0, 0);
     }
+
+    /* Shape rendering (same slug pipeline, separate shape textures) */
+    if (ui->shape_vert_count > 0 && ui->shape_gpu_buf &&
+        slug_pipeline && shape_curve_texture && shape_band_texture && slug_sampler) {
+        SDL_BindGPUGraphicsPipeline(render_pass, slug_pipeline);
+        SDL_PushGPUVertexUniformData(cmd_buf, 0, uniforms, sizeof(*uniforms));
+
+        SDL_GPUTextureSamplerBinding bindings[2] = {0};
+        bindings[0].texture = shape_curve_texture;
+        bindings[0].sampler = slug_sampler;
+        bindings[1].texture = shape_band_texture;
+        bindings[1].sampler = slug_sampler;
+        SDL_BindGPUFragmentSamplers(render_pass, 0, bindings, 2);
+
+        SDL_GPUBufferBinding vbuf_binding = {0};
+        vbuf_binding.buffer = ui->shape_gpu_buf;
+        SDL_BindGPUVertexBuffers(render_pass, 0, &vbuf_binding, 1);
+        SDL_DrawGPUPrimitives(render_pass, (Uint32)ui->shape_vert_count, 1, 0, 0);
+    }
 }
 
 // Cleanup per-frame UI GPU buffers for one window
@@ -2097,8 +2451,10 @@ static void ui_destroy_buffers(UIRenderState *ui) {
     if (ui->icon_slug_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->icon_slug_gpu_buf); ui->icon_slug_gpu_buf = NULL; }
     if (ui->slug_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->slug_xfer); ui->slug_xfer = NULL; }
     if (ui->icon_slug_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->icon_slug_xfer); ui->icon_slug_xfer = NULL; }
-    ui->slug_gpu_cap = ui->icon_slug_gpu_cap = 0;
-    ui->slug_xfer_cap = ui->icon_slug_xfer_cap = 0;
+    if (ui->shape_gpu_buf) { SDL_ReleaseGPUBuffer(gpu_device, ui->shape_gpu_buf); ui->shape_gpu_buf = NULL; }
+    if (ui->shape_xfer) { SDL_ReleaseGPUTransferBuffer(gpu_device, ui->shape_xfer); ui->shape_xfer = NULL; }
+    ui->slug_gpu_cap = ui->icon_slug_gpu_cap = ui->shape_gpu_cap = 0;
+    ui->slug_xfer_cap = ui->icon_slug_xfer_cap = ui->shape_xfer_cap = 0;
 }
 
 // Forward declarations (defined after init_externals, needed by TCC)
@@ -2771,6 +3127,18 @@ EXPORT int init_externals(const char *project_path) {
             fprintf(stderr, "Failed to create Slug pipeline: %s\n", SDL_GetError());
             return -1;
         }
+
+        /* 3D variant: same shaders but with depth test for editor render pass */
+        pipe_info.target_info.has_depth_stencil_target = true;
+        pipe_info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        pipe_info.depth_stencil_state.enable_depth_test = true;
+        pipe_info.depth_stencil_state.enable_depth_write = false;
+        pipe_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+        slug_3d_pipeline = SDL_CreateGPUGraphicsPipeline(gpu_device, &pipe_info);
+        if (!slug_3d_pipeline) {
+            fprintf(stderr, "Failed to create Slug 3D pipeline: %s\n", SDL_GetError());
+            return -1;
+        }
     }
 
     // 12. Create mesh (3D skinned) pipeline (shaders already compiled)
@@ -3015,6 +3383,9 @@ EXPORT int init_externals(const char *project_path) {
     } else {
         printf("Loaded Bootstrap Icons font (%d glyphs).\n", icon_slug_count);
     }
+
+    /* Initialize slug shape system (circle for capsules etc.) */
+    shape_init(gpu_device);
 
     // Pre-compute ASCII advance table for editor.dll's Clay text measurement
     BOOT_PROF_BEGIN(TP_EXT_FONT_ADVANCE_TABLE);
@@ -3955,6 +4326,164 @@ EXPORT int update_externals(void) {
         FRAME_CPU_ZONE_END();
     }
 
+    // --- Upload editor shape commands as 3D slug quads ---
+    static SDL_GPUBuffer *editor_shape_gpu_buf = NULL;
+    static Uint32 editor_shape_gpu_cap = 0;
+    int editor_shape_vert_count = 0;
+    if (g_mem->editor.open && g_mem->editor.shape_cmd_count > 0 && shape_arch.valid) {
+        FRAME_CPU_ZONE_BEGIN("upload_editor_shapes");
+        int si;
+        int max_verts = g_mem->editor.shape_cmd_count * 72; /* 12 quads × 6 verts per capsule */
+        slug_vertex *shape_verts = (slug_vertex *)alloca((size_t)max_verts * sizeof(slug_vertex));
+
+        for (si = 0; si < g_mem->editor.shape_cmd_count; si++) {
+            int type = g_mem->editor.shape_cmds[si].type;
+            if (type != EDITOR_SHAPE_CAPSULE) continue;
+
+            Mat4 w = g_mem->editor.shape_cmds[si].world;
+            float rr = g_mem->editor.shape_cmds[si].param1;
+            float hh = g_mem->editor.shape_cmds[si].param2;
+            float cr = g_mem->editor.shape_cmds[si].r;
+            float cg = g_mem->editor.shape_cmds[si].g;
+            float cb = g_mem->editor.shape_cmds[si].b;
+            float ca = g_mem->editor.shape_cmds[si].a;
+
+            Vec3 center = VEC3(w.m[12], w.m[13], w.m[14]);
+            Vec3 local_up = vec3_normalize(VEC3(w.m[4], w.m[5], w.m[6]));
+            Vec3 local_x  = vec3_normalize(VEC3(w.m[0], w.m[1], w.m[2]));
+            Vec3 local_z  = vec3_normalize(VEC3(w.m[8], w.m[9], w.m[10]));
+
+            float total_h = hh + rr;
+
+            /* Pack arch glyph metadata */
+            uint32_t lp = (uint32_t)shape_arch.band_loc_x | ((uint32_t)shape_arch.band_loc_y << 16u);
+            uint32_t mp = (uint32_t)shape_arch.band_max_x | ((uint32_t)shape_arch.band_max_y << 16u);
+            float tz, tw;
+            memcpy(&tz, &lp, 4);
+            memcpy(&tw, &mp, 4);
+
+            #define SHAPE_V(px,py,pz, ex,ey) (slug_vertex){ \
+                {px,py,pz,0}, {ex,ey,tz,tw}, {1.5f,0,0,0}, \
+                {shape_arch.band_scale_x, shape_arch.band_scale_y, \
+                 shape_arch.band_offset_x, shape_arch.band_offset_y}, \
+                {cr,cg,cb,ca} }
+
+            /* Emit arch quads on two fixed planes (XY and ZY) for wireframe cage.
+               Each plane gets: top arch (opens up) + bottom arch (opens down).
+               Use actual bbox em-coords so the arch fills the quad correctly. */
+            {
+                int plane;
+                Vec3 right_dirs[2];
+                right_dirs[0] = local_x;
+                right_dirs[1] = local_z;
+
+                /* Arch bbox em-coords and aspect ratio */
+                float ex0 = shape_arch.bbox_x0, ey0 = shape_arch.bbox_y0;
+                float ex1 = shape_arch.bbox_x1, ey1 = shape_arch.bbox_y1;
+                float em_w = ex1 - ex0, em_h = ey1 - ey0;
+                /* Quad height in world: preserve aspect ratio so circle stays circular */
+                float quad_h = (em_w > 1e-6f) ? (2.0f * rr * em_h / em_w) : rr;
+
+                for (plane = 0; plane < 2; plane++) {
+                    Vec3 right_off = vec3_scale(right_dirs[plane], rr);
+
+                    /* Top arch: baseline at +hh, peak at +hh+quad_h */
+                    Vec3 top_base = vec3_add(center, vec3_scale(local_up, hh));
+                    Vec3 top_peak = vec3_add(center, vec3_scale(local_up, hh + quad_h));
+                    slug_vertex *v = &shape_verts[editor_shape_vert_count];
+                    v[0] = SHAPE_V(top_peak.x-right_off.x, top_peak.y-right_off.y, top_peak.z-right_off.z, ex0,ey1);
+                    v[1] = SHAPE_V(top_peak.x+right_off.x, top_peak.y+right_off.y, top_peak.z+right_off.z, ex1,ey1);
+                    v[2] = SHAPE_V(top_base.x+right_off.x, top_base.y+right_off.y, top_base.z+right_off.z, ex1,ey0);
+                    v[3] = v[0]; v[4] = v[2];
+                    v[5] = SHAPE_V(top_base.x-right_off.x, top_base.y-right_off.y, top_base.z-right_off.z, ex0,ey0);
+                    editor_shape_vert_count += 6;
+
+                    /* Bottom arch: baseline at -hh, peak at -hh-quad_h (em-y flipped) */
+                    Vec3 bot_base = vec3_sub(center, vec3_scale(local_up, hh));
+                    Vec3 bot_peak = vec3_sub(center, vec3_scale(local_up, hh + quad_h));
+                    v = &shape_verts[editor_shape_vert_count];
+                    v[0] = SHAPE_V(bot_base.x-right_off.x, bot_base.y-right_off.y, bot_base.z-right_off.z, ex0,ey0);
+                    v[1] = SHAPE_V(bot_base.x+right_off.x, bot_base.y+right_off.y, bot_base.z+right_off.z, ex1,ey0);
+                    v[2] = SHAPE_V(bot_peak.x+right_off.x, bot_peak.y+right_off.y, bot_peak.z+right_off.z, ex1,ey1);
+                    v[3] = v[0]; v[4] = v[2];
+                    v[5] = SHAPE_V(bot_peak.x-right_off.x, bot_peak.y-right_off.y, bot_peak.z-right_off.z, ex0,ey1);
+                    editor_shape_vert_count += 6;
+                }
+
+                /* Body vertical lines: 2 lines per plane (left and right sides) */
+                if (hh > 0.001f && shape_line.valid) {
+                    uint32_t llp = (uint32_t)shape_line.band_loc_x | ((uint32_t)shape_line.band_loc_y << 16u);
+                    uint32_t lmp = (uint32_t)shape_line.band_max_x | ((uint32_t)shape_line.band_max_y << 16u);
+                    float ltz, ltw;
+                    memcpy(&ltz, &llp, 4);
+                    memcpy(&ltw, &lmp, 4);
+
+                    /* Line quad is a thin strip: the line curve is at x=0.5 in em-space,
+                       so the quad needs some width for the stroke shader to evaluate distance. */
+                    #define LINE_V(px,py,pz, lex,ley) (slug_vertex){ \
+                        {px,py,pz,0}, {lex,ley,ltz,ltw}, {1.5f,0,0,0}, \
+                        {shape_line.band_scale_x, shape_line.band_scale_y, \
+                         shape_line.band_offset_x, shape_line.band_offset_y}, \
+                        {cr,cg,cb,ca} }
+
+                    for (plane = 0; plane < 2; plane++) {
+                        Vec3 right_dir = right_dirs[plane];
+                        Vec3 top_pt = vec3_add(center, vec3_scale(local_up, hh));
+                        Vec3 bot_pt = vec3_sub(center, vec3_scale(local_up, hh));
+                        /* Quad half-width: needs enough world-space width to cover stroke pixels */
+                        float line_w = rr * 0.3f;
+                        int side;
+                        for (side = 0; side < 2; side++) {
+                            float sign = side == 0 ? -1.0f : 1.0f;
+                            Vec3 edge = vec3_scale(right_dir, sign * rr);
+                            Vec3 woff = vec3_scale(right_dir, sign * line_w);
+                            Vec3 tl = vec3_add(top_pt, vec3_sub(edge, woff));
+                            Vec3 tr = vec3_add(top_pt, vec3_add(edge, woff));
+                            Vec3 bl = vec3_add(bot_pt, vec3_sub(edge, woff));
+                            Vec3 br = vec3_add(bot_pt, vec3_add(edge, woff));
+                            slug_vertex *v = &shape_verts[editor_shape_vert_count];
+                            v[0] = LINE_V(tl.x,tl.y,tl.z, 0.0f,1.0f);
+                            v[1] = LINE_V(tr.x,tr.y,tr.z, 1.0f,1.0f);
+                            v[2] = LINE_V(br.x,br.y,br.z, 1.0f,0.0f);
+                            v[3] = v[0]; v[4] = v[2];
+                            v[5] = LINE_V(bl.x,bl.y,bl.z, 0.0f,0.0f);
+                            editor_shape_vert_count += 6;
+                        }
+                    }
+                    #undef LINE_V
+                }
+            }
+
+            #undef SHAPE_V
+        }
+
+        if (editor_shape_vert_count > 0) {
+            Uint32 sz = (Uint32)(editor_shape_vert_count * sizeof(slug_vertex));
+            if (sz > editor_shape_gpu_cap) {
+                if (editor_shape_gpu_buf) SDL_ReleaseGPUBuffer(gpu_device, editor_shape_gpu_buf);
+                SDL_GPUBufferCreateInfo bi = {0};
+                bi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+                bi.size = sz;
+                editor_shape_gpu_buf = SDL_CreateGPUBuffer(gpu_device, &bi);
+                editor_shape_gpu_cap = sz;
+            }
+            SDL_GPUTransferBufferCreateInfo tbi = {0};
+            tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+            tbi.size = sz;
+            SDL_GPUTransferBuffer *xfer = SDL_CreateGPUTransferBuffer(gpu_device, &tbi);
+            void *mapped = SDL_MapGPUTransferBuffer(gpu_device, xfer, false);
+            memcpy(mapped, shape_verts, sz);
+            SDL_UnmapGPUTransferBuffer(gpu_device, xfer);
+            SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd_buf);
+            SDL_GPUTransferBufferLocation src = {0}; src.transfer_buffer = xfer;
+            SDL_GPUBufferRegion dst = {0}; dst.buffer = editor_shape_gpu_buf; dst.size = sz;
+            SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+            SDL_EndGPUCopyPass(copy);
+            SDL_ReleaseGPUTransferBuffer(gpu_device, xfer);
+        }
+        FRAME_CPU_ZONE_END();
+    }
+
     // --- Pre-build composite quads PER WINDOW (copy pass BEFORE render) ---
     // Each visible leaf produces: N tab header quads + 1 panel content quad.
     CompWindowData comp_data[MAX_DOCK_WINDOWS];
@@ -4435,6 +4964,28 @@ EXPORT int update_externals(void) {
             SDL_DrawGPUPrimitives(ed_pass, (Uint32)editor_vert_count, 1, 0, 0);
         }
 
+        /* 3. Editor 3D shapes (capsule colliders etc.) via slug pipeline */
+        if (editor_shape_vert_count > 0 && editor_shape_gpu_buf &&
+            slug_3d_pipeline && shape_curve_texture && shape_band_texture && slug_sampler) {
+            SDL_BindGPUGraphicsPipeline(ed_pass, slug_3d_pipeline);
+            uniform_data ed_shape_u;
+            memcpy(ed_shape_u.projection, ed_proj.m, sizeof(float) * 16);
+            memcpy(ed_shape_u.view, ed_view.m, sizeof(float) * 16);
+            SDL_PushGPUVertexUniformData(cmd_buf, 0, &ed_shape_u, sizeof(ed_shape_u));
+
+            SDL_GPUTextureSamplerBinding bindings[2] = {0};
+            bindings[0].texture = shape_curve_texture;
+            bindings[0].sampler = slug_sampler;
+            bindings[1].texture = shape_band_texture;
+            bindings[1].sampler = slug_sampler;
+            SDL_BindGPUFragmentSamplers(ed_pass, 0, bindings, 2);
+
+            SDL_GPUBufferBinding vb = {0};
+            vb.buffer = editor_shape_gpu_buf;
+            SDL_BindGPUVertexBuffers(ed_pass, 0, &vb, 1);
+            SDL_DrawGPUPrimitives(ed_pass, (Uint32)editor_shape_vert_count, 1, 0, 0);
+        }
+
         /* Editor toolbar now drawn as part of unified Clay UI in composite pass */
 
         SDL_EndGPURenderPass(ed_pass);
@@ -4589,6 +5140,9 @@ EXPORT int update_externals(void) {
 // ---------------------------------------------------------------------------
 
 EXPORT void end_externals(void) {
+    #define TEARDOWN_STEP(msg) do { printf("[teardown] %s\n", msg); fflush(stdout); } while(0)
+
+    TEARDOWN_STEP("stopping editor thread");
     /* Stop editor thread */
     SDL_SetAtomicInt(&editor_thread_quit, 1);
     SDL_SignalSemaphore(editor_sem_start);
@@ -4599,6 +5153,7 @@ EXPORT void end_externals(void) {
     editor_sem_start = NULL;
     editor_sem_done = NULL;
 
+    TEARDOWN_STEP("releasing textures");
     dock_state *dock = (dock_state *)g_mem->editor.dock;
     // Release textures
     for (int i = 0; i < TEXTURE_COUNT; i++) {
@@ -4617,6 +5172,7 @@ EXPORT void end_externals(void) {
     // Clay memory is inside sub-arenas — no separate free needed
     clay_arena_game = NULL;
 
+    TEARDOWN_STEP("panels + mouse");
     // Release editor mouse look if active
     if (g_mem->editor.cam_mouse_look && window) {
         SDL_SetWindowRelativeMouseMode(window, false);
@@ -4634,6 +5190,7 @@ EXPORT void end_externals(void) {
         }
     }
 
+    TEARDOWN_STEP("pipelines + compositing");
     // Composite pipeline + sampler + header textures
     if (composite_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, composite_pipeline); composite_pipeline = NULL; }
     if (composite_sampler)  { SDL_ReleaseGPUSampler(gpu_device, composite_sampler); composite_sampler = NULL; }
@@ -4649,6 +5206,7 @@ EXPORT void end_externals(void) {
         editor_line_pipeline = NULL;
     }
 
+    TEARDOWN_STEP("harfbuzz + slug fonts");
     // Release HarfBuzz
     if (hb_editor_font) { hb_font_destroy(hb_editor_font); hb_editor_font = NULL; }
     if (hb_editor_face) { hb_face_destroy(hb_editor_face); hb_editor_face = NULL; }
@@ -4659,8 +5217,11 @@ EXPORT void end_externals(void) {
     if (slug_band_texture) { SDL_ReleaseGPUTexture(gpu_device, slug_band_texture); slug_band_texture = NULL; }
     if (icon_slug_curve_texture) { SDL_ReleaseGPUTexture(gpu_device, icon_slug_curve_texture); icon_slug_curve_texture = NULL; }
     if (icon_slug_band_texture) { SDL_ReleaseGPUTexture(gpu_device, icon_slug_band_texture); icon_slug_band_texture = NULL; }
+    if (shape_curve_texture) { SDL_ReleaseGPUTexture(gpu_device, shape_curve_texture); shape_curve_texture = NULL; }
+    if (shape_band_texture) { SDL_ReleaseGPUTexture(gpu_device, shape_band_texture); shape_band_texture = NULL; }
     if (slug_sampler) { SDL_ReleaseGPUSampler(gpu_device, slug_sampler); slug_sampler = NULL; }
     if (slug_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, slug_pipeline); slug_pipeline = NULL; }
+    if (slug_3d_pipeline) { SDL_ReleaseGPUGraphicsPipeline(gpu_device, slug_3d_pipeline); slug_3d_pipeline = NULL; }
     icon_slug_count = 0;
 
 #ifdef TRACY_ENABLE
@@ -4670,6 +5231,7 @@ EXPORT void end_externals(void) {
     if (font_ttf_buffer) { SDL_free(font_ttf_buffer); font_ttf_buffer = NULL; font_ttf_size = 0; }
     if (icon_ttf_buffer) { SDL_free(icon_ttf_buffer); icon_ttf_buffer = NULL; icon_ttf_size = 0; }
 
+    TEARDOWN_STEP("render pipelines");
     // Release pipelines
     if (sprite_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(gpu_device, sprite_pipeline);
@@ -4695,9 +5257,14 @@ EXPORT void end_externals(void) {
     if (bone_storage_buffer) { SDL_ReleaseGPUBuffer(gpu_device, bone_storage_buffer); bone_storage_buffer = NULL; }
     if (bone_identity_buffer) { SDL_ReleaseGPUBuffer(gpu_device, bone_identity_buffer); bone_identity_buffer = NULL; }
 
+    TEARDOWN_STEP("gltf models");
     // Release glTF model GPU resources (all scene model assets)
+    // Textures are shared across prims and assets via tex_cache, so deduplicate.
     {
         int ai;
+        void *released_textures[512];
+        int released_count = 0;
+
         for (ai = 0; ai < g_mem->game.scene_model_asset_count; ai++) {
             scene_model_asset *asset = &g_mem->game.scene_model_assets[ai];
             uint32_t p;
@@ -4706,11 +5273,22 @@ EXPORT void end_externals(void) {
                 GltfPrimitive *prim = &asset->model.mesh.primitives[p];
                 if (prim->vertex_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->vertex_buffer);
                 if (prim->index_buffer) SDL_ReleaseGPUBuffer(gpu_device, (SDL_GPUBuffer *)prim->index_buffer);
-                if (prim->texture) SDL_ReleaseGPUTexture(gpu_device, (SDL_GPUTexture *)prim->texture);
+                if (prim->texture) {
+                    int already = 0, ri;
+                    for (ri = 0; ri < released_count; ri++) {
+                        if (released_textures[ri] == prim->texture) { already = 1; break; }
+                    }
+                    if (!already) {
+                        SDL_ReleaseGPUTexture(gpu_device, (SDL_GPUTexture *)prim->texture);
+                        if (released_count < 512)
+                            released_textures[released_count++] = prim->texture;
+                    }
+                }
             }
         }
     }
 
+    TEARDOWN_STEP("shadercross + tearoff windows");
     // Shadercross
     SDL_ShaderCross_Quit();
 
@@ -4727,6 +5305,7 @@ EXPORT void end_externals(void) {
         }
     }
 
+    TEARDOWN_STEP("ui buffers + gpu device");
     /* Release persistent UI buffers before GPU device is destroyed */
     ui_destroy_buffers(&ui_game);
     ui_destroy_buffers(&ui_editor_bufs[0]);
@@ -4745,6 +5324,7 @@ EXPORT void end_externals(void) {
         window = NULL;
     }
 
+    TEARDOWN_STEP("arena + sdl quit");
     // Free arena (single free for all engine memory)
     if (g_mem->arena.base) {
 #ifdef TRACY_ENABLE

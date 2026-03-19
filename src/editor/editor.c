@@ -2930,59 +2930,18 @@ static void draw_selected_entity_bounds(editor_state *e, Mat4 world, Vec3 center
 }
 
 static void draw_selected_entity_capsule(editor_state *e, Mat4 world, float radius, float half_height) {
-    int i;
-    const int segments = 20;
+    if (e->shape_cmd_count >= EDITOR_MAX_SHAPE_CMDS) return;
     float rr = radius > 0.05f ? radius : 0.3f;
     float hh = half_height > 0.0f ? half_height : rr;
-    Vec3 top_center = editor_transform_point(world, VEC3(0.0f, hh, 0.0f));
-    Vec3 bottom_center = editor_transform_point(world, VEC3(0.0f, -hh, 0.0f));
-    Vec3 prev_top = top_center;
-    Vec3 prev_bottom = bottom_center;
-
-    for (i = 0; i <= segments; i++) {
-        float t = (float)i / (float)segments;
-        float a = t * 2.0f * 3.14159265f;
-        Vec3 local_top = VEC3(cosf(a) * rr, hh, sinf(a) * rr);
-        Vec3 local_bottom = VEC3(cosf(a) * rr, -hh, sinf(a) * rr);
-        Vec3 ptop = editor_transform_point(world, local_top);
-        Vec3 pbottom = editor_transform_point(world, local_bottom);
-        if (i > 0) {
-            add_line(e, prev_top, ptop, 0.95f, 0.82f, 0.25f);
-            add_line(e, prev_bottom, pbottom, 0.95f, 0.82f, 0.25f);
-        }
-        prev_top = ptop;
-        prev_bottom = pbottom;
-    }
-
-    for (i = 1; i <= segments; i++) {
-        float t0 = (float)(i - 1) / (float)segments;
-        float t1 = (float)i / (float)segments;
-        float a0 = t0 * 3.14159265f;
-        float a1 = t1 * 3.14159265f;
-
-        Vec3 top_x0 = editor_transform_point(world, VEC3(cosf(a0) * rr, hh + sinf(a0) * rr, 0.0f));
-        Vec3 top_x1 = editor_transform_point(world, VEC3(cosf(a1) * rr, hh + sinf(a1) * rr, 0.0f));
-        Vec3 top_z0 = editor_transform_point(world, VEC3(0.0f, hh + sinf(a0) * rr, cosf(a0) * rr));
-        Vec3 top_z1 = editor_transform_point(world, VEC3(0.0f, hh + sinf(a1) * rr, cosf(a1) * rr));
-        Vec3 bot_x0 = editor_transform_point(world, VEC3(cosf(a0) * rr, -hh - sinf(a0) * rr, 0.0f));
-        Vec3 bot_x1 = editor_transform_point(world, VEC3(cosf(a1) * rr, -hh - sinf(a1) * rr, 0.0f));
-        Vec3 bot_z0 = editor_transform_point(world, VEC3(0.0f, -hh - sinf(a0) * rr, cosf(a0) * rr));
-        Vec3 bot_z1 = editor_transform_point(world, VEC3(0.0f, -hh - sinf(a1) * rr, cosf(a1) * rr));
-
-        add_line(e, top_x0, top_x1, 0.95f, 0.82f, 0.25f);
-        add_line(e, top_z0, top_z1, 0.95f, 0.82f, 0.25f);
-        add_line(e, bot_x0, bot_x1, 0.95f, 0.82f, 0.25f);
-        add_line(e, bot_z0, bot_z1, 0.95f, 0.82f, 0.25f);
-    }
-
-    add_line(e, editor_transform_point(world, VEC3(rr, hh, 0.0f)),
-             editor_transform_point(world, VEC3(rr, -hh, 0.0f)), 0.95f, 0.82f, 0.25f);
-    add_line(e, editor_transform_point(world, VEC3(-rr, hh, 0.0f)),
-             editor_transform_point(world, VEC3(-rr, -hh, 0.0f)), 0.95f, 0.82f, 0.25f);
-    add_line(e, editor_transform_point(world, VEC3(0.0f, hh, rr)),
-             editor_transform_point(world, VEC3(0.0f, -hh, rr)), 0.95f, 0.82f, 0.25f);
-    add_line(e, editor_transform_point(world, VEC3(0.0f, hh, -rr)),
-             editor_transform_point(world, VEC3(0.0f, -hh, -rr)), 0.95f, 0.82f, 0.25f);
+    int idx = e->shape_cmd_count++;
+    e->shape_cmds[idx].type = EDITOR_SHAPE_CAPSULE;
+    e->shape_cmds[idx].world = world;
+    e->shape_cmds[idx].param1 = rr;
+    e->shape_cmds[idx].param2 = hh;
+    e->shape_cmds[idx].r = 0.95f;
+    e->shape_cmds[idx].g = 0.82f;
+    e->shape_cmds[idx].b = 0.25f;
+    e->shape_cmds[idx].a = 0.5f;
 }
 
 static void draw_selected_entity_gizmo(editor_state *e, Mat4 world) {
@@ -3031,6 +2990,7 @@ static void build_lines(game_state *gs, editor_state *es) {
     int selected = -1;
 
     e->line_count = 0;
+    e->shape_cmd_count = 0;
 
     /* Ground grid: 21x21 on XZ plane at Y=0 */
     for (i = -10; i <= 10; i++) {

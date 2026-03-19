@@ -1963,6 +1963,8 @@ EXPORT void init_engine(game_state *gs) {
                 mig_header *old_hdr = gs->mig_hdr;
                 struct arena *saved_root = gs->root_arena;
                 struct arena *saved_gameplay = gs->gameplay;
+                draw_list saved_dl = gs->dl;
+                debug_renderer saved_dbg = gs->dbg;
                 memcpy(old_copy, gs, copy_size);
                 memset(gs, 0, sizeof(game_state));
                 mig_migrate_struct(gs, mig_game_state_fields,
@@ -1971,6 +1973,8 @@ EXPORT void init_engine(game_state *gs) {
                                    old_copy, old_hdr);
                 gs->root_arena = saved_root;
                 gs->gameplay = saved_gameplay;
+                gs->dl = saved_dl;
+                gs->dbg = saved_dbg;
                 gs->mig_hdr = NULL;
                 fprintf(stderr, "Migrated game_state (%u -> %u bytes)\n",
                         old_size, (uint32_t)sizeof(game_state));
@@ -2752,7 +2756,7 @@ EXPORT void update_engine(game_state *gs) {
     for (i = 0; i < gs->system_count; i++) {
         engine_system *sys = &gs->systems[i];
         if (sys->play_mode_only && !gs->editor_play_mode) continue;
-        if (update_count < 3) {
+        if (update_count < 3 || (sys->play_mode_only && gs->editor_play_mode)) {
             fprintf(stderr, "[update_engine]   running system '%s'\n", sys->name);
             fflush(stderr);
         }

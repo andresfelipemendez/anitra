@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* Load core DLL, run engine */
+  /* Load core DLL, run engine — survive crashes during reload */
   while (1) {
     void *lib;
     init_core_func init;
@@ -104,7 +104,9 @@ int main(int argc, char **argv) {
       unloadlibrary(lib);
       break;
     }
+
     result = init(project_path);
+
     unloadlibrary(lib);
     if (result == 0)
       break;

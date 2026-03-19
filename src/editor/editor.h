@@ -888,6 +888,17 @@ typedef struct editor_state {
     int line_count;      /* number of line segments (each = 6 vertices quad-expanded) */
     float line_width;    /* line width in pixels (set by editor, read by externals) */
 
+    /* Shape commands — editor writes, core generates billboard slug quads */
+    #define EDITOR_SHAPE_CAPSULE 0
+    #define EDITOR_MAX_SHAPE_CMDS 64
+    struct {
+        int   type;             /* EDITOR_SHAPE_* */
+        Mat4  world;
+        float param1, param2;   /* capsule: radius, half_height */
+        float r, g, b, a;
+    } shape_cmds[EDITOR_MAX_SHAPE_CMDS];
+    int shape_cmd_count;
+
     /* Font metrics — pre-computed by externals at init, used by editor for Clay text measurement.
        Advances are in design units scaled to 1px font height; multiply by fontSize for pixel width. */
     float font_advances[128];

@@ -3,6 +3,7 @@
 [project]
 name = "Dungeon 1"
 version = 2
+autoplay = true
 
 [assets.models]
 knight       = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Knight.glb"

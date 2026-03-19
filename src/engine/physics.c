@@ -247,6 +247,10 @@ static int query_combat_targets(game_state *gs, int exclude_entity_index,
     int count = 0;
     if (!gs || !out_targets || max_targets <= 0) return 0;
 
+    fprintf(stderr, "[query_targets] health_count=%d, health_ptr=%p, max=%d\n",
+            gs->health_component_count, (void*)gs->health_components, max_targets);
+    fflush(stderr);
+
     /* Iterate health_components — combat targets must have health */
     for (i = 0; i < gs->health_component_count && count < max_targets; i++) {
         health_component *hc = &gs->health_components[i];
@@ -254,6 +258,9 @@ static int query_combat_targets(game_state *gs, int exclude_entity_index,
         transform_component *tc;
         box_collider_component *bc;
         capsule_collider_component *cc;
+
+        fprintf(stderr, "[query_targets]   i=%d entity=%d\n", i, entity_index);
+        fflush(stderr);
 
         if (entity_index == exclude_entity_index) continue;
         if (entity_index < 0 || entity_index >= gs->scene_entity_count) continue;
@@ -274,6 +281,8 @@ static int query_combat_targets(game_state *gs, int exclude_entity_index,
         count++;
     }
 
+    fprintf(stderr, "[query_targets] done, count=%d\n", count);
+    fflush(stderr);
     return count;
 }
 
@@ -393,6 +402,7 @@ bool bbox_collide(const rect* a, const rect* b) {
 }
 
 void collision(game_state* gs) {
+    static int collision_dbg = 0;
     physics_actor_view actor;
     const animator* pa;
     int player_hitbox_active;
@@ -404,21 +414,24 @@ void collision(game_state* gs) {
     int ti;
     float cross_size = 8.0f;
     Vec3 actor_world;
+    rect *actor_rect;
     if (!gs || gs->scene_entity_count <= 0) return;
+    if (collision_dbg < 3) { fprintf(stderr, "[collision] enter, entities=%d\n", gs->scene_entity_count); fflush(stderr); }
 
-    if (!query_primary_actor(gs, &actor)) return;
-    if (!actor.health) return;
+    if (!query_primary_actor(gs, &actor)) { if (collision_dbg < 3) { fprintf(stderr, "[collision] no actor\n"); fflush(stderr); } collision_dbg++; return; }
+    if (!actor.health) { if (collision_dbg < 3) { fprintf(stderr, "[collision] no health\n"); fflush(stderr); } collision_dbg++; return; }
     pa = &actor.ent->current_animation;
     actor_world = resolve_world_position(gs, actor.entity_index);
+    actor_rect = collider_rect_ptr(actor.box_collider, actor.capsule_collider);
+    if (!actor_rect) { if (collision_dbg < 3) { fprintf(stderr, "[collision] no actor_rect\n"); fflush(stderr); } collision_dbg++; return; }
+    if (collision_dbg < 3) { fprintf(stderr, "[collision] actor ok, querying targets...\n"); fflush(stderr); }
 
     predicted_player_pos.x = actor_world.x + (actor.velocity->velocity.x * gs->dt);
     predicted_player_pos.y = actor_world.z + (actor.velocity->velocity.z * gs->dt);
     sync_collider_to_pos(actor.box_collider, actor.capsule_collider, predicted_player_pos);
 
     debug_draw_rect(&gs->dbg, predicted_player_pos,
-                    collider_rect_ptr(actor.box_collider, actor.capsule_collider)->w,
-                    collider_rect_ptr(actor.box_collider, actor.capsule_collider)->h,
-                    DEBUG_BLUE);
+                    actor_rect->w, actor_rect->h, DEBUG_BLUE);
 
     player_pos.x = actor_world.x;
     player_pos.y = actor_world.z;
@@ -435,18 +448,21 @@ void collision(game_state* gs) {
     }
 
     target_count = query_combat_targets(gs, actor.entity_index, targets, PHYSICS_QUERY_MAX_RESULTS);
+    if (collision_dbg < 3) { fprintf(stderr, "[collision] %d targets\n", target_count); fflush(stderr); }
     for (ti = 0; ti < target_count; ti++) {
         collider_target_view *target = &targets[ti];
         animator* a = &target->ent->current_animation;
         vec2 enemy_pos;
         debug_color color = DEBUG_GREEN;
         Vec3 target_world = resolve_world_position(gs, target->entity_index);
+        rect *target_rect = collider_rect_ptr(target->box_collider, target->capsule_collider);
+
+        if (!target_rect) continue;
 
         sync_collider_to_pos(target->box_collider, target->capsule_collider,
                              (vec2){target_world.x, target_world.z});
 
-        if (player_hitbox_active && bbox_collide(&player_hit_box,
-            collider_rect_ptr(target->box_collider, target->capsule_collider))) {
+        if (player_hitbox_active && bbox_collide(&player_hit_box, target_rect)) {
             color = DEBUG_RED;
             /* Apply damage once per hitbox activation (not per-frame) */
             if (!target->health->hit_this_activation) {
@@ -458,8 +474,7 @@ void collision(game_state* gs) {
             if (target->health) target->health->hit_this_activation = 0;
         }
 
-        if (bbox_collide(collider_rect_ptr(actor.box_collider, actor.capsule_collider),
-                         collider_rect_ptr(target->box_collider, target->capsule_collider))) {
+        if (bbox_collide(actor_rect, target_rect)) {
             color = DEBUG_RED;
             if (!actor.health->hit_this_activation) {
                 actor.health->health -= 5.0f;
@@ -479,12 +494,10 @@ void collision(game_state* gs) {
                             enemy_hit_box.w, enemy_hit_box.h, DEBUG_YELLOW);
         }
 
-        enemy_pos.x = collider_rect_ptr(target->box_collider, target->capsule_collider)->x;
-        enemy_pos.y = collider_rect_ptr(target->box_collider, target->capsule_collider)->y;
+        enemy_pos.x = target_rect->x;
+        enemy_pos.y = target_rect->y;
         debug_draw_rect(&gs->dbg, enemy_pos,
-                        collider_rect_ptr(target->box_collider, target->capsule_collider)->w,
-                        collider_rect_ptr(target->box_collider, target->capsule_collider)->h,
-                        color);
+                        target_rect->w, target_rect->h, color);
 
         enemy_pos.x = target_world.x;
         enemy_pos.y = target_world.z;
@@ -493,6 +506,8 @@ void collision(game_state* gs) {
 
     sync_collider_to_pos(actor.box_collider, actor.capsule_collider,
                          (vec2){actor_world.x, actor_world.z});
+    if (collision_dbg < 3) { fprintf(stderr, "[collision] done\n"); fflush(stderr); }
+    collision_dbg++;
 }
 
 static float collider_half_height(box_collider_component *bc, capsule_collider_component *cc) {
@@ -503,6 +518,16 @@ static float collider_half_height(box_collider_component *bc, capsule_collider_c
 
 static int y_ranges_overlap(float y1, float hh1, float y2, float hh2) {
     return (y1 - hh1 < y2 + hh2) && (y1 + hh1 > y2 - hh2);
+}
+
+/* For horizontal collision: ignore obstacles the actor can step onto.
+   Returns 0 if the actor's feet are above (obstacle_top - step_up). */
+static int y_ranges_overlap_horizontal(float y1, float hh1, float y2, float hh2) {
+    float step_up = 0.3f;
+    float actor_bottom = y1 - hh1;
+    float ob_top = y2 + hh2;
+    if (actor_bottom >= ob_top - step_up) return 0;
+    return y_ranges_overlap(y1, hh1, y2, hh2);
 }
 
 static void apply_movement_single(game_state *gs, physics_actor_view *actor) {
@@ -525,6 +550,46 @@ static void apply_movement_single(game_state *gs, physics_actor_view *actor) {
     obstacle_count = query_movement_obstacles(gs, actor->entity_index,
                                               obstacles, PHYSICS_QUERY_MAX_RESULTS);
 
+    /* Depenetration — push actor out of any overlapping obstacles */
+    {
+        vec2 actor_xz = { actor_world.x, actor_world.z };
+        sync_collider_to_pos(actor->box_collider, actor->capsule_collider, actor_xz);
+        for (i = 0; i < obstacle_count; i++) {
+            collider_target_view *ob = &obstacles[i];
+            Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
+            float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
+            rect *ar, *br;
+            float overlap_x, overlap_z, push_x, push_z;
+
+            sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
+                                 (vec2){ob_world.x, ob_world.z});
+            ar = collider_rect_ptr(actor->box_collider, actor->capsule_collider);
+            br = collider_rect_ptr(ob->box_collider, ob->capsule_collider);
+            if (!ar || !br) continue;
+            if (!bbox_collide(ar, br)) continue;
+            if (!y_ranges_overlap_horizontal(actor_world.y, actor_hh, ob_world.y, ob_hh)) continue;
+
+            /* Compute overlap on each axis and push along the smaller one */
+            overlap_x = (ar->w + br->w) * 0.5f - fabsf(ar->x - br->x);
+            overlap_z = (ar->h + br->h) * 0.5f - fabsf(ar->y - br->y);
+            if (overlap_x <= 0.0f || overlap_z <= 0.0f) continue;
+
+            if (overlap_x < overlap_z) {
+                push_x = (ar->x < br->x) ? -overlap_x : overlap_x;
+                actor->transform->position.x += push_x;
+                actor_world.x += push_x;
+            } else {
+                push_z = (ar->y < br->y) ? -overlap_z : overlap_z;
+                actor->transform->position.z += push_z;
+                actor_world.z += push_z;
+            }
+            /* Re-sync actor collider after push */
+            actor_xz.x = actor_world.x;
+            actor_xz.y = actor_world.z;
+            sync_collider_to_pos(actor->box_collider, actor->capsule_collider, actor_xz);
+        }
+    }
+
     /* Horizontal collision — separate-axis (X then Z) */
     {
         float move_x = actor->velocity->velocity.x * gs->dt;
@@ -541,7 +606,7 @@ static void apply_movement_single(game_state *gs, physics_actor_view *actor) {
                                      (vec2){ob_world.x, ob_world.z});
                 if (bbox_collide(collider_rect_ptr(actor->box_collider, actor->capsule_collider),
                                  collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
-                    y_ranges_overlap(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
+                    y_ranges_overlap_horizontal(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
                     move_x = 0.0f; break;
                 }
             }
@@ -557,7 +622,7 @@ static void apply_movement_single(game_state *gs, physics_actor_view *actor) {
                                      (vec2){ob_world.x, ob_world.z});
                 if (bbox_collide(collider_rect_ptr(actor->box_collider, actor->capsule_collider),
                                  collider_rect_ptr(ob->box_collider, ob->capsule_collider)) &&
-                    y_ranges_overlap(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
+                    y_ranges_overlap_horizontal(actor_world.y, actor_hh, ob_world.y, ob_hh)) {
                     move_z = 0.0f; break;
                 }
             }
@@ -567,10 +632,12 @@ static void apply_movement_single(game_state *gs, physics_actor_view *actor) {
         actor->transform->position.z += move_z;
     }
 
-    /* Vertical collision — gravity / jump */
+    /* Vertical collision — directional: only collide with obstacles in the
+       direction of travel (floors when falling, ceilings when jumping). */
     {
         vec2 current_xz = { actor_world.x, actor_world.z };
-        float predicted_y = actor_world.y + actor->velocity->velocity.y * gs->dt;
+        float vel_y = actor->velocity->velocity.y;
+        float predicted_y = actor_world.y + vel_y * gs->dt;
 
         sync_collider_to_pos(actor->box_collider, actor->capsule_collider, current_xz);
 
@@ -578,6 +645,13 @@ static void apply_movement_single(game_state *gs, physics_actor_view *actor) {
             collider_target_view *ob = &obstacles[i];
             Vec3 ob_world = resolve_world_position(gs, ob->entity_index);
             float ob_hh = collider_half_height(ob->box_collider, ob->capsule_collider);
+            float ob_top = ob_world.y + ob_hh;
+            float ob_bottom = ob_world.y - ob_hh;
+
+            /* Directional filter: skip obstacles on the wrong side */
+            if (vel_y < 0.0f && ob_top > actor_world.y) continue;  /* falling: skip ceilings */
+            if (vel_y > 0.0f && ob_bottom < actor_world.y) continue; /* jumping: skip floors */
+
             sync_collider_to_pos(ob->box_collider, ob->capsule_collider,
                                  (vec2){ob_world.x, ob_world.z});
             if (bbox_collide(collider_rect_ptr(actor->box_collider, actor->capsule_collider),

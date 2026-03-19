@@ -858,15 +858,21 @@ static int mig_parse_header(const char *path) {
 static int mig_generate(const char *output_path) {
     FILE *f;
     int si, fi;
+    char tmp_path[512];
+    int changed = 1;
 
     if (g_mig_struct_count == 0) {
         printf("   No migration targets found, skipping codegen.\n");
         return 0;
     }
 
-    f = fopen(output_path, "w");
+    /* Write to a temp file first, then compare with existing to avoid
+       triggering the file watcher when content hasn't changed. */
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", output_path);
+
+    f = fopen(tmp_path, "w");
     if (!f) {
-        printf("!! Cannot create %s\n", output_path);
+        printf("!! Cannot create %s\n", tmp_path);
         return 1;
     }
 
@@ -900,7 +906,39 @@ static int mig_generate(const char *output_path) {
     fprintf(f, "#endif /* STATE_MIGRATION_GEN_H */\n");
     fclose(f);
 
-    printf("   Generated %s (%d structs)\n", output_path, g_mig_struct_count);
+    /* Compare with existing file — skip write if identical */
+    {
+        FILE *old_f = fopen(output_path, "rb");
+        FILE *new_f = fopen(tmp_path, "rb");
+        if (old_f && new_f) {
+            long old_sz, new_sz;
+            fseek(old_f, 0, SEEK_END); old_sz = ftell(old_f); fseek(old_f, 0, SEEK_SET);
+            fseek(new_f, 0, SEEK_END); new_sz = ftell(new_f); fseek(new_f, 0, SEEK_SET);
+            if (old_sz == new_sz && old_sz > 0) {
+                char *old_buf = (char*)malloc(old_sz);
+                char *new_buf = (char*)malloc(new_sz);
+                if (old_buf && new_buf) {
+                    fread(old_buf, 1, old_sz, old_f);
+                    fread(new_buf, 1, new_sz, new_f);
+                    if (memcmp(old_buf, new_buf, old_sz) == 0)
+                        changed = 0;
+                }
+                free(old_buf);
+                free(new_buf);
+            }
+        }
+        if (old_f) fclose(old_f);
+        if (new_f) fclose(new_f);
+    }
+
+    if (changed) {
+        remove(output_path);
+        rename(tmp_path, output_path);
+        printf("   Generated %s (%d structs)\n", output_path, g_mig_struct_count);
+    } else {
+        remove(tmp_path);
+        printf("   %s unchanged, skipping write.\n", output_path);
+    }
     return 0;
 }
 
@@ -929,7 +967,8 @@ static int build_tracy(void)
 #ifdef _WIN32
     /* Build TracyClient as a DLL (TCC can't link COFF .obj files) */
     snprintf(cmd, sizeof(cmd),
-        "%s -shared -DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_EXPORTS"
+        "%s -shared -fno-sanitize=undefined"
+        " -DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_EXPORTS"
         " -Ilib/tracy/public"
         " lib/tracy/public/TracyClient.cpp"
         " -lws2_32 -ladvapi32 -ldbghelp"
@@ -2339,6 +2378,45 @@ static int build_all(void)
  * platform file included above.
  */
 
+/* ------- debug (zig cc with PDB for raddbg) ------------------------------ */
+#ifdef _WIN32
+static int run_zig_cmd(const char *label, const char *cmd) {
+    printf(">> %s\n", cmd);
+    fflush(stdout);
+    if (system(cmd) != 0) {
+        printf("!! %s build failed.\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+static int build_debug(void)
+{
+    printf("=== Debug build (MSVC + PDB) ===\n\n");
+
+    /* Build libs first (SDL3 etc) with normal build */
+    if (build_sdl3() != 0) return 1;
+    if (build_spirvcross() != 0) return 1;
+    if (build_shadercross() != 0) return 1;
+    if (build_shaders() != 0) return 1;
+    if (build_harfbuzz() != 0) return 1;
+    force_rebuild = 1;
+    if (generate_migration_code() != 0) return 1;
+    if (build_tracy() != 0) return 1;
+
+    /* Build core + editor with TCC (no PDB needed for those) */
+    if (build_core() != 0) return 1;
+    if (build_editor() != 0) return 1;
+
+    /* Build engine + exe with MSVC for PDB symbols */
+    if (run_zig_cmd("engine", CL_ENGINE_CMD) != 0) return 1;
+    if (run_zig_cmd("exe",    CL_EXE_CMD)    != 0) return 1;
+
+    printf("\n=== Debug build complete. ===\n");
+    return 0;
+}
+#endif
+
 /* ========================================================================= */
 /* main                                                                       */
 /* ========================================================================= */
@@ -2366,8 +2444,11 @@ __declspec(dllexport) void stop_forge(void)
 /* EXE entry point — bootstrapped by build.bat */
 int main(int argc, char **argv)
 {
-    (void)argc; (void)argv;
     if (find_tools() != 0) return 1;
+#ifdef _WIN32
+    if (argc > 1 && strcmp(argv[1], "debug") == 0)
+        return build_debug();
+#endif
     return build_all();
 }
 #endif
