@@ -185,16 +185,6 @@ static void reload_editor_dll(dll_time_t cur) {
     wire_editor_profiler();
     init_editor();
 
-    /* Run editor tests if exported */
-    {
-      typedef int (*run_tests_fn)(void);
-      run_tests_fn run_ed_tests = (run_tests_fn)getfunction(editor_lib, "run_editor_tests");
-      if (run_ed_tests) {
-        if (run_ed_tests() != 0)
-          fprintf(stderr, "!! Some editor tests FAILED after reload\n");
-      }
-    }
-
     last_editor_time = cur;
   }
 }

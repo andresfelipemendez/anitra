@@ -3,7 +3,6 @@
 [project]
 name = "Dungeon 1"
 version = 2
-autoplay = true
 
 [assets.models]
 knight       = "game_assets/KayKit_Adventurers_2.0_FREE/Characters/gltf/Knight.glb"
@@ -127,7 +126,6 @@ list = [
   "corner_sw",
   "corner_se",
   "corner_nw",
-  "corner_ne",
   "torch_0",
   "torch_1",
   "barrel_0",
@@ -155,7 +153,7 @@ list = [
 ]
 
 [transforms]
-"0" = { position = [1.5693, -0.0974, -2.5776] }
+"0" = { position = [1.5700, -0.1000, -2.5800] }
 "1" = { position = [0.0000, 8.0000, 10.0000] }
 "2" = { position = [0.0000, -1.0000, 0.0000] }
 "3" = { position = [-6.0000, 0.0000, -6.0000] }
@@ -194,31 +192,30 @@ list = [
 "36" = { position = [-8.0000, 0.0000, -8.0000] }
 "37" = { position = [8.0000, 0.0000, -8.0000] }
 "38" = { position = [-8.0000, 0.0000, 8.0000] }
-"39" = { position = [8.0000, 0.0000, 8.0000] }
-"40" = { position = [-7.5000, 2.0000, 0.0000] }
-"41" = { position = [7.5000, 2.0000, 0.0000] }
-"42" = { position = [-5.0000, 0.0000, 6.0000] }
-"43" = { position = [-4.0000, 0.0000, 5.5000] }
-"44" = { position = [5.0000, 0.0000, 6.0000] }
-"45" = { position = [-2.0000, 0.0000, 0.0000] }
-"46" = { position = [2.0000, 0.0000, 0.0000] }
-"47" = { position = [-4.5198, 1.3252, -4.7692] }
-"48" = { position = [-2.0000, -0.0974, -13.0000] }
-"49" = { position = [0.0000, -0.8563, 0.0000] }
-"50" = { position = [-4.0000, 0.0000, -10.0000] }
-"51" = { position = [0.0000, 0.0000, -10.0000] }
-"52" = { position = [-4.0000, 0.0000, -14.0000] }
-"53" = { position = [0.0000, 0.0000, -14.0000] }
-"54" = { position = [-6.0000, 0.0000, -10.0000] }
-"55" = { position = [-6.0000, 0.0000, -14.0000] }
-"56" = { position = [2.0000, 0.0000, -10.0000] }
-"57" = { position = [2.0000, 0.0000, -14.0000] }
-"58" = { position = [-4.0000, 0.0000, -16.0000] }
-"59" = { position = [0.0000, 0.0000, -16.0000] }
-"60" = { position = [-6.0000, 0.0000, -16.0000] }
-"61" = { position = [2.0000, 0.0000, -16.0000] }
-"62" = { position = [-5.5000, 2.0000, -12.0000] }
-"63" = { position = [2.0000, 0.2000, -2.0000] }
+"39" = { position = [-7.5000, 2.0000, 0.0000] }
+"40" = { position = [7.5000, 2.0000, 0.0000] }
+"41" = { position = [-5.0000, 0.0000, 6.0000] }
+"42" = { position = [-4.0000, 0.0000, 5.5000] }
+"43" = { position = [5.0000, 0.0000, 6.0000] }
+"44" = { position = [-2.0000, 0.0000, 0.0000] }
+"45" = { position = [2.0000, 0.0000, 0.0000] }
+"46" = { position = [-4.5198, 1.3252, -4.7692] }
+"47" = { position = [-2.0000, -0.0974, -13.0000] }
+"48" = { position = [0.0000, -0.8563, 0.0000] }
+"49" = { position = [-4.0000, 0.0000, -10.0000] }
+"50" = { position = [0.0000, 0.0000, -10.0000] }
+"51" = { position = [-4.0000, 0.0000, -14.0000] }
+"52" = { position = [0.0000, 0.0000, -14.0000] }
+"53" = { position = [-6.0000, 0.0000, -10.0000] }
+"54" = { position = [-6.0000, 0.0000, -14.0000] }
+"55" = { position = [2.0000, 0.0000, -10.0000] }
+"56" = { position = [2.0000, 0.0000, -14.0000] }
+"57" = { position = [-4.0000, 0.0000, -16.0000] }
+"58" = { position = [0.0000, 0.0000, -16.0000] }
+"59" = { position = [-6.0000, 0.0000, -16.0000] }
+"60" = { position = [2.0000, 0.0000, -16.0000] }
+"61" = { position = [-5.5000, 2.0000, -12.0000] }
+"62" = { position = [2.0000, 0.2000, -2.0000] }
 
 [rotations]
 "0" = { y = -180.0000 }
@@ -243,20 +240,19 @@ list = [
 "36" = { y = 180.0000 }
 "37" = { y = 270.0000 }
 "38" = { y = 90.0000 }
-"39" = { y = 0.0000 }
-"40" = { y = 90.0000 }
-"41" = { y = -90.0000 }
-"44" = { y = 180.0000 }
-"48" = { y = 0.0000 }
+"39" = { y = 90.0000 }
+"40" = { y = -90.0000 }
+"43" = { y = 180.0000 }
+"47" = { y = 0.0000 }
+"53" = { y = 90.0000 }
 "54" = { y = 90.0000 }
-"55" = { y = 90.0000 }
+"55" = { y = -90.0000 }
 "56" = { y = -90.0000 }
-"57" = { y = -90.0000 }
+"57" = { y = 180.0000 }
 "58" = { y = 180.0000 }
 "59" = { y = 180.0000 }
-"60" = { y = 180.0000 }
-"61" = { y = 270.0000 }
-"62" = { y = 90.0000 }
+"60" = { y = 270.0000 }
+"61" = { y = 90.0000 }
 
 [parent_transform]
 "1" = { parent = 0 }
@@ -304,8 +300,8 @@ list = [
 "44" = { parent = 2 }
 "45" = { parent = 2 }
 "46" = { parent = 2 }
-"47" = { parent = 2 }
-"49" = { parent = 48 }
+"48" = { parent = 47 }
+"49" = { parent = 2 }
 "50" = { parent = 2 }
 "51" = { parent = 2 }
 "52" = { parent = 2 }
@@ -319,7 +315,6 @@ list = [
 "60" = { parent = 2 }
 "61" = { parent = 2 }
 "62" = { parent = 2 }
-"63" = { parent = 2 }
 
 [meshes]
 "3" = { model = "floor_tile_large", visible = true }
@@ -358,34 +353,33 @@ list = [
 "36" = { model = "wall_corner", visible = true }
 "37" = { model = "wall_corner", visible = true }
 "38" = { model = "wall_corner", visible = true }
-"39" = { model = "wall_corner", visible = true }
+"39" = { model = "torch_mounted", visible = true }
 "40" = { model = "torch_mounted", visible = true }
-"41" = { model = "torch_mounted", visible = true }
-"42" = { model = "barrel_large", visible = true }
-"43" = { model = "barrel_small", visible = true }
-"44" = { model = "chest_gold", visible = true }
+"41" = { model = "barrel_large", visible = true }
+"42" = { model = "barrel_small", visible = true }
+"43" = { model = "chest_gold", visible = true }
+"44" = { model = "column", visible = true }
 "45" = { model = "column", visible = true }
-"46" = { model = "column", visible = true }
-"47" = { model = "key", visible = true }
-"49" = { model = "skeleton", visible = true }
+"46" = { model = "key", visible = true }
+"48" = { model = "skeleton", visible = true }
+"49" = { model = "floor_tile_large", visible = true }
 "50" = { model = "floor_tile_large", visible = true }
 "51" = { model = "floor_tile_large", visible = true }
 "52" = { model = "floor_tile_large", visible = true }
-"53" = { model = "floor_tile_large", visible = true }
-"54" = { model = "wall", visible = true }
-"55" = { model = "wall_cracked", visible = true }
-"56" = { model = "wall", visible = true }
-"57" = { model = "wall_broken", visible = true }
+"53" = { model = "wall", visible = true }
+"54" = { model = "wall_cracked", visible = true }
+"55" = { model = "wall", visible = true }
+"56" = { model = "wall_broken", visible = true }
+"57" = { model = "wall", visible = true }
 "58" = { model = "wall", visible = true }
-"59" = { model = "wall", visible = true }
+"59" = { model = "wall_corner", visible = true }
 "60" = { model = "wall_corner", visible = true }
-"61" = { model = "wall_corner", visible = true }
-"62" = { model = "torch_mounted", visible = true }
-"63" = { model = "sword", visible = true }
+"61" = { model = "torch_mounted", visible = true }
+"62" = { model = "sword", visible = true }
 
 [animations]
 "19" = { asset = "general", playing = true, clip = 6, speed = 1.0000 }
-"49" = { asset = "skeleton_general", playing = true, clip = 6, speed = 1.0000 }
+"48" = { asset = "skeleton_general", playing = true, clip = 6, speed = 1.0000 }
 
 [velocities]
 "0" = { value = [0.0000, 0.0000] }
@@ -398,7 +392,7 @@ list = [
 
 [health]
 "0" = { current = 100.0000, max = 100.0000 }
-"48" = { current = 50.0000, max = 50.0000 }
+"47" = { current = 50.0000, max = 50.0000 }
 
 [box_colliders]
 "3" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
@@ -436,34 +430,33 @@ list = [
 "36" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
 "37" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
 "38" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
-"39" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
-"42" = { type = "box", half_extents = [0.4000, 0.5000, 0.4000] }
-"43" = { type = "box", half_extents = [0.3000, 0.4000, 0.3000] }
-"44" = { type = "box", half_extents = [0.5000, 0.4000, 0.4000] }
+"41" = { type = "box", half_extents = [0.4000, 0.5000, 0.4000] }
+"42" = { type = "box", half_extents = [0.3000, 0.4000, 0.3000] }
+"43" = { type = "box", half_extents = [0.5000, 0.4000, 0.4000] }
+"44" = { type = "box", half_extents = [0.3000, 2.0000, 0.3000] }
 "45" = { type = "box", half_extents = [0.3000, 2.0000, 0.3000] }
-"46" = { type = "box", half_extents = [0.3000, 2.0000, 0.3000] }
+"49" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
 "50" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
 "51" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
 "52" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
-"53" = { type = "box", half_extents = [2.0000, 0.2000, 2.0000] }
+"53" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
 "54" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
 "55" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
 "56" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
-"57" = { type = "box", half_extents = [0.2500, 2.0000, 2.0000] }
+"57" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
 "58" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
-"59" = { type = "box", half_extents = [2.0000, 2.0000, 0.2500] }
+"59" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
 "60" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
-"61" = { type = "box", half_extents = [0.2500, 2.0000, 0.2500] }
 
 [capsule_colliders]
 "0" = { radius = 0.3800, half_height = 0.4600 }
-"48" = { radius = 0.3800, half_height = 0.4600 }
+"47" = { radius = 0.3800, half_height = 0.4600 }
 
 [cameras]
 "1" = { fov = 45.0000, near = 0.1000, far = 100.0000, target = [0.0000, 0.0000, 0.0000], up = [0.0000, 1.0000, 0.0000] }
 
 [triggers]
-"47" = { type = "pickup", target = 21, radius = 1.0 }
-"21" = { type = "door" }
-"63" = { type = "weapon_pickup", target = 19, radius = 1.0, joint = "mixamorig:RightHand" }
+"21" = { type = "door", target = 0, radius = 1.0000 }
+"46" = { type = "pickup", target = 21, radius = 1.0000 }
+"62" = { type = "door", target = 19, radius = 1.0000 }
 

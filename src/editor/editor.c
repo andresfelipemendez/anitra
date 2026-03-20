@@ -1004,7 +1004,8 @@ static void editor_ensure_required_panels(dock_state *d) {
         PANEL_EDITOR,
         PANEL_SCENE_TREE,
         PANEL_INSPECTOR,
-        PANEL_ASSETS
+        PANEL_ASSETS,
+        PANEL_TESTS
     };
     int i;
 
@@ -1904,6 +1905,275 @@ static void editor_scene_selection_sync(editor_state *e, int scene_count) {
     if (e->scene_selected_entity < 0) e->scene_selected_entity = first_selected;
     e->scene_selection_count = count;
 }
+
+/* ── Entity deletion ── */
+
+/* Compact a runtime component array: remove entries for entity_index == del,
+   decrement entity_index for entries > del, rebuild lookup table. */
+#define COMPACT_RT_COMP(gs, arr, cnt, idx_arr, del) do { \
+    int _r, _w = 0; \
+    for (_r = 0; _r < (gs)->cnt; _r++) { \
+        if ((gs)->arr[_r].entity_index == (del)) continue; \
+        (gs)->arr[_w] = (gs)->arr[_r]; \
+        if ((gs)->arr[_w].entity_index > (del)) (gs)->arr[_w].entity_index--; \
+        _w++; \
+    } \
+    (gs)->cnt = _w; \
+    memset((gs)->idx_arr, -1, PROJECT_COMP_MAX * sizeof(int)); \
+    for (_r = 0; _r < _w; _r++) (gs)->idx_arr[(gs)->arr[_r].entity_index] = _r; \
+} while(0)
+
+/* Compact a project component array: remove entries for entity == del,
+   decrement entity for entries > del. */
+#define COMPACT_PROJ_COMP(proj, arr, cnt, del) do { \
+    int _r, _w = 0; \
+    for (_r = 0; _r < (proj)->cnt; _r++) { \
+        if ((proj)->arr[_r].entity == (del)) continue; \
+        (proj)->arr[_w] = (proj)->arr[_r]; \
+        if ((proj)->arr[_w].entity > (del)) (proj)->arr[_w].entity--; \
+        _w++; \
+    } \
+    (proj)->cnt = _w; \
+} while(0)
+
+static void editor_delete_entity(game_state *gs, editor_state *e, int del) {
+    int i;
+    project_data *proj;
+    if (!gs || !e) return;
+    if (del < 0 || del >= gs->scene_entity_count) return;
+
+    proj = &gs->project;
+
+    /* ── Runtime component arrays ── */
+    COMPACT_RT_COMP(gs, transform_components, transform_component_count, transform_index, del);
+    COMPACT_RT_COMP(gs, rotation_components, rotation_component_count, rotation_index, del);
+    COMPACT_RT_COMP(gs, scale_components, scale_component_count, scale_index, del);
+    COMPACT_RT_COMP(gs, velocity_components, velocity_component_count, velocity_index, del);
+    COMPACT_RT_COMP(gs, rigid_body_components, rigid_body_component_count, rigid_body_index, del);
+    COMPACT_RT_COMP(gs, character_controller_components, character_controller_component_count, character_controller_index, del);
+    COMPACT_RT_COMP(gs, health_components, health_component_count, health_index, del);
+    COMPACT_RT_COMP(gs, mesh_components, mesh_component_count, mesh_index, del);
+    COMPACT_RT_COMP(gs, animation_components, animation_component_count, animation_index, del);
+    COMPACT_RT_COMP(gs, camera_components, camera_component_count, camera_index, del);
+    COMPACT_RT_COMP(gs, box_collider_components, box_collider_component_count, box_collider_index, del);
+    COMPACT_RT_COMP(gs, capsule_collider_components, capsule_collider_component_count, capsule_collider_index, del);
+    COMPACT_RT_COMP(gs, bot_components, bot_component_count, bot_index, del);
+
+    /* parent_transform: also fix parent_entity_index references */
+    {
+        int _r, _w = 0;
+        for (_r = 0; _r < gs->parent_transform_component_count; _r++) {
+            parent_transform_component *pt = &gs->parent_transform_components[_r];
+            if (pt->entity_index == del) continue;
+            if (pt->parent_entity_index == del) continue; /* orphan child: remove parent link */
+            gs->parent_transform_components[_w] = *pt;
+            if (gs->parent_transform_components[_w].entity_index > del)
+                gs->parent_transform_components[_w].entity_index--;
+            if (gs->parent_transform_components[_w].parent_entity_index > del)
+                gs->parent_transform_components[_w].parent_entity_index--;
+            _w++;
+        }
+        gs->parent_transform_component_count = _w;
+        memset(gs->parent_transform_index, -1, PROJECT_COMP_MAX * sizeof(int));
+        for (_r = 0; _r < _w; _r++)
+            gs->parent_transform_index[gs->parent_transform_components[_r].entity_index] = _r;
+    }
+
+    /* parent_rotation */
+    COMPACT_RT_COMP(gs, parent_rotation_components, parent_rotation_component_count, parent_rotation_index, del);
+
+    /* parent_components: also fix parent_entity_index */
+    {
+        int _r, _w = 0;
+        for (_r = 0; _r < gs->parent_component_count; _r++) {
+            parent_component *pc = &gs->parent_components[_r];
+            if (pc->entity_index == del) continue;
+            if (pc->parent_entity_index == del) continue;
+            gs->parent_components[_w] = *pc;
+            if (gs->parent_components[_w].entity_index > del)
+                gs->parent_components[_w].entity_index--;
+            if (gs->parent_components[_w].parent_entity_index > del)
+                gs->parent_components[_w].parent_entity_index--;
+            _w++;
+        }
+        gs->parent_component_count = _w;
+        memset(gs->parent_index, -1, PROJECT_COMP_MAX * sizeof(int));
+        for (_r = 0; _r < _w; _r++)
+            gs->parent_index[gs->parent_components[_r].entity_index] = _r;
+    }
+
+    /* trigger_components: fix target_entity */
+    {
+        int _r, _w = 0;
+        for (_r = 0; _r < gs->trigger_component_count; _r++) {
+            trigger_component *tc = &gs->trigger_components[_r];
+            if (tc->entity_index == del) continue;
+            gs->trigger_components[_w] = *tc;
+            if (gs->trigger_components[_w].entity_index > del)
+                gs->trigger_components[_w].entity_index--;
+            if (gs->trigger_components[_w].target_entity == del)
+                gs->trigger_components[_w].target_entity = -1;
+            else if (gs->trigger_components[_w].target_entity > del)
+                gs->trigger_components[_w].target_entity--;
+            _w++;
+        }
+        gs->trigger_component_count = _w;
+        memset(gs->trigger_index, -1, PROJECT_COMP_MAX * sizeof(int));
+        for (_r = 0; _r < _w; _r++)
+            gs->trigger_index[gs->trigger_components[_r].entity_index] = _r;
+    }
+
+    /* bone_attach_components: fix target_entity */
+    {
+        int _r, _w = 0;
+        for (_r = 0; _r < gs->bone_attach_component_count; _r++) {
+            bone_attach_component *ba = &gs->bone_attach_components[_r];
+            if (ba->entity_index == del) continue;
+            if (ba->target_entity == del) continue; /* remove attach if target deleted */
+            gs->bone_attach_components[_w] = *ba;
+            if (gs->bone_attach_components[_w].entity_index > del)
+                gs->bone_attach_components[_w].entity_index--;
+            if (gs->bone_attach_components[_w].target_entity > del)
+                gs->bone_attach_components[_w].target_entity--;
+            _w++;
+        }
+        gs->bone_attach_component_count = _w;
+        memset(gs->bone_attach_index, -1, PROJECT_COMP_MAX * sizeof(int));
+        for (_r = 0; _r < _w; _r++)
+            gs->bone_attach_index[gs->bone_attach_components[_r].entity_index] = _r;
+    }
+
+    /* animation_transition_entries: compact */
+    {
+        int _r, _w = 0;
+        for (_r = 0; _r < gs->animation_transition_count; _r++) {
+            if (gs->animation_transition_entries[_r].entity_index == del) continue;
+            gs->animation_transition_entries[_w] = gs->animation_transition_entries[_r];
+            if (gs->animation_transition_entries[_w].entity_index > del)
+                gs->animation_transition_entries[_w].entity_index--;
+            _w++;
+        }
+        gs->animation_transition_count = _w;
+        memset(gs->animation_transition_index, -1, PROJECT_COMP_MAX * sizeof(int));
+        for (_r = 0; _r < _w; _r++)
+            gs->animation_transition_index[gs->animation_transition_entries[_r].entity_index] = _r;
+    }
+
+    /* ── Project component tables ── */
+    COMPACT_PROJ_COMP(proj, transforms, transform_count, del);
+    COMPACT_PROJ_COMP(proj, rotations, rotation_count, del);
+    COMPACT_PROJ_COMP(proj, scales, scale_count, del);
+    COMPACT_PROJ_COMP(proj, velocities, velocity_count, del);
+    COMPACT_PROJ_COMP(proj, rigid_bodies, rigid_body_count, del);
+    COMPACT_PROJ_COMP(proj, character_controllers, character_controller_count, del);
+    COMPACT_PROJ_COMP(proj, healths, health_count, del);
+    COMPACT_PROJ_COMP(proj, meshes, mesh_count, del);
+    COMPACT_PROJ_COMP(proj, anims, anim_count, del);
+    COMPACT_PROJ_COMP(proj, cameras, camera_count, del);
+    COMPACT_PROJ_COMP(proj, box_colliders, box_collider_count, del);
+    COMPACT_PROJ_COMP(proj, capsule_colliders, capsule_collider_count, del);
+    COMPACT_PROJ_COMP(proj, bots, bot_count, del);
+
+    /* parent_transforms: fix parent field */
+    {
+        int _r, _w = 0;
+        for (_r = 0; _r < proj->parent_transform_count; _r++) {
+            if (proj->parent_transforms[_r].entity == del) continue;
+            if (proj->parent_transforms[_r].parent == del) continue;
+            proj->parent_transforms[_w] = proj->parent_transforms[_r];
+            if (proj->parent_transforms[_w].entity > del) proj->parent_transforms[_w].entity--;
+            if (proj->parent_transforms[_w].parent > del) proj->parent_transforms[_w].parent--;
+            _w++;
+        }
+        proj->parent_transform_count = _w;
+    }
+    COMPACT_PROJ_COMP(proj, parent_rotations, parent_rotation_count, del);
+
+    /* triggers: fix target field */
+    {
+        int _r, _w = 0;
+        for (_r = 0; _r < proj->trigger_count; _r++) {
+            if (proj->triggers[_r].entity == del) continue;
+            proj->triggers[_w] = proj->triggers[_r];
+            if (proj->triggers[_w].entity > del) proj->triggers[_w].entity--;
+            if (proj->triggers[_w].target == del) proj->triggers[_w].target = -1;
+            else if (proj->triggers[_w].target > del) proj->triggers[_w].target--;
+            _w++;
+        }
+        proj->trigger_count = _w;
+    }
+
+    /* ── Shift entity names ── */
+    for (i = del; i < proj->scene_entity_count - 1; i++)
+        memcpy(proj->scene_entity_names[i], proj->scene_entity_names[i + 1], 64);
+    if (proj->scene_entity_count > 0) {
+        proj->scene_entity_names[proj->scene_entity_count - 1][0] = '\0';
+        proj->scene_entity_count--;
+    }
+
+    /* ── Shift entity array ── */
+    if (gs->scene_entities) {
+        for (i = del; i < gs->scene_entity_count - 1; i++)
+            gs->scene_entities[i] = gs->scene_entities[i + 1];
+    }
+    if (gs->scene_entity_count > 0) gs->scene_entity_count--;
+
+    /* ── Shift entity_visible cache ── */
+    for (i = del; i < PROJECT_COMP_MAX - 1; i++)
+        gs->entity_visible[i] = gs->entity_visible[i + 1];
+    gs->entity_visible[PROJECT_COMP_MAX - 1] = 0;
+
+    /* ── Fix special entity references ── */
+    if (gs->scene_primary_skinned_entity == del) gs->scene_primary_skinned_entity = -1;
+    else if (gs->scene_primary_skinned_entity > del) gs->scene_primary_skinned_entity--;
+
+    if (gs->scene_camera_entity == del) gs->scene_camera_entity = -1;
+    else if (gs->scene_camera_entity > del) gs->scene_camera_entity--;
+
+    /* ── Reset editor state ── */
+    e->gizmo_entity_index = -1;
+    e->scene_tree_drag_active = 0;
+    e->scene_tree_drag_entity = -1;
+    if (e->insp_edit_field >= 0) {
+        e->insp_edit_field = -1;
+        e->insp_edit_entity = -1;
+    }
+
+    /* Shift scene_tree_collapsed */
+    for (i = del; i < SCENE_TREE_MAX_ENTITIES - 1; i++)
+        e->scene_tree_collapsed[i] = e->scene_tree_collapsed[i + 1];
+    e->scene_tree_collapsed[SCENE_TREE_MAX_ENTITIES - 1] = 0;
+}
+
+static void editor_delete_selected_entities(game_state *gs, editor_state *e) {
+    int indices[SCENE_TREE_MAX_ENTITIES];
+    int count = 0;
+    int i, j, tmp;
+
+    if (!gs || !e || e->scene_selection_count <= 0) return;
+
+    /* Collect selected entity indices */
+    for (i = 0; i < SCENE_TREE_MAX_ENTITIES && i < gs->scene_entity_count; i++) {
+        if (e->scene_selection_mask[i]) indices[count++] = i;
+    }
+    if (count == 0) return;
+
+    /* Sort descending so we delete from the back first (preserves lower indices) */
+    for (i = 0; i < count - 1; i++)
+        for (j = i + 1; j < count; j++)
+            if (indices[j] > indices[i]) { tmp = indices[i]; indices[i] = indices[j]; indices[j] = tmp; }
+
+    /* Clear selection before deleting */
+    editor_scene_selection_clear(e);
+
+    for (i = 0; i < count; i++)
+        editor_delete_entity(gs, e, indices[i]);
+
+    fprintf(stderr, "Deleted %d entit%s\n", count, count == 1 ? "y" : "ies");
+}
+
+#undef COMPACT_RT_COMP
+#undef COMPACT_PROJ_COMP
 
 static void scene_tree_cancel_drag(editor_state *e) {
     if (!e) return;
@@ -3355,6 +3625,7 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
         es->clay_editor = e->clay_ctx;
 
         fprintf(stderr, "Editor hot-reload: re-wired Clay context\n");
+        run_editor_tests_impl(es);
         return;
     }
 
@@ -3457,6 +3728,8 @@ EXPORT void init_editor(game_state *gs, editor_state *es) {
             es->clay_editor = e->clay_ctx;
         }
     }
+
+    run_editor_tests_impl(es);
 }
 
 /* profiler_layout removed — memory profiler panel deleted */
@@ -8386,6 +8659,79 @@ static void inspector_layout_inner(game_state *gs, editor_state *es) {
 
     e->inspector_click = 0;
 }
+static void tests_panel_layout_inner(game_state *gs, editor_state *es) {
+    editor_state *e = es;
+    int i;
+    static char header_buf[64];
+    static char row_bufs[32][64];
+    (void)gs;
+
+    snprintf(header_buf, sizeof(header_buf), "Tests  %d/%d passed",
+             e->test_passed, e->test_count);
+
+    CLAY(CLAY_ID("TPRoot"), {
+        .layout = {
+            .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+            .padding = CLAY_PADDING_ALL(UI_PANEL_PADDING),
+            .childGap = UI_PANEL_GAP,
+            .layoutDirection = CLAY_TOP_TO_BOTTOM
+        },
+        .backgroundColor = {24, 28, 36, 255}
+    }) {
+        /* Header */
+        {
+            Clay_Color hdr_color = (e->test_failed > 0)
+                ? ((Clay_Color){255, 100, 100, 255})
+                : ((Clay_Color){100, 220, 140, 255});
+            Clay_String hs = {false, (int32_t)strlen(header_buf), header_buf};
+            CLAY_TEXT(hs, CLAY_TEXT_CONFIG({.textColor = hdr_color, .fontSize = UI_FONT_TITLE}));
+        }
+
+        /* Scrollable test list */
+        CLAY(CLAY_ID("TPScroll"), {
+            .layout = {
+                .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_GROW({0}) },
+                .childGap = 2,
+                .layoutDirection = CLAY_TOP_TO_BOTTOM
+            },
+            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() }
+        }) {
+            for (i = 0; i < e->test_count && i < 32; i++) {
+                int pass = (TEST_CODE(e, i) == 0);
+                Clay_Color row_bg = pass
+                    ? ((Clay_Color){30, 50, 35, 255})
+                    : ((Clay_Color){60, 30, 30, 255});
+                Clay_Color row_text = pass
+                    ? ((Clay_Color){120, 220, 150, 255})
+                    : ((Clay_Color){255, 120, 120, 255});
+
+                if (pass) {
+                    snprintf(row_bufs[i], sizeof(row_bufs[i]), "  PASS  %s", TEST_NAME(e, i));
+                } else {
+                    snprintf(row_bufs[i], sizeof(row_bufs[i]), "  FAIL  %s  (code %d)",
+                             TEST_NAME(e, i), TEST_CODE(e, i));
+                }
+
+                CLAY(CLAY_IDI("TPRow", i), {
+                    .layout = {
+                        .sizing = { CLAY_SIZING_GROW({0}), CLAY_SIZING_FIT({0}) },
+                        .padding = { .left = UI_SPACE_XS, .right = UI_SPACE_XS,
+                                     .top = UI_SPACE_XXS, .bottom = UI_SPACE_XXS }
+                    },
+                    .backgroundColor = row_bg,
+                    .cornerRadius = CLAY_CORNER_RADIUS(UI_RADIUS_SM)
+                }) {
+                    Clay_String rs = {false, (int32_t)strlen(row_bufs[i]), row_bufs[i]};
+                    CLAY_TEXT(rs, CLAY_TEXT_CONFIG({
+                        .textColor = row_text,
+                        .fontSize = UI_FONT_SECONDARY
+                    }));
+                }
+            }
+        }
+    }
+}
+
 static void menu_bar_layout_inner(game_state *gs, editor_state *es) {
     editor_state *e = es;
     dock_state *d = (dock_state *)e->dock;
@@ -9947,6 +10293,7 @@ static void dock_to_clay(dock_state *d, int node_idx, game_state *gs, editor_sta
                         editor_toolbar_layout_inner(gs, es);
                         break;
                     case PANEL_GAME:            break;
+                    case PANEL_TESTS:       tests_panel_layout_inner(gs, es); break;
                     default: break;
                 }
             }
@@ -10147,9 +10494,13 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
     editor_state *e = es;
     SDL_Event *ev = (SDL_Event *)event_ptr;
     dock_state *d = (dock_state *)es->dock;
-    DragState *drag = &d->drag;
-    ResizeState *resize = &d->resize;
+    DragState *drag;
+    ResizeState *resize;
     SDL_Window *evwin;
+
+    if (!d) return 0;
+    drag = &d->drag;
+    resize = &d->resize;
 
     /* ── Window-wide mouse state (for unified Clay context) ── */
     if (ev->type == SDL_EVENT_MOUSE_MOTION) {
@@ -10504,6 +10855,12 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 editor_set_play_mode(gs, e, !editor_is_play_mode(gs));
                 return 1;
             }
+        }
+        /* Delete key (no modifier): delete selected entities */
+        if (ev->key.key == SDLK_DELETE && e->scene_selection_count > 0 &&
+            e->insp_edit_field < 0 && !editor_is_play_mode(gs)) {
+            editor_delete_selected_entities(gs, e);
+            return 1;
         }
     }
 
@@ -10868,6 +11225,7 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
 /* Editor tests — included after all static functions are defined */
 #include "editor_tests.h"
 
-EXPORT int run_editor_tests(void) {
-    return run_editor_tests_impl();
+EXPORT int run_editor_tests(game_state *gs, editor_state *es) {
+    (void)gs;
+    return run_editor_tests_impl(es);
 }

@@ -89,7 +89,8 @@ static const char *panel_names[PANEL_COUNT] = {
     "Scene Tree",
     "Inspector",
     "Outline",
-    "Project"
+    "Project",
+    "Tests"
 };
 
 /* Dock node structure */
@@ -302,9 +303,10 @@ static void dock_init_default(dock_state *d) {
     d->nodes[editor_leaf].panels[0] = PANEL_EDITOR;
     d->nodes[editor_leaf].panel_count = 1;
 
-    /* Bottom of center: Assets panel */
+    /* Bottom of center: Assets + Tests panel (tabbed) */
     d->nodes[assets_leaf].panels[0] = PANEL_ASSETS;
-    d->nodes[assets_leaf].panel_count = 1;
+    d->nodes[assets_leaf].panels[1] = PANEL_TESTS;
+    d->nodes[assets_leaf].panel_count = 2;
     d->nodes[right].panels[0] = PANEL_INSPECTOR;
     d->nodes[right].panel_count = 1;
     d->nodes[right].active_tab = 0;
@@ -991,6 +993,18 @@ typedef struct editor_state {
 
     /* Inspector add-component dropdown */
     int   insp_add_comp_open;       /* 1 if dropdown is showing */
+
+    /* Test panel results — packed into a single flat blob so the
+       migration generator doesn't try to parse inner dimensions. */
+    #define TEST_PANEL_MAX 32
+    int   test_count;
+    int   test_passed;
+    int   test_failed;
+    char  test_blob[32 * 52];   /* 32 entries x (48 name + 4 code) */
+    /* Accessors: test_blob layout per entry = char name[48] + int code(4 bytes) */
+    #define TEST_ENTRY_SIZE 52
+    #define TEST_NAME(es, i)  ((es)->test_blob + (i) * TEST_ENTRY_SIZE)
+    #define TEST_CODE(es, i)  (*(int *)((es)->test_blob + (i) * TEST_ENTRY_SIZE + 48))
 
     /* Editor layout persistence (separate TOML from scene/project file). */
     char  editor_layout_path[512];

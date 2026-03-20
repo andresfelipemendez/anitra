@@ -11,6 +11,7 @@ typedef enum {
     PANEL_INSPECTOR,
     PANEL_OUTLINE,
     PANEL_ASSETS,
+    PANEL_TESTS,
     PANEL_COUNT
 } PanelId;
 
