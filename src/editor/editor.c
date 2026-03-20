@@ -181,6 +181,283 @@ static const char *insp_comp_names[INSP_COMP_COUNT] = {
 #define UI_ICON_ARROW_UP        "\xEF\x85\x88" /* U+F148 */
 #define UI_ICON_DISPLAY         "\xEF\x85\xA8" /* U+F168 bi-display */
 
+/* ── Undo/Redo system ──────────────────────────────────────────────────── */
+
+#define UNDO_MAX 32
+
+typedef struct undo_snapshot {
+    /* Project data — complete copy of the persistent scene representation */
+    project_data project;
+
+    /* Runtime scene state */
+    int scene_entity_count;
+    int scene_primary_skinned_entity;
+    int scene_camera_entity;
+
+    /* Runtime component arrays (up to PROJECT_COMP_MAX entries each).
+       Field names must match SNAP_COMP/REST_COMP macro pattern: {name}_count */
+    transform_component transforms[PROJECT_COMP_MAX];
+    int transforms_count;
+    rotation_component rotations[PROJECT_COMP_MAX];
+    int rotations_count;
+    scale_component scales[PROJECT_COMP_MAX];
+    int scales_count;
+    parent_transform_component parent_transforms[PROJECT_COMP_MAX];
+    int parent_transforms_count;
+    parent_rotation_component parent_rotations[PROJECT_COMP_MAX];
+    int parent_rotations_count;
+    parent_component parents[PROJECT_COMP_MAX];
+    int parents_count;
+    velocity_component velocities[PROJECT_COMP_MAX];
+    int velocities_count;
+    rigid_body_component rigid_bodies[PROJECT_COMP_MAX];
+    int rigid_bodies_count;
+    character_controller_component char_controllers[PROJECT_COMP_MAX];
+    int char_controllers_count;
+    health_component healths[PROJECT_COMP_MAX];
+    int healths_count;
+    mesh_component meshes[PROJECT_COMP_MAX];
+    int meshes_count;
+    animation_component animations[PROJECT_COMP_MAX];
+    int animations_count;
+    camera_component cameras[PROJECT_COMP_MAX];
+    int cameras_count;
+    box_collider_component box_colliders[PROJECT_COMP_MAX];
+    int box_colliders_count;
+    capsule_collider_component capsule_colliders[PROJECT_COMP_MAX];
+    int capsule_colliders_count;
+    trigger_component triggers[PROJECT_COMP_MAX];
+    int triggers_count;
+    bot_component bots[PROJECT_COMP_MAX];
+    int bots_count;
+    bone_attach_component bone_attaches[PROJECT_COMP_MAX];
+    int bone_attaches_count;
+    animation_transition_entry anim_transitions[PROJECT_COMP_MAX];
+    int anim_transitions_count;
+
+    /* Entity → component lookup tables */
+    int parent_idx[PROJECT_COMP_MAX];
+    int parent_transform_idx[PROJECT_COMP_MAX];
+    int parent_rotation_idx[PROJECT_COMP_MAX];
+    int transform_idx[PROJECT_COMP_MAX];
+    int rotation_idx[PROJECT_COMP_MAX];
+    int scale_idx[PROJECT_COMP_MAX];
+    int velocity_idx[PROJECT_COMP_MAX];
+    int rigid_body_idx[PROJECT_COMP_MAX];
+    int character_controller_idx[PROJECT_COMP_MAX];
+    int health_idx[PROJECT_COMP_MAX];
+    int box_collider_idx[PROJECT_COMP_MAX];
+    int capsule_collider_idx[PROJECT_COMP_MAX];
+    int mesh_idx[PROJECT_COMP_MAX];
+    int animation_idx[PROJECT_COMP_MAX];
+    int animation_transition_idx[PROJECT_COMP_MAX];
+    int camera_idx[PROJECT_COMP_MAX];
+    int trigger_idx[PROJECT_COMP_MAX];
+    int bot_idx[PROJECT_COMP_MAX];
+    int bone_attach_idx[PROJECT_COMP_MAX];
+
+    int entity_visible[PROJECT_COMP_MAX];
+
+    /* Editor selection state (so undo restores selection) */
+    int scene_selected_entity;
+    uint8_t scene_selection_mask[SCENE_TREE_MAX_ENTITIES];
+    int scene_selection_count;
+    int scene_tree_collapsed[SCENE_TREE_MAX_ENTITIES];
+} undo_snapshot;
+
+typedef struct undo_state {
+    undo_snapshot *slots[UNDO_MAX]; /* malloc'd on demand */
+    int count;   /* number of valid slots (0..UNDO_MAX) */
+    int current; /* index of current state (0..count-1), -1 if empty */
+} undo_state;
+
+/* Capture current game + editor state into a snapshot */
+static void undo_capture(undo_snapshot *s, const game_state *gs, const editor_state *e) {
+    memset(s, 0, sizeof(*s));
+    s->project = gs->project;
+    s->scene_entity_count = gs->scene_entity_count;
+    s->scene_primary_skinned_entity = gs->scene_primary_skinned_entity;
+    s->scene_camera_entity = gs->scene_camera_entity;
+
+    /* Macro: copy N entries from a runtime component array + its lookup table */
+    #define SNAP_COMP(dst, src_arr, src_cnt, idx_src, idx_dst) do { \
+        int _n = gs->src_cnt; \
+        if (_n > PROJECT_COMP_MAX) _n = PROJECT_COMP_MAX; \
+        s->dst##_count = _n; \
+        if (_n > 0 && gs->src_arr) \
+            memcpy(s->dst, gs->src_arr, (size_t)_n * sizeof(s->dst[0])); \
+        memcpy(s->idx_dst, gs->idx_src, sizeof(s->idx_dst)); \
+    } while(0)
+
+    SNAP_COMP(transforms,     transform_components,          transform_component_count,          transform_index,          transform_idx);
+    SNAP_COMP(rotations,      rotation_components,           rotation_component_count,           rotation_index,           rotation_idx);
+    SNAP_COMP(scales,         scale_components,              scale_component_count,              scale_index,              scale_idx);
+    SNAP_COMP(parent_transforms, parent_transform_components, parent_transform_component_count, parent_transform_index,   parent_transform_idx);
+    SNAP_COMP(parent_rotations, parent_rotation_components,  parent_rotation_component_count,    parent_rotation_index,    parent_rotation_idx);
+    SNAP_COMP(parents,        parent_components,             parent_component_count,             parent_index,             parent_idx);
+    SNAP_COMP(velocities,     velocity_components,           velocity_component_count,           velocity_index,           velocity_idx);
+    SNAP_COMP(rigid_bodies,   rigid_body_components,         rigid_body_component_count,         rigid_body_index,         rigid_body_idx);
+    SNAP_COMP(char_controllers, character_controller_components, character_controller_component_count, character_controller_index, character_controller_idx);
+    SNAP_COMP(healths,        health_components,             health_component_count,             health_index,             health_idx);
+    SNAP_COMP(meshes,         mesh_components,               mesh_component_count,               mesh_index,               mesh_idx);
+    SNAP_COMP(animations,     animation_components,          animation_component_count,          animation_index,          animation_idx);
+    SNAP_COMP(cameras,        camera_components,             camera_component_count,             camera_index,             camera_idx);
+    SNAP_COMP(box_colliders,  box_collider_components,       box_collider_component_count,       box_collider_index,       box_collider_idx);
+    SNAP_COMP(capsule_colliders, capsule_collider_components, capsule_collider_component_count,  capsule_collider_index,   capsule_collider_idx);
+    SNAP_COMP(triggers,       trigger_components,            trigger_component_count,            trigger_index,            trigger_idx);
+    SNAP_COMP(bots,           bot_components,                bot_component_count,                bot_index,                bot_idx);
+    SNAP_COMP(bone_attaches,  bone_attach_components,        bone_attach_component_count,        bone_attach_index,        bone_attach_idx);
+    SNAP_COMP(anim_transitions, animation_transition_entries, animation_transition_count,        animation_transition_index, animation_transition_idx);
+
+    #undef SNAP_COMP
+
+    memcpy(s->entity_visible, gs->entity_visible, sizeof(s->entity_visible));
+
+    /* Editor selection state */
+    s->scene_selected_entity = e->scene_selected_entity;
+    memcpy(s->scene_selection_mask, e->scene_selection_mask, sizeof(s->scene_selection_mask));
+    s->scene_selection_count = e->scene_selection_count;
+    memcpy(s->scene_tree_collapsed, e->scene_tree_collapsed, sizeof(s->scene_tree_collapsed));
+}
+
+/* Restore game + editor state from a snapshot */
+static void undo_restore(const undo_snapshot *s, game_state *gs, editor_state *e) {
+    gs->project = s->project;
+    gs->scene_entity_count = s->scene_entity_count;
+    gs->scene_primary_skinned_entity = s->scene_primary_skinned_entity;
+    gs->scene_camera_entity = s->scene_camera_entity;
+
+    #define REST_COMP(src, dst_arr, dst_cnt, idx_src, idx_dst) do { \
+        int _n = s->src##_count; \
+        gs->dst_cnt = _n; \
+        if (_n > 0 && gs->dst_arr) \
+            memcpy(gs->dst_arr, s->src, (size_t)_n * sizeof(s->src[0])); \
+        memcpy(gs->idx_dst, s->idx_src, sizeof(s->idx_src)); \
+    } while(0)
+
+    REST_COMP(transforms,     transform_components,          transform_component_count,          transform_idx,          transform_index);
+    REST_COMP(rotations,      rotation_components,           rotation_component_count,           rotation_idx,           rotation_index);
+    REST_COMP(scales,         scale_components,              scale_component_count,              scale_idx,              scale_index);
+    REST_COMP(parent_transforms, parent_transform_components, parent_transform_component_count, parent_transform_idx,   parent_transform_index);
+    REST_COMP(parent_rotations, parent_rotation_components,  parent_rotation_component_count,    parent_rotation_idx,    parent_rotation_index);
+    REST_COMP(parents,        parent_components,             parent_component_count,             parent_idx,             parent_index);
+    REST_COMP(velocities,     velocity_components,           velocity_component_count,           velocity_idx,           velocity_index);
+    REST_COMP(rigid_bodies,   rigid_body_components,         rigid_body_component_count,         rigid_body_idx,         rigid_body_index);
+    REST_COMP(char_controllers, character_controller_components, character_controller_component_count, character_controller_idx, character_controller_index);
+    REST_COMP(healths,        health_components,             health_component_count,             health_idx,             health_index);
+    REST_COMP(meshes,         mesh_components,               mesh_component_count,               mesh_idx,               mesh_index);
+    REST_COMP(animations,     animation_components,          animation_component_count,          animation_idx,          animation_index);
+    REST_COMP(cameras,        camera_components,             camera_component_count,             camera_idx,             camera_index);
+    REST_COMP(box_colliders,  box_collider_components,       box_collider_component_count,       box_collider_idx,       box_collider_index);
+    REST_COMP(capsule_colliders, capsule_collider_components, capsule_collider_component_count,  capsule_collider_idx,   capsule_collider_index);
+    REST_COMP(triggers,       trigger_components,            trigger_component_count,            trigger_idx,            trigger_index);
+    REST_COMP(bots,           bot_components,                bot_component_count,                bot_idx,                bot_index);
+    REST_COMP(bone_attaches,  bone_attach_components,        bone_attach_component_count,        bone_attach_idx,        bone_attach_index);
+    REST_COMP(anim_transitions, animation_transition_entries, animation_transition_count,        animation_transition_idx, animation_transition_index);
+
+    #undef REST_COMP
+
+    memcpy(gs->entity_visible, s->entity_visible, sizeof(s->entity_visible));
+
+    /* Restore editor selection state */
+    e->scene_selected_entity = s->scene_selected_entity;
+    memcpy(e->scene_selection_mask, s->scene_selection_mask, sizeof(e->scene_selection_mask));
+    e->scene_selection_count = s->scene_selection_count;
+    memcpy(e->scene_tree_collapsed, s->scene_tree_collapsed, sizeof(e->scene_tree_collapsed));
+
+    /* Reset transient editor state */
+    e->gizmo_entity_index = -1;
+    e->gizmo_active = 0;
+    e->scene_tree_drag_active = 0;
+    e->scene_tree_drag_entity = -1;
+    if (e->insp_edit_field >= 0) {
+        e->insp_edit_field = -1;
+        e->insp_edit_entity = -1;
+    }
+}
+
+static undo_state *undo_get(editor_state *e) {
+    if (!e->undo) {
+        e->undo = calloc(1, sizeof(undo_state));
+        ((undo_state *)e->undo)->current = -1;
+    }
+    return (undo_state *)e->undo;
+}
+
+/*
+ * Undo model: cursor always points to the slot matching the current game state.
+ *   slots[0] = baseline (pre-first-mutation)
+ *   slots[1] = state after mutation 1
+ *   slots[N] = state after mutation N
+ *   cursor   = index of current state
+ *
+ *   undo_push()   — call BEFORE mutation: saves baseline if stack is empty
+ *   undo_commit() — call AFTER  mutation: records the post-mutation state
+ *   undo_undo()   — cursor--, restore
+ *   undo_redo()   — cursor++, restore
+ */
+
+/* Ensure the baseline (pre-mutation) state is stored. Call BEFORE modifying scene data. */
+static void undo_push(game_state *gs, editor_state *e) {
+    undo_state *u = undo_get(e);
+    if (u->count == 0) {
+        undo_snapshot *baseline = (undo_snapshot *)malloc(sizeof(undo_snapshot));
+        if (!baseline) return;
+        undo_capture(baseline, gs, e);
+        u->slots[0] = baseline;
+        u->count = 1;
+        u->current = 0;
+    }
+}
+
+/* Record the post-mutation state. Call AFTER modifying scene data. */
+static void undo_commit(game_state *gs, editor_state *e) {
+    undo_state *u = undo_get(e);
+    undo_snapshot *snap;
+    int i;
+
+    /* Discard any redo entries (everything after cursor) */
+    for (i = u->current + 1; i < u->count; i++) {
+        free(u->slots[i]);
+        u->slots[i] = NULL;
+    }
+    u->count = u->current + 1;
+
+    /* If full, evict oldest entry */
+    if (u->count >= UNDO_MAX) {
+        free(u->slots[0]);
+        memmove(u->slots, u->slots + 1, (UNDO_MAX - 1) * sizeof(undo_snapshot *));
+        u->slots[UNDO_MAX - 1] = NULL;
+        u->count--;
+        u->current--;
+    }
+
+    snap = (undo_snapshot *)malloc(sizeof(undo_snapshot));
+    if (!snap) return;
+    undo_capture(snap, gs, e);
+    u->slots[u->count] = snap;
+    u->current = u->count;
+    u->count++;
+}
+
+/* Undo: restore previous state. Returns 1 if successful. */
+static int undo_undo(game_state *gs, editor_state *e) {
+    undo_state *u = undo_get(e);
+    if (u->current <= 0) return 0;  /* can't go before baseline */
+    u->current--;
+    undo_restore(u->slots[u->current], gs, e);
+    return 1;
+}
+
+/* Redo: move forward. Returns 1 if successful. */
+static int undo_redo(game_state *gs, editor_state *e) {
+    undo_state *u = undo_get(e);
+    if (u->current >= u->count - 1) return 0;
+    u->current++;
+    undo_restore(u->slots[u->current], gs, e);
+    return 1;
+}
+
 /* ── Profiler helpers (moved from externals.c — pure CPU, no GPU deps) ──── */
 
 /* CPU profiler function wiring removed — Tracy replaces it */
@@ -10855,11 +11132,25 @@ EXPORT int editor_handle_event(game_state *gs, editor_state *es, void *event_ptr
                 editor_set_play_mode(gs, e, !editor_is_play_mode(gs));
                 return 1;
             }
+            if (ev->key.key == SDLK_Z && !editor_is_play_mode(gs)) {
+                if (ev->key.mod & SDL_KMOD_SHIFT) {
+                    if (undo_redo(gs, e)) fprintf(stderr, "Redo\n");
+                } else {
+                    if (undo_undo(gs, e)) fprintf(stderr, "Undo\n");
+                }
+                return 1;
+            }
+            if (ev->key.key == SDLK_Y && !editor_is_play_mode(gs)) {
+                if (undo_redo(gs, e)) fprintf(stderr, "Redo\n");
+                return 1;
+            }
         }
         /* Delete key (no modifier): delete selected entities */
         if (ev->key.key == SDLK_DELETE && e->scene_selection_count > 0 &&
             e->insp_edit_field < 0 && !editor_is_play_mode(gs)) {
+            undo_push(gs, e);
             editor_delete_selected_entities(gs, e);
+            undo_commit(gs, e);
             return 1;
         }
     }

@@ -1015,6 +1015,9 @@ typedef struct editor_state {
     /* Collaborative editing state */
     collab_state collab;
 
+    /* Undo/redo state — heap-allocated, managed by editor.c */
+    void *undo;
+
     /* Dock state — allocated from editor_arena. */
     dock_state *dock;
 } editor_state;
