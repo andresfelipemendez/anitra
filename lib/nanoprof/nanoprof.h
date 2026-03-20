@@ -13,6 +13,9 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -110,7 +113,9 @@ static inline uint64_t _nanoprof_time_hprec()
  */
 static inline uint64_t _nanoprof_time_fast()
 {
-#if (defined( __i386__ ) || defined( __x86_64__ ))
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+    return __rdtsc() >> NANOPROF_INSIGNIFICANT_BITS;
+#elif (defined( __i386__ ) || defined( __x86_64__ ))
     uint32_t hi, lo;
     __asm__ volatile("rdtsc" : "=a" (lo), "=d" (hi));
     return (((uint64_t)hi << 32) | lo) >> NANOPROF_INSIGNIFICANT_BITS;
@@ -744,10 +749,12 @@ static inline void _nanoprof_event_hprec( struct nanoprof* const self )
     self->buffer[self->buffer_offset++] = time  & 0xFF;
 }
 
+#if !defined(_MSC_VER) || defined(__clang__)
 #pragma GCC diagnostic push
 // Using `static inline` to keep this header-only, but need to prevent inline
 // for best performance - so disable this warning.
 #pragma GCC diagnostic ignored "-Wattributes"
+#endif
 /** 'Slow path' of `nanoprof_event_timepoint`.
  *
  * Used when the ID or time delta are too large for the 2B timepoint event format,
@@ -762,8 +769,11 @@ static inline void _nanoprof_event_hprec( struct nanoprof* const self )
  *
  * @see nanoprof_event_timepoint
  */
-static inline
-__attribute__ ((noinline))
+#if defined(_MSC_VER) && !defined(__clang__)
+static __declspec(noinline)
+#else
+static inline __attribute__ ((noinline))
+#endif
 void _nanoprof_event_timepoint_slowpath( struct nanoprof* const self, const uint16_t id, uint64_t delta, const bool out_of_space )
 {
     if( out_of_space )
@@ -806,7 +816,9 @@ void _nanoprof_event_timepoint_slowpath( struct nanoprof* const self, const uint
         self->buffer_offset += 8;
     }
 }
+#if !defined(_MSC_VER) || defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
 
 /// @endcond internal
 

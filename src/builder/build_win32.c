@@ -74,17 +74,50 @@ static int watch_and_rebuild(void);
 
 /* MSVC cl commands — produce PDBs for raddbg debugging */
 #define CL_EXE_CMD \
-    "cl /nologo /Zi /Fe:build/Debug/AnitraEngine.exe /Fd:build/Debug/AnitraEngine.pdb" \
+    "cl /nologo /Zi /Od /Fe:build/Debug/AnitraEngine.exe /Fd:build/Debug/AnitraEngine.pdb" \
     " /Isrc /Isrc/core" \
     " src/main.c src/core/loadlibrary_windows.c" \
     " /link /DEBUG"
 
 #define CL_ENGINE_CMD \
-    "cl /nologo /Zi /LD /Fe:build/Debug/engine.dll /Fd:build/Debug/engine.pdb" \
+    "cl /nologo /Zi /Od /LD /Fe:build/Debug/engine.dll /Fd:build/Debug/engine.pdb" \
     " /Isrc /Isrc/engine /Isrc/editor /Ilib/SDL3/include /Ilib/cgltf /Ilib/toml-c" \
     " src/engine/engine.c src/engine/physics.c src/engine/debug_render.c" \
-    " src/engine/anim.c src/engine/gltf_loader.c src/project.c" \
+    " src/engine/anim.c src/engine/gltf_loader.c src/engine/tests.c src/project.c" \
     " /link /DEBUG build/Debug/SDL3.lib"
+
+#define CL_CORE_CMD \
+    "cl /nologo /Zi /Od /LD /Fe:build/Debug/core.dll /Fd:build/Debug/core.pdb" \
+    " /DCPU_PROF_USE_TRACY /DTRACY_ENABLE /DTRACY_ON_DEMAND /DTRACY_IMPORTS" \
+    " /DSTBI_NO_SIMD /DCLAY_DISABLE_SIMD" \
+    " /Isrc /Isrc/core /Isrc/engine /Isrc/editor" \
+    " /Ilib/SDL3/include /Ilib/SDL_shadercross/include" \
+    " /Ilib/tracy/public /Ilib/harfbuzz-src/src /Ilib/clay /Ilib/cgltf" \
+    " /Ilib/sqlite /Ilib/toml-c /Ilib/nanoprof" \
+    " src/core/core.c" \
+    " src/core/loadlibrary_windows.c" \
+    " src/core/externals_runtime.c src/core/externals.c" \
+    " src/project.c lib/sqlite/sqlite3.c" \
+    " /link /DEBUG" \
+    " build/Debug/TracyClient.lib" \
+    " build/Debug/SDL3.lib" \
+    " build/Debug/SDL3_shadercross.lib" \
+    " build/Debug/harfbuzz.lib" \
+    " ws2_32.lib winmm.lib kernel32.lib"
+
+#define CL_EDITOR_CMD \
+    "cl /nologo /Zi /Od /LD /Fe:build/Debug/editor.dll /Fd:build/Debug/editor.pdb" \
+    " /DCLAY_DISABLE_SIMD /DCACHE_PROF_IMPL /DCPU_PROF_USE_FPTRS" \
+    " /Isrc /Isrc/editor /Isrc/engine /Isrc/collab" \
+    " /Ilib/SDL3/include /Ilib/clay /Ilib/toml-c /Ilib/sqlite" \
+    " src/editor/editor.c" \
+    " src/collab/collab_ops.c" \
+    " src/collab/collab_client.c" \
+    " src/project.c" \
+    " lib/sqlite/sqlite3.c" \
+    " /link /DEBUG" \
+    " build/Debug/SDL3.lib" \
+    " ws2_32.lib"
 
 #define TCC_TEST_CMD \
     "tcc\\tcc.exe -Blib/tcc-windows -g" \
@@ -282,6 +315,141 @@ static const char *sdl3_sources_platform[] = {
     /* GPU - D3D12 */
     "lib/SDL3/src/gpu/d3d12/SDL_gpu_d3d12.c"
 };
+
+/* ------- coverage (clang-cl + llvm-cov, branch + MC/DC coverage) -------- */
+
+/* Coverage flags: instrument for profiling + branch + MC/DC coverage */
+#define COV_FLAGS \
+    "-fprofile-instr-generate -fcoverage-mapping -fcoverage-mcdc"
+
+/* Test definitions: {name, sources, includes, defines} */
+struct cov_test {
+    const char *name;
+    const char *sources;
+    const char *includes;
+    const char *defines;
+};
+
+static const struct cov_test cov_tests[] = {
+    {"test_dock",       "tests/test_dock.c",       "/Isrc /Isrc/editor", ""},
+    {"test_inspector",  "tests/test_inspector.c",  "/Isrc /Isrc/editor", ""},
+    {"test_hotreload",  "tests/test_hotreload.c",  "/Isrc /Isrc/editor /Ilib/clay",
+                                                    "/DCLAY_DISABLE_SIMD"},
+    {"test_collab_ot",  "tests/test_collab_ot.c",  "/Isrc /Isrc/collab", ""},
+    {"test_gym_scene",  "tests/test_gym_scene.c",
+     "/Isrc /Isrc/engine /Isrc/editor /Ilib/SDL3/include /Ilib/cgltf /Ilib/toml-c", ""},
+};
+#define COV_TEST_COUNT (sizeof(cov_tests) / sizeof(cov_tests[0]))
+
+static int build_coverage(void)
+{
+    char cmd[CMD_MAX];
+    char object_list[CMD_MAX];
+    int failed = 0;
+    size_t i;
+    int pos;
+
+    printf("=== Coverage build (clang-cl + llvm-cov, branch + MC/DC) ===\n\n");
+    if (ensure_dirs() != 0) return 1;
+    ensure_dir("build/coverage");
+
+    /* Verify clang-cl is available (needs vcvarsall) */
+    if (system("clang-cl --version >nul 2>&1") != 0) {
+        printf("!! clang-cl not found.\n"
+               "   Run via: debug.bat coverage\n"
+               "   Or run vcvarsall.bat x64 first.\n");
+        return 1;
+    }
+
+    /* Build each test with coverage instrumentation */
+    for (i = 0; i < COV_TEST_COUNT; i++) {
+        printf("\n--- Building %s with coverage ---\n", cov_tests[i].name);
+        snprintf(cmd, sizeof(cmd),
+            "clang-cl /nologo /Zi /Od " COV_FLAGS " %s"
+            " %s %s"
+            " /Fe:build/Debug/%s.exe"
+            " /Fd:build/Debug/%s.pdb"
+            " /link /DEBUG",
+            cov_tests[i].defines,
+            cov_tests[i].includes,
+            cov_tests[i].sources,
+            cov_tests[i].name,
+            cov_tests[i].name);
+        if (run_cmd(cmd) != 0) {
+            printf("!! %s build failed.\n", cov_tests[i].name);
+            return 1;
+        }
+    }
+
+    /* Clean old profraw files */
+    system("del /q build\\Debug\\cov_*.profraw 2>nul");
+
+    /* Run each test */
+    printf("\n=== Running tests with coverage ===\n");
+    for (i = 0; i < COV_TEST_COUNT; i++) {
+        snprintf(cmd, sizeof(cmd),
+            "set \"LLVM_PROFILE_FILE=build/Debug/cov_%s.profraw\" && "
+            "build\\Debug\\%s.exe",
+            cov_tests[i].name, cov_tests[i].name);
+        printf("\n--- %s ---\n", cov_tests[i].name);
+        if (run_cmd(cmd) != 0) {
+            printf("!! %s failed.\n", cov_tests[i].name);
+            failed = 1;
+        }
+    }
+
+    /* Merge profraw files */
+    printf("\n=== Merging coverage data ===\n");
+    snprintf(cmd, sizeof(cmd),
+        "llvm-profdata merge -sparse"
+        " build/Debug/cov_*.profraw"
+        " -o build/coverage/coverage.profdata");
+    if (run_cmd(cmd) != 0) {
+        printf("!! profdata merge failed.\n");
+        return 1;
+    }
+
+    /* Build object list for llvm-cov (all test executables) */
+    pos = 0;
+    for (i = 0; i < COV_TEST_COUNT; i++) {
+        if (i > 0)
+            pos += snprintf(object_list + pos, sizeof(object_list) - pos,
+                            " -object=build/Debug/%s.exe", cov_tests[i].name);
+        else
+            pos += snprintf(object_list + pos, sizeof(object_list) - pos,
+                            "build/Debug/%s.exe", cov_tests[i].name);
+    }
+
+    /* Generate HTML report */
+    printf("\n=== Generating coverage report ===\n");
+    snprintf(cmd, sizeof(cmd),
+        "llvm-cov show %s"
+        " -instr-profile=build/coverage/coverage.profdata"
+        " --show-branches=count"
+        " --show-mcdc"
+        " -format=html"
+        " -output-dir=build/coverage"
+        " -ignore-filename-regex=\"(lib/|tests/)\"",
+        object_list);
+    if (run_cmd(cmd) != 0) {
+        printf("!! report generation failed.\n");
+        return 1;
+    }
+
+    /* Also print summary to console */
+    snprintf(cmd, sizeof(cmd),
+        "llvm-cov report %s"
+        " -instr-profile=build/coverage/coverage.profdata"
+        " -ignore-filename-regex=\"(lib/|tests/)\"",
+        object_list);
+    run_cmd(cmd);
+
+    printf("\n=== Coverage report: build/coverage/index.html ===\n");
+    if (failed) {
+        printf("!! Some tests failed (coverage still generated).\n");
+    }
+    return 0;
+}
 
 /* ------- test (compile and run unit tests) ------------------------------- */
 

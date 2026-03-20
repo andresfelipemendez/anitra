@@ -2394,7 +2394,7 @@ static int build_debug(void)
 {
     printf("=== Debug build (MSVC + PDB) ===\n\n");
 
-    /* Build libs first (SDL3 etc) with normal build */
+    /* Build libs with zig cc (SDL3, SPIRV-Cross, shadercross, harfbuzz, Tracy) */
     if (build_sdl3() != 0) return 1;
     if (build_spirvcross() != 0) return 1;
     if (build_shadercross() != 0) return 1;
@@ -2404,11 +2404,9 @@ static int build_debug(void)
     if (generate_migration_code() != 0) return 1;
     if (build_tracy() != 0) return 1;
 
-    /* Build core + editor with TCC (no PDB needed for those) */
-    if (build_core() != 0) return 1;
-    if (build_editor() != 0) return 1;
-
-    /* Build engine + exe with MSVC for PDB symbols */
+    /* Build ALL app code with MSVC for full PDB coverage */
+    if (run_zig_cmd("core",   CL_CORE_CMD)   != 0) return 1;
+    if (run_zig_cmd("editor", CL_EDITOR_CMD) != 0) return 1;
     if (run_zig_cmd("engine", CL_ENGINE_CMD) != 0) return 1;
     if (run_zig_cmd("exe",    CL_EXE_CMD)    != 0) return 1;
 
@@ -2425,6 +2423,10 @@ static int build_debug(void)
 /* DLL entry point — called by anitra.exe via loadlibrary */
 __declspec(dllexport) int init_builder(void)
 {
+    if (getenv("ANITRA_SKIP_BUILD")) {
+        printf("   Skipping build (ANITRA_SKIP_BUILD set)\n");
+        return 0;
+    }
     if (find_tools() != 0) return 1;
     return build_all();
 }
@@ -2448,6 +2450,8 @@ int main(int argc, char **argv)
 #ifdef _WIN32
     if (argc > 1 && strcmp(argv[1], "debug") == 0)
         return build_debug();
+    if (argc > 1 && strcmp(argv[1], "coverage") == 0)
+        return build_coverage();
 #endif
     return build_all();
 }
