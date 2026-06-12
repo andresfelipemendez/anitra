@@ -42,6 +42,7 @@ static int watch_and_rebuild(void);
     "tcc\\tcc.exe -Blib/tcc-windows -g -shared" \
     " -o build/Debug/core.dll" \
     " -DCPU_PROF_USE_TRACY -DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_IMPORTS" \
+    " -DTRACY_DELAYED_INIT -DTRACY_MANUAL_LIFETIME" \
     " -DSTBI_NO_SIMD -DCLAY_DISABLE_SIMD" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include -Ilib/SDL_shadercross/include" \
@@ -89,6 +90,7 @@ static int watch_and_rebuild(void);
 #define CL_CORE_CMD \
     "cl /nologo /Zi /Od /LD /Fe:build/Debug/core.dll /Fd:build/Debug/core.pdb" \
     " /DCPU_PROF_USE_TRACY /DTRACY_ENABLE /DTRACY_ON_DEMAND /DTRACY_IMPORTS" \
+    " /DTRACY_DELAYED_INIT /DTRACY_MANUAL_LIFETIME" \
     " /DSTBI_NO_SIMD /DCLAY_DISABLE_SIMD" \
     " /Isrc /Isrc/core /Isrc/engine /Isrc/editor" \
     " /Ilib/SDL3/include /Ilib/SDL_shadercross/include" \

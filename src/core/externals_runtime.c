@@ -2485,6 +2485,13 @@ EXPORT int init_externals(const char *project_path) {
     BOOT_PROF_BEGIN(TP_BOOT);
     BOOT_PROF_BEGIN(TP_INIT_EXTERNALS);
 #ifdef TRACY_ENABLE
+#ifdef TRACY_MANUAL_LIFETIME
+    /* Start Tracy worker threads explicitly (TracyClient.dll built with
+       TRACY_MANUAL_LIFETIME). Shut down in end_externals — threads must be
+       gone before core.dll/TracyClient.dll unload, or DLL_PROCESS_DETACH
+       joins them under the loader lock and deadlocks. */
+    ___tracy_startup_profiler();
+#endif
     ___tracy_set_thread_name("main");
 #endif
     BOOT_PROF_BEGIN(TP_EXT_ALLOC_MEMORY);
@@ -5341,6 +5348,11 @@ EXPORT void end_externals(void) {
     g_mem = NULL;
 
     SDL_Quit();
+
+#if defined(TRACY_ENABLE) && defined(TRACY_MANUAL_LIFETIME)
+    TEARDOWN_STEP("tracy shutdown");
+    ___tracy_shutdown_profiler();
+#endif
 }
 
 // ---------------------------------------------------------------------------

@@ -969,6 +969,7 @@ static int build_tracy(void)
     snprintf(cmd, sizeof(cmd),
         "%s -shared -fno-sanitize=undefined"
         " -DTRACY_ENABLE -DTRACY_ON_DEMAND -DTRACY_EXPORTS"
+        " -DTRACY_DELAYED_INIT -DTRACY_MANUAL_LIFETIME"
         " -Ilib/tracy/public"
         " lib/tracy/public/TracyClient.cpp"
         " -lws2_32 -ladvapi32 -ldbghelp"
@@ -986,6 +987,7 @@ static int build_tracy(void)
     /* On Linux/macOS, build as shared object */
     snprintf(cmd, sizeof(cmd),
         "%s -shared -fPIC -DTRACY_ENABLE -DTRACY_ON_DEMAND"
+        " -DTRACY_DELAYED_INIT -DTRACY_MANUAL_LIFETIME"
         " -Ilib/tracy/public"
         " lib/tracy/public/TracyClient.cpp"
         " -o " DEBUG_DIR "/" DLL_PREFIX "TracyClient" DLL_EXT,

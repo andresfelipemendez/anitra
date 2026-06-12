@@ -107,9 +107,14 @@ int main(int argc, char **argv) {
 
     result = init(project_path);
 
-    unloadlibrary(lib);
-    if (result == 0)
+    if (result == 0) {
+      /* Clean exit: skip FreeLibrary(core). Tracy worker threads live in
+         core.dll and its DLL_PROCESS_DETACH joins them while holding the
+         loader lock — exiting threads need that same lock, so unloading
+         here deadlocks. Process exit reclaims everything anyway. */
       break;
+    }
+    unloadlibrary(lib);
     printf("Core reload — restarting...\n");
   }
 

@@ -43,6 +43,7 @@ static int watch_and_rebuild(void);
     " -DSTBI_NO_THREAD_LOCALS -DCLAY_DISABLE_SIMD" \
     " -o build/Debug/libcore.dylib" \
     " -DCPU_PROF_USE_TRACY -DTRACY_ENABLE -DTRACY_ON_DEMAND" \
+    " -DTRACY_DELAYED_INIT -DTRACY_MANUAL_LIFETIME" \
     " -Isrc -Isrc/core -Isrc/engine -Isrc/editor" \
     " -Ilib/SDL3/include -Ilib/SDL_shadercross/include" \
     " -Ilib/tracy/public -Ilib/harfbuzz-src/src -Ilib/clay -Ilib/cgltf" \
